@@ -15,24 +15,40 @@ export interface SignInInput {
 /** Turns a Supabase error into a message that is safe to show in the UI. */
 export function authErrorMessage(error: unknown): string {
   if (!error) return "Something went wrong. Please try again.";
-  if (typeof error === "string") return error;
-  if (typeof error === "object" && "message" in error) {
-    const message = String((error as { message: unknown }).message);
-    if (/invalid login credentials/i.test(message)) {
-      return "Incorrect email or password.";
-    }
-    if (/user already registered/i.test(message)) {
-      return "An account with this email already exists.";
-    }
-    if (/password should be at least/i.test(message)) {
-      return "Password must be at least 6 characters.";
-    }
-    if (/rate limit|too many/i.test(message)) {
-      return "Too many attempts. Please wait a moment and try again.";
-    }
-    return message;
+
+  const message =
+    typeof error === "string"
+      ? error
+      : typeof error === "object" && "message" in error
+        ? String((error as { message: unknown }).message)
+        : "";
+
+  // A failed fetch never reaches Supabase, so the raw "Failed to fetch" is
+  // meaningless to a user. Name the actual cause instead.
+  if (/failed to fetch|networkerror|load failed/i.test(message)) {
+    return (
+      "Couldn't reach the HackSim server. Check your connection, then reload " +
+      "the page. If this keeps happening, the Supabase settings may be wrong."
+    );
   }
-  return "Something went wrong. Please try again.";
+
+  if (/invalid login credentials/i.test(message)) {
+    return "Incorrect email or password.";
+  }
+  if (/user already registered|already been registered/i.test(message)) {
+    return "An account with this email already exists. Try signing in instead.";
+  }
+  if (/password should be at least|too short/i.test(message)) {
+    return "Password must be at least 6 characters.";
+  }
+  if (/rate limit|too many|security purposes/i.test(message)) {
+    return "Too many attempts. Please wait a moment and try again.";
+  }
+  if (/email not confirmed/i.test(message)) {
+    return "Confirm your email address first, then sign in.";
+  }
+
+  return message || "Something went wrong. Please try again.";
 }
 
 export async function signUp({
