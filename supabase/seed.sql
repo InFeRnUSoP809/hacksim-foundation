@@ -71,15 +71,15 @@ The goal is not perfect forecast accuracy. It is a credible, explainable decisio
 3. **Honesty about uncertainty** — does the system surface what it does not know?
 4. **Usability** — can a pharmacist act on the output quickly?
 5. **Engineering quality** — structure, testing, and the handling of edge cases.
-6. **Judgement** — were the right trade-offs made under a time limit?'
+6. **Judgement** — were the right trade-offs made under a time limit?',
+    -- 8 hours, stored as minutes. The admin can change this later without
+    -- affecting any session that has already started.
+    480,
+    -- 'active' so a student can actually take part. practice_enabled is still
+    -- left off: flip that in /admin/hackathons when you are ready.
+    'active'
   )
   returning id into v_id;
-
-  -- 8 hours, stored as minutes. The admin can change this later without
-  -- affecting any session that has already started.
-  update public.hackathons
-     set simulation_duration_minutes = 480
-   where id = v_id;
 
   raise notice 'Created MediStock Practice Hackathon (%).', v_id;
   raise notice 'Enable practice from /admin/hackathons when you are ready.';
