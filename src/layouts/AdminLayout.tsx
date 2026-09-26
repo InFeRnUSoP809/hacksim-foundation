@@ -12,6 +12,9 @@ import {
   Users,
   Boxes,
   Timer,
+  GitBranch,
+  Brain,
+  Receipt,
 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
@@ -28,6 +31,9 @@ const ADMIN_NAV = [
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/simulations", label: "Simulations", icon: Timer },
   { to: "/admin/submissions", label: "Submissions", icon: FileText },
+  { to: "/admin/repositories", label: "Repositories", icon: GitBranch },
+  { to: "/admin/project-reviews", label: "Project Reviews", icon: Brain },
+  { to: "/admin/ai", label: "AI Operations", icon: Receipt },
   { to: "/admin/settings", label: "Settings", icon: Settings2 },
 ];
 

@@ -1,10 +1,17 @@
 -- ============================================================================
--- HackSim — complete database schema
+-- HackSim — Phase 1–4 database schema
 -- ============================================================================
 -- Paste this entire file into the Supabase SQL Editor → SQL Editor → New query
--- → Run. It creates all nine tables, every function, trigger, index and RLS
--- policy. Nothing here is destructive to existing data: every statement is
--- written to be safe to run more than once.
+-- → Run. It creates all nine Phase 1–4 tables, every function, trigger, index
+-- and RLS policy. Nothing here is destructive to existing data: every statement
+-- is written to be safe to run more than once.
+--
+-- PHASE 5 + 6: this file does NOT include the repository-analysis and AI
+-- tables. Run supabase/004_analysis_ai.sql afterwards, which adds twelve more
+-- tables (repositories, repository_files, code_chunks, ai_analyses, ai_usage,
+-- ai_budgets, ai_model_configs, hackathon_requirement_maps,
+-- requirement_evaluations, project_reviews, project_review_findings,
+-- defense_targets).
 --
 -- Sections, in the order they must run:
 --   1. profiles

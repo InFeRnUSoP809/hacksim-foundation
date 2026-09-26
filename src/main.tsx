@@ -31,6 +31,17 @@ const AdminSubmissions = lazy(
   () => import("./pages/admin/AdminSubmissions.tsx"),
 );
 const AdminSettings = lazy(() => import("./pages/admin/AdminSettings.tsx"));
+const AdminRepositories = lazy(
+  () => import("./pages/admin/AdminRepositories.tsx"),
+);
+const AdminProjectReviews = lazy(
+  () => import("./pages/admin/AdminProjectReviews.tsx"),
+);
+const AdminAI = lazy(() => import("./pages/admin/AdminAI.tsx"));
+const AdminSubmissionAnalysis = lazy(
+  () => import("./pages/admin/AdminSubmissionAnalysis.tsx"),
+);
+const ProjectReview = lazy(() => import("./pages/ProjectReview.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -202,6 +213,18 @@ createRoot(document.getElementById("root")!).render(
                   }
                 />
                 <Route
+                  path="/review/:id"
+                  element={
+                    <RequireAuth
+                      title="Sign in to open your review"
+                      description="Your project review is tied to your account."
+                      redirectImmediately
+                    >
+                      <ProjectReview />
+                    </RequireAuth>
+                  }
+                />
+                <Route
                   path="/workspace"
                   element={
                     <RequireAuth
@@ -258,6 +281,38 @@ createRoot(document.getElementById("root")!).render(
                   element={
                     <RequireAdmin>
                       <AdminSubmissions />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/repositories"
+                  element={
+                    <RequireAdmin>
+                      <AdminRepositories />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/project-reviews"
+                  element={
+                    <RequireAdmin>
+                      <AdminProjectReviews />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/ai"
+                  element={
+                    <RequireAdmin>
+                      <AdminAI />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/submissions/:id"
+                  element={
+                    <RequireAdmin>
+                      <AdminSubmissionAnalysis />
                     </RequireAdmin>
                   }
                 />

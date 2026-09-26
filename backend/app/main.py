@@ -18,6 +18,8 @@ from app.core.config import Settings, get_settings
 from app.core.security import rate_limit
 from app.routers import (
     admin,
+    ai_admin,
+    analysis,
     checkpoints,
     hackathons,
     health,
@@ -77,12 +79,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin.router, prefix="/api/admin", tags=["admin"],
         dependencies=[Depends(rate_limit)],
     )
+    # Phase 5 + 6. These call GitHub and DeepSeek, so they get a tighter
+    # per-client budget than the read-only routers.
+    app.include_router(
+        analysis.router, prefix="/api/analysis", tags=["analysis"],
+        dependencies=[Depends(rate_limit)],
+    )
+    app.include_router(
+        ai_admin.router, prefix="/api/ai", tags=["ai-operations"],
+        dependencies=[Depends(rate_limit)],
+    )
 
     if settings.is_production and not settings.supabase_service_role_key:
         # Fail loudly rather than silently degrading in production.
         logger.error(
             "SUPABASE_SERVICE_ROLE_KEY is not set. "
             "Admin endpoints will return 503 until it is configured."
+        )
+
+    if not settings.has_deepseek:
+        # Phase 5 still works; Phase 6 degrades to deterministic facts only.
+        logger.warning(
+            "DEEPSEEK_API_KEY is not set. Repository analysis (Phase 5) will run, "
+            "but AI review (Phase 6) is disabled until it is configured."
         )
 
     return app

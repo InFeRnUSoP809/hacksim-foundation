@@ -57,12 +57,11 @@ is idempotent, so re-running is safe.
 | 1 | `supabase/001_profiles.sql` | `profiles`, signup trigger, RLS |
 | 2 | `supabase/002_hackathons_teams_sessions.sql` | `hackathons`, `teams`, `team_members`, `build_sessions`, `build_checkpoints`, RPCs, RLS |
 | 3 | `supabase/003_submissions.sql` | `submissions`, `submission_members`, `submission_events`, RPCs, RLS |
+| 4 | `supabase/004_analysis_ai.sql` | **Phase 5+6.** `repositories`, `repository_files`, `code_chunks`, `ai_analyses`, `ai_usage`, `ai_budgets`, `ai_model_configs`, `hackathon_requirement_maps`, `requirement_evaluations`, `project_reviews`, `project_review_findings`, `defense_targets` |
 | — | `supabase/seed.sql` | *Optional.* A MediStock practice hackathon at 8 hours |
 
-Prefer a single paste? `supabase/00_all_in_one.sql` contains all four files
-above, already concatenated in the correct order, in one self-contained script.
-Run that one instead of the table below — the numbered files stay as the
-readable source of truth and are what the sections map onto.
+For Phases 1–4 only, `supabase/00_all_in_one.sql` is the same content as
+001 + 002 + 003 in one pasteable script. It does **not** include 004.
 
 Then promote yourself to admin. There is deliberately no self-service path:
 
@@ -129,19 +128,24 @@ bun run lint     # eslint
 | `/team` | Create or join a team, set member roles |
 | `/simulation/:sessionId` | Build workspace: timer, brief, team, checkpoints |
 | `/submission/:sessionId` | Draft, contributions, AI disclosure, final submit |
+| `/review/:id` | Your project review: alignment, coverage, findings, defence prep |
 | `/workspace` | Personal material area |
 
 ### Admin
 
 | Route | Purpose |
 | --- | --- |
-| `/admin` | Practice ON/OFF, current hackathon, counts |
+| `/admin` | Control centre: practice, sessions, submissions, alignment, AI today |
 | `/admin/hackathons` | Create, edit, view, archive, toggle practice |
 | `/admin/teams` | Team list and roster |
 | `/admin/users` | Everyone with an account |
 | `/admin/simulations` | Every run, with read-only countdowns |
 | `/admin/submissions` | Every project, with per-member contributions |
-| `/admin/settings` | Theme and break length |
+| `/admin/submissions/:id` | The central analysis page, brief first, AI conclusions last |
+| `/admin/repositories` | Phase 5 inventory, filters and commit hashes |
+| `/admin/project-reviews` | Phase 6 reviews with requirements, findings and cost |
+| `/admin/ai` | AI operations: overview, usage, errors, budgets, settings |
+| `/admin/settings` | Theme |
 
 The two surfaces use separate layouts and separate navigation, and admin routes
 are denied to students at the route level.
@@ -199,14 +203,56 @@ Then:
 uvicorn app.main:app --reload
 ```
 
-It exists for work that genuinely needs a server, and as the home for the
-provider integrations coming in Phases 5–11. It never holds a user session:
-each request is resolved from the caller's Supabase token and executed through
-an RLS-scoped client, so database policies apply to API calls exactly as they
-do to browser calls.
+It exists for work that genuinely needs a server: Phase 5 (GitHub repository
+analysis) and Phase 6 (AI project review) run here, because the GitHub and
+DeepSeek credentials must never reach a browser. It never holds a user session:
+each request is resolved from the caller's Supabase token, and privileged work
+runs through the service client while membership is re-checked server-side.
 
 `SUPABASE_SERVICE_ROLE_KEY` is read only here, and only by
 `app/core/security.py`. It is never returned to a client and never bundled.
+
+### Phase 5 + 6 endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/analysis/submissions/{id}` | The full analysis payload |
+| `POST` | `/api/analysis/submissions/{id}/repository` | Run the deterministic scanner (0 AI tokens) |
+| `POST` | `/api/analysis/submissions/{id}/review` | Run the AI modules |
+| `POST` | `/api/analysis/submissions/{id}/reanalyze` | Force a fresh scan, bypassing the commit cache |
+| `POST` | `/api/analysis/submissions/{id}/retry-module` | Retry one failed module only |
+| `GET` | `/api/ai/overview` · `/usage` · `/errors` · `/budgets` · `/settings` · `/forecast` · `/cache-analytics` | AI operations (admin only) |
+| `POST` | `/api/ai/settings/kill-switch` | The §55 AI on/off switch |
+
+### Running the service
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Add these to the environment (never to a `.env` committed to the repo):
+
+```text
+DEEPSEEK_API_KEY=
+DEEPSEEK_MODEL=deepseek-flash
+GITHUB_TOKEN=            # optional, but without it GitHub allows 60 req/hour
+VITE_API_URL=            # frontend: where the service is deployed
+```
+
+Without `DEEPSEEK_API_KEY` the service still starts: Phase 5 runs in full and
+Phase 6 degrades to deterministic facts only, recording why.
+
+### Token discipline
+
+The scanner itself costs **zero** AI tokens. The model is only asked about
+things code cannot answer, receives a compact project map plus at most six
+retrieved snippets, and its cache is keyed on
+`commit + analysis type + prompt version + context hash + model`. Every request
+records the token counts the provider reports — nothing is estimated — and the
+budget gate runs before the call, so a request that would exceed a limit is
+rejected and logged rather than made.
 
 ---
 
@@ -214,25 +260,34 @@ do to browser calls.
 
 ```text
 src/
-  components/     guards, dialogs, cards, states, theme toggle
+  components/     guards, dialogs, cards, states, analysis views
   hooks/          useAuth, useAsync, useSessionClock
   layouts/        AdminLayout, StudentLayout, AppShell, AuthShell
-  lib/            supabase client, theme, formatting
+  lib/            supabase client, API client, theme, formatting
   pages/          student routes
   pages/admin/    admin routes
   services/       one module per domain
   types/          shared domain types and constants
 supabase/         numbered migrations + seed
-backend/app/      FastAPI service
+backend/app/
+  routers/        analysis, ai_admin, and the Phase 1–4 routers
+  services/
+    github/       REST client, URL parsing, classification, parsers
+    analysis/     scanner, evidence, project map, retrieval, pipeline
+    ai/           DeepSeek client, cost/budget, modules, reviewer
 scripts/          check-supabase.mjs, generate-icons.mjs
+backend/tests/    deterministic-layer unit tests
 ```
 
 ---
 
 ## Not built yet (by design)
 
-GitHub code analysis, AI project review, AI contribution scoring, presentation
-recording, screen sharing, camera, microphone, speech-to-text, AI defense, AI
-voice, TTS, adaptive follow-up questions, and the final training report. Those
-belong to Phases 5–11. The database and service layers are structured so each
-can be added without revisiting Phases 1–4.
+GitHub code analysis and AI project review (Phases 5–6) are now implemented:
+deterministic repository scanning with evidence and a project map, then
+requirement-aware AI interpretation with budgets, caching and a kill switch.
+
+Still to come, and deliberately absent: presentation recording, screen sharing,
+camera, microphone, speech-to-text, the AI defense engine and its adaptive
+follow-up questions, AI voice, TTS, and the final training report. Phases 7+
+build on the analysis already stored here without revisiting anything above.

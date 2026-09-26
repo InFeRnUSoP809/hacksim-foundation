@@ -22,7 +22,7 @@ import {
   validateHttpUrl,
 } from "@/services/submissions";
 import { getSession } from "@/services/sessions";
-import { FileText, Loader2, Lock, Send } from "lucide-react";
+import { ArrowRight, FileText, Loader2, Lock, Send } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import {
@@ -694,6 +694,14 @@ function LockedNotice({ submission }: { submission: Submission }) {
             </>
           )}
         </p>
+        {submission.github_url && (
+          <Button variant="outline" size="sm" asChild className="mt-4 w-fit">
+            <Link to={`/review/${submission.id}`}>
+              View your project review
+              <ArrowRight className="size-3.5" />
+            </Link>
+          </Button>
+        )}
       </div>
     </Card>
   );
