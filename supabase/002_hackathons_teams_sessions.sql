@@ -40,13 +40,15 @@ comment on table public.hackathons is
   'The practice hackathon challenge. The app never hardcodes a problem statement.';
 
 create index if not exists hackathons_practice_idx on public.hackathons (practice_enabled);
-create index if not exists hackathons_status_idx   on public.hackathons (status);
-
--- BUSINESS RULE 1 — at most one practice hackathon may exist. This holds even
+create index if not exists hackathons_status_idx   on public.hackathons (status);-- BUSINESS RULE 1 — at most one practice hackathon may exist. This holds even
 -- if the admin UI is bypassed or double-clicked.
+--
+-- `practice_enabled` is listed once, not as `((practice_enabled))`. The double
+-- parentheses make it an *expression* index, and a bare column reference is not
+-- IMMUTABLE, so Postgres rejects it with 42P17. Every qualifying row shares the
+-- same value, so the unique index allows exactly one of them.
 create unique index if not exists hackathons_single_practice
-  on public.hackathons ((practice_enabled))
-  where practice_enabled = true;
+  on public.hackathons (practice_enabled) where practice_enabled = true;
 
 drop trigger if exists hackathons_touch on public.hackathons;
 create trigger hackathons_touch
