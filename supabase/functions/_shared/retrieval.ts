@@ -12,7 +12,7 @@
  * to record `not_evidenced` rather than pad the prompt.
  */
 
-import { settings } from "./config.ts";
+import { settings } from "./ai.ts";
 
 // Terms that, when present in a question, point at a kind of file.
 const QUESTION_SIGNALS: Record<string, string[]> = {

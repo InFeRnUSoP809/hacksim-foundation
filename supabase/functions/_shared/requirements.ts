@@ -14,7 +14,7 @@
  */
 
 import { db } from "./http.ts";
-import { shortHash } from "./config.ts";
+import { shortHash } from "./ai.ts";
 
 export const PROMPT_VERSION = "reqmap-v1";
 

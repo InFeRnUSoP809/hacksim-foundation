@@ -19,7 +19,7 @@
  */
 
 import { db, HttpError } from "./http.ts";
-import { settings } from "./config.ts";
+import { settings } from "./ai.ts";
 import { GitHubClient, GitHubError } from "./github-api.ts";
 import {
   basenameOf,

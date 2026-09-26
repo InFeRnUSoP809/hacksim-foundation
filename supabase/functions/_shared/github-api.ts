@@ -12,7 +12,7 @@
  *     re-analysis of the same commit does not re-fetch the tree.
  */
 
-import { settings } from "./config.ts";
+import { settings } from "./ai.ts";
 import { InvalidRepositoryUrl, parseRepositoryUrl } from "./github.ts";
 
 export class GitHubError extends Error {

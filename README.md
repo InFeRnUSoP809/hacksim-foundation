@@ -195,13 +195,13 @@ supabase/functions/
   ai-admin/          §68–§77 AI operations, admin only
   _shared/
     http.ts          CORS, caller identity, team guards, service client
-    config.ts        environment-driven settings and hashing
+    ai.ts            the only reader of Deno.env: DeepSeek, cost, budgets,
+                     cache identity, and the scanner's own limits
     github-api.ts    GitHub REST client (cache, retry, rate limit)
     github.ts        the deterministic scanner (Phase 5)
     scanner.ts       scan orchestration + persistence
     requirements.ts  the brief turned into stable REQ/CON/OUT/EVAL ids
     retrieval.ts     bounded context packets (≤ 6 files, ≤ 120 lines)
-    ai.ts            DeepSeek client + cost, budget and cache gate
     modules.ts       the four review modules, prompts and validation
     review.ts        the Phase 6 orchestrator
 ```
@@ -296,8 +296,8 @@ supabase/         numbered migrations + seed
 supabase/functions/
   analysis/       Phase 5 + Phase 6
   ai-admin/       AI operations
-  _shared/        http guards, config, GitHub client, scanner,
-                  requirements, retrieval, DeepSeek client, modules, reviewer
+  _shared/        http guards, DeepSeek + all env config, GitHub client,
+                  scanner, requirements, retrieval, modules, reviewer
 backend/app/      optional FastAPI reference for the same contract
   routers/        analysis, ai_admin, and the Phase 1–4 routers
   services/
