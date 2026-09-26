@@ -2,44 +2,61 @@
 
 **Practice. Build. Defend. Improve.**
 
-An AI-powered hackathon training and simulation platform.
+HackSim runs a complete simulated hackathon: a team takes a brief, builds
+against the clock, submits real work, presents it in five minutes, defends it
+against an AI panel that follows up on the weakest answers, and leaves with an
+honest written read on the whole run.
 
 This repository is the **foundation build (v0.1)** — an installable PWA with
-working Supabase authentication, a protected student dashboard, and a
-role-gated admin area. The training modules land in later builds, one at a time.
+working Supabase authentication, a browsable scenario catalog, a personal
+dashboard, a workspace, and a role-gated admin area. The simulation stages ship
+in later builds, one at a time.
+
+---
+
+## The five stages
+
+Colour is the stage identity throughout the product. Each stage owns one flat,
+confident hue on a neutral ink-on-paper base — colourful, but never noisy.
+
+| Stage        | What happens                                            |
+| ------------ | ------------------------------------------------------- |
+| **Build**    | A live brief, a build window, and real checkpoints.      |
+| **Submit**   | A repository and a write-up, handed in before the deadline. |
+| **Present**  | A five-minute pitch with screen, camera, and microphone. |
+| **Defend**   | A live AI panel that presses on whatever sounds weakest.  |
+| **Report**   | A written read on the run: what held, what didn't, what to fix. |
 
 ---
 
 ## Tech stack
 
-| Layer      | Choice                                              |
-| ---------- | --------------------------------------------------- |
-| Frontend   | React 19, TypeScript, Vite, Tailwind CSS v4         |
-| Database   | Supabase PostgreSQL                                 |
-| Auth       | Supabase Auth (email + password)                    |
-| Storage    | Supabase Storage — bucket ready for a later build    |
-| Backend    | FastAPI — prepared for, not wired up yet            |
-| PWA        | Web app manifest + service worker, installable       |
+| Layer      | Choice                                             |
+| ---------- | -------------------------------------------------- |
+| Frontend   | React 19, TypeScript, Vite, Tailwind CSS v4        |
+| Database   | Supabase PostgreSQL                                |
+| Auth       | Supabase Auth (email + password)                   |
+| Storage    | Supabase Storage — reserved for the workspace      |
+| Backend    | FastAPI — prepared for, not wired up yet           |
+| PWA        | Web app manifest + service worker, installable      |
 
 ---
 
 ## 1. Environment variables
 
-Create a `.env.local` in the project root (or add these through your host's
-environment UI):
+Add these through your host's environment UI (or a local `.env.local`):
 
 ```bash
 VITE_SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-Only the **anon** key belongs in the frontend. It is designed to be public and
-is safe solely because every table has Row Level Security enabled. The
-**service-role** key must never be referenced from client code.
+Only the **anon** key belongs in the frontend. It is safe to ship solely because
+every table has Row Level Security enabled. The **service-role** key must never
+be referenced from client code.
 
-If the variables are missing, the app still runs — the landing page and
-dashboard show a clear "Supabase isn't connected" notice instead of failing
-with a blank screen.
+If the variables are missing the app still runs — the landing page and dashboard
+show a clear "Supabase isn't connected" notice instead of failing blank.
 
 ---
 
@@ -47,19 +64,19 @@ with a blank screen.
 
 ### a) Apply the schema
 
-Open **Supabase Dashboard → SQL Editor → New query** and run the contents of
+Open **Supabase Dashboard → SQL Editor → New query** and run
 [`supabase/schema.sql`](./supabase/schema.sql). It creates:
 
 - the `public.users` table (`id`, `email`, `name`, `role`, `created_at`)
 - an `on_auth_user_created` trigger that inserts a profile row on signup
 - `is_admin()` / `current_user_role()` helper functions
-- Row Level Security policies: a student can only read and update their own row
+- RLS policies: a student can only read and update their own row
 
 ### b) Auth settings
 
 Under **Authentication → Providers → Email**, enable the Email provider.
-Turning *Confirm email* off is fine for local development; leaving it on is
-also supported — the signup screen shows a "check your inbox" state.
+Turning *Confirm email* off is fine locally; leaving it on also works — the
+signup screen shows a "check your inbox" state.
 
 ### c) Make yourself an admin
 
@@ -79,8 +96,6 @@ bun install
 bun run dev      # http://localhost:5173
 ```
 
-Other scripts:
-
 ```bash
 bun run build    # typecheck + production build
 bun run preview  # serve the production build
@@ -91,13 +106,15 @@ bun run lint     # eslint
 
 ## 4. Routes
 
-| Route        | Access        | Purpose                              |
-| ------------ | ------------- | ------------------------------------ |
-| `/`          | Public        | Landing page                         |
-| `/signup`    | Public        | Create an account                    |
-| `/login`     | Public        | Sign in                              |
-| `/dashboard` | Signed in     | Student dashboard (protected)        |
-| `/admin`     | `admin` role  | Admin area (role-gated)              |
+| Route        | Access       | Purpose                                     |
+| ------------ | ------------ | ------------------------------------------- |
+| `/`          | Public       | Landing page                                |
+| `/catalog`   | Public       | Browse and search the scenario catalog      |
+| `/signup`    | Public       | Create an account                           |
+| `/login`     | Public       | Sign in                                     |
+| `/dashboard` | Signed in    | Your runs, progress, and feedback (protected) |
+| `/workspace` | Signed in    | Your own submissions and material (protected) |
+| `/admin`     | `admin` role | Control room (role-gated)                   |
 
 Refreshing any protected route is safe: Supabase restores the session from
 `localStorage` before the route renders.
@@ -113,8 +130,8 @@ Refreshing any protected route is safe: Supabase restores the session from
   for Supabase and other cross-origin requests so API responses are never cached
 - `src/main.tsx` registers the service worker after `load`
 
-To install: serve the app over HTTPS (or `localhost`), then use your browser's
-*Install app* / *Add to Home Screen* action.
+To install: serve over HTTPS (or `localhost`), then use your browser's *Install
+app* / *Add to Home Screen* action.
 
 Icons are generated by `node scripts/generate-icons.mjs` — re-run it if you
 change the brand mark.
@@ -125,24 +142,27 @@ change the brand mark.
 
 ```
 src/
-  components/     UI building blocks (guards, cards, states, wordmark)
-  layouts/        AppShell (signed-in chrome) and AuthShell
-  pages/          Landing, Login, Signup, Dashboard, Admin, NotFound
-  services/       Supabase auth calls (signUp / signIn / signOut / getProfile)
+  components/     UI building blocks (guards, stage chips, cards, states)
+  layouts/        AppShell (app chrome) and AuthShell
+  pages/          Landing, Catalog, Login, Signup, Dashboard, Workspace, Admin
+  services/       auth calls (Supabase) and the scenario catalog
   hooks/          useAuth
   lib/            supabase client, config check, cn helper
-  types/          Profile, Role
+  types/          Profile, Role, Stage, Scenario
 supabase/
   schema.sql      users table, trigger, and RLS policies
 scripts/
   generate-icons.mjs
 ```
 
+The scenario catalog lives in `src/services/catalog.ts` as typed data. It is
+shaped to lift into a `scenarios` table later without touching the catalog UI.
+
 ---
 
 ## Not built yet (by design)
 
-Hackathon problem management, team creation, the simulation timer, submissions,
-GitHub analysis, AI review, presentation recording, speech-to-text, the adaptive
-AI defense, and the training report. Every module on the dashboard is an honest
-empty state — nothing is faked.
+The build/submit/present/defend/report stages, the simulation clock, team
+management, GitHub analysis, AI review and questioning, screen recording,
+speech-to-text, and workspace uploads. Every surface is an honest empty state —
+nothing is stubbed to look finished.

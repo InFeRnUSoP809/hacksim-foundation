@@ -40,9 +40,17 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --color-signal: var(--signal);
 
-  /* HackSim design tokens */
+  /* HackSim brand + stage system */
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-stage-build: var(--stage-build);
+  --color-stage-submit: var(--stage-submit);
+  --color-stage-present: var(--stage-present);
+  --color-stage-defend: var(--stage-defend);
+  --color-stage-report: var(--stage-report);
+
   --font-sans:
     "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
@@ -52,95 +60,114 @@
 }
 
 /* CHANGE VALUES FOR THEME
-   Clean, spacious, professional, distraction-free.
-   Neutral ink-on-paper base with a single restrained signal accent. */
+   Clean and minimal, premium and serious, bold and colourful.
+   The neutral ink-on-paper base keeps it serious; each stage of the
+   simulation owns one flat, confident hue, so colour carries meaning
+   instead of decoration. */
 :root {
-  --radius: 0.5rem;
+  --radius: 0.625rem;
 
-  --background: oklch(0.985 0 0);
-  --foreground: oklch(0.16 0.005 260);
+  --background: oklch(0.99 0 0);
+  --foreground: oklch(0.16 0.012 268);
 
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.16 0.005 260);
+  --card-foreground: oklch(0.16 0.012 268);
 
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.16 0.005 260);
+  --popover-foreground: oklch(0.16 0.012 268);
 
-  --primary: oklch(0.19 0.006 260);
+  --primary: oklch(0.2 0.02 268);
   --primary-foreground: oklch(0.99 0 0);
 
-  --secondary: oklch(0.968 0.002 260);
-  --secondary-foreground: oklch(0.24 0.006 260);
+  --secondary: oklch(0.972 0.004 268);
+  --secondary-foreground: oklch(0.26 0.014 268);
 
-  --muted: oklch(0.968 0.002 260);
-  --muted-foreground: oklch(0.52 0.008 260);
+  --muted: oklch(0.972 0.004 268);
+  --muted-foreground: oklch(0.53 0.012 268);
 
-  --accent: oklch(0.968 0.012 168);
-  --accent-foreground: oklch(0.26 0.045 168);
+  --accent: oklch(0.955 0.017 268);
+  --accent-foreground: oklch(0.3 0.06 268);
 
-  --destructive: oklch(0.58 0.19 26);
+  --destructive: oklch(0.58 0.21 27);
 
-  --border: oklch(0.915 0.003 260);
-  --input: oklch(0.915 0.003 260);
-  --ring: oklch(0.19 0.006 260);
+  --border: oklch(0.915 0.006 268);
+  --input: oklch(0.915 0.006 268);
+  --ring: oklch(0.2 0.02 268);
 
-  /* Signal colour — used sparingly for live/ready status only. */
-  --signal: oklch(0.6 0.13 168);
+  /* Brand — a deep electric indigo. Serious, but unmistakably colourful. */
+  --brand: oklch(0.52 0.22 268);
+  --brand-foreground: oklch(0.99 0 0);
+  --brand-soft: oklch(0.955 0.028 268);
 
-  --chart-1: oklch(0.6 0.13 168);
-  --chart-2: oklch(0.55 0.12 235);
-  --chart-3: oklch(0.62 0.13 75);
-  --chart-4: oklch(0.58 0.14 300);
-  --chart-5: oklch(0.55 0.11 25);
+  /* Stage system — one hue per stage of the simulation. */
+  --stage-build: oklch(0.6 0.19 248);
+  --stage-submit: oklch(0.72 0.17 62);
+  --stage-present: oklch(0.63 0.22 18);
+  --stage-defend: oklch(0.57 0.23 302);
+  --stage-report: oklch(0.65 0.17 152);
+
+  --chart-1: var(--stage-build);
+  --chart-2: var(--stage-submit);
+  --chart-3: var(--stage-present);
+  --chart-4: var(--stage-defend);
+  --chart-5: var(--stage-report);
 
   --sidebar: oklch(1 0 0);
-  --sidebar-foreground: oklch(0.16 0.005 260);
-  --sidebar-primary: oklch(0.19 0.006 260);
+  --sidebar-foreground: oklch(0.16 0.012 268);
+  --sidebar-primary: oklch(0.2 0.02 268);
   --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.968 0.002 260);
-  --sidebar-accent-foreground: oklch(0.19 0.006 260);
-  --sidebar-border: oklch(0.915 0.003 260);
-  --sidebar-ring: oklch(0.19 0.006 260);
+  --sidebar-accent: oklch(0.972 0.004 268);
+  --sidebar-accent-foreground: oklch(0.2 0.02 268);
+  --sidebar-border: oklch(0.915 0.006 268);
+  --sidebar-ring: oklch(0.2 0.02 268);
 }
 
 .dark {
-  --background: oklch(0.17 0.005 260);
-  --foreground: oklch(0.97 0 0);
+  --background: oklch(0.16 0.012 268);
+  --foreground: oklch(0.98 0 0);
 
-  --card: oklch(0.21 0.006 260);
-  --card-foreground: oklch(0.97 0 0);
+  --card: oklch(0.205 0.014 268);
+  --card-foreground: oklch(0.98 0 0);
 
-  --popover: oklch(0.21 0.006 260);
-  --popover-foreground: oklch(0.97 0 0);
+  --popover: oklch(0.205 0.014 268);
+  --popover-foreground: oklch(0.98 0 0);
 
   --primary: oklch(0.97 0 0);
-  --primary-foreground: oklch(0.19 0.006 260);
+  --primary-foreground: oklch(0.2 0.02 268);
 
-  --secondary: oklch(0.26 0.006 260);
-  --secondary-foreground: oklch(0.97 0 0);
+  --secondary: oklch(0.26 0.014 268);
+  --secondary-foreground: oklch(0.98 0 0);
 
-  --muted: oklch(0.26 0.006 260);
-  --muted-foreground: oklch(0.68 0.008 260);
+  --muted: oklch(0.26 0.014 268);
+  --muted-foreground: oklch(0.7 0.012 268);
 
-  --accent: oklch(0.29 0.035 168);
-  --accent-foreground: oklch(0.9 0.08 168);
+  --accent: oklch(0.29 0.05 268);
+  --accent-foreground: oklch(0.95 0.03 268);
 
-  --destructive: oklch(0.65 0.17 22);
+  --destructive: oklch(0.65 0.2 22);
 
-  --border: oklch(1 0 0 / 11%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.68 0.008 260);
+  --border: oklch(1 0 0 / 12%);
+  --input: oklch(1 0 0 / 16%);
+  --ring: oklch(0.7 0.012 268);
 
-  --signal: oklch(0.72 0.14 168);
+  --brand: oklch(0.66 0.19 268);
+  --brand-foreground: oklch(0.16 0.012 268);
+  --brand-soft: oklch(0.3 0.06 268);
 
-  --sidebar: oklch(0.21 0.006 260);
-  --sidebar-foreground: oklch(0.97 0 0);
+  --stage-build: oklch(0.68 0.16 248);
+  --stage-submit: oklch(0.78 0.15 62);
+  --stage-present: oklch(0.7 0.19 18);
+  --stage-defend: oklch(0.68 0.19 302);
+  --stage-report: oklch(0.74 0.15 152);
+
+  --sidebar: oklch(0.205 0.014 268);
+  --sidebar-foreground: oklch(0.98 0 0);
   --sidebar-primary: oklch(0.97 0 0);
-  --sidebar-primary-foreground: oklch(0.19 0.006 260);
-  --sidebar-accent: oklch(0.26 0.006 260);
-  --sidebar-accent-foreground: oklch(0.97 0 0);
-  --sidebar-border: oklch(1 0 0 / 11%);
-  --sidebar-ring: oklch(0.68 0.008 260);
+  --sidebar-primary-foreground: oklch(0.2 0.02 268);
+  --sidebar-accent: oklch(0.26 0.014 268);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(1 0 0 / 12%);
+  --sidebar-ring: oklch(0.7 0.012 268);
 }
 
 @layer base {
@@ -164,7 +191,7 @@
 }
 
 @layer components {
-  /* Small uppercase mono label — the recurring "technical" texture of the UI. */
+  /* Small uppercase mono label — the recurring technical texture of the UI. */
   .label-mono {
     @apply font-mono text-[11px] font-medium uppercase tracking-[0.14em];
   }

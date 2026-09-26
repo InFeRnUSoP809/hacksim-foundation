@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
  * until there is enough navigation to justify one.
  */
 export function AppShell({ children }: { children: ReactNode }) {
-  const { profile, user, isLoading } = useAuth();
+  const { profile, user, isLoading, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
@@ -31,12 +31,16 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
-  const links = [
-    { to: "/dashboard", label: "Dashboard" },
-    ...(isAdmin(profile)
-      ? [{ to: "/admin", label: "Admin" }]
-      : []),
-  ];
+  // The catalog is public and read-only, so it stays in the nav either way.
+  // Everything else is part of the signed-in experience.
+  const links = isAuthenticated
+    ? [
+        { to: "/dashboard", label: "Dashboard" },
+        { to: "/catalog", label: "Catalog" },
+        { to: "/workspace", label: "Workspace" },
+        ...(isAdmin(profile) ? [{ to: "/admin", label: "Admin" }] : []),
+      ]
+    : [{ to: "/catalog", label: "Catalog" }];
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -66,27 +70,35 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
 
           <div className="flex items-center gap-3">
-            <div className="hidden text-right sm:block">
-              <p className="max-w-[14ch] truncate text-sm font-medium leading-tight">
-                {isLoading ? "…" : displayName}
-              </p>
-              <p className="label-mono mt-0.5 text-muted-foreground">
-                {profile?.role ?? "—"}
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleSignOut}
-              disabled={isSigningOut}
-            >
-              {isSigningOut ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : (
-                <LogOut className="size-3.5" />
-              )}
-              <span className="hidden sm:inline">Sign out</span>
-            </Button>
+            {isAuthenticated ? (
+              <>
+                <div className="hidden text-right sm:block">
+                  <p className="max-w-[14ch] truncate text-sm font-medium leading-tight">
+                    {isLoading ? "…" : displayName}
+                  </p>
+                  <p className="label-mono mt-0.5 text-muted-foreground">
+                    {profile?.role ?? "—"}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSignOut}
+                  disabled={isSigningOut}
+                >
+                  {isSigningOut ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <LogOut className="size-3.5" />
+                  )}
+                  <span className="hidden sm:inline">Sign out</span>
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" asChild>
+                <Link to="/login">Sign in</Link>
+              </Button>
+            )}
           </div>
         </div>
       </header>

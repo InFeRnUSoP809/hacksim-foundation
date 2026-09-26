@@ -73,7 +73,7 @@ export default function Signup() {
   return (
     <AuthShell
       title="Create your account"
-      subtitle="Join HackSim and start training for the real event."
+      subtitle="Join HackSim and rehearse a full hackathon before it counts."
       footer={
         <span>
           Already have an account?{" "}

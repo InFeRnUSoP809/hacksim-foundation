@@ -56,7 +56,7 @@ export default function Login() {
   return (
     <AuthShell
       title="Welcome back"
-      subtitle="Sign in to pick up your training where you left off."
+      subtitle="Sign in to pick up your next run where you left off."
       footer={
         <span>
           Don&rsquo;t have an account?{" "}

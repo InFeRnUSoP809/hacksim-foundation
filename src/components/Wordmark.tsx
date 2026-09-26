@@ -25,7 +25,7 @@ export function Wordmark({
         </span>
         {showTagline && (
           <span className="label-mono mt-1 text-muted-foreground">
-            Practice. Build. Defend.
+            Build. Submit. Defend.
           </span>
         )}
       </span>

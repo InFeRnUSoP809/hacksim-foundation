@@ -1,70 +1,91 @@
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Wordmark } from "@/components/Wordmark";
+import { StageRail } from "@/components/StageChip";
 import { isSupabaseConfigured } from "@/lib/supabase-config";
+import { SCENARIOS } from "@/services/catalog";
 import {
   ArrowRight,
-  Blocks,
-  CheckCircle2,
-  Gauge,
-  LayoutGrid,
-  Lock,
-  MessageSquareQuote,
-  MonitorPlay,
-  Timer,
+  BarChart3,
+  Check,
+  Layers,
+  Mic,
+  Search,
+  ShieldQuestion,
+  Sparkles,
+  SquareArrowOutUpRight,
   TriangleAlert,
 } from "lucide-react";
 import { Link } from "react-router";
 
-const TRAINING_LOOP = [
+const CAPABILITIES = [
   {
-    step: "01",
-    title: "Practice",
-    body: "Run a full hackathon simulation on a real problem statement, with the clock and the pressure you’ll actually face.",
-    icon: Gauge,
+    title: "Run the whole event",
+    body: "Brief, build window, checkpoints, and a hard deadline — the shape of a real weekend, compressed.",
+    icon: Layers,
   },
   {
-    step: "02",
-    title: "Build",
-    body: "Work in teams, checkpoint your progress, and submit a project the way the real event will judge it.",
-    icon: Blocks,
+    title: "Submit your actual work",
+    body: "Bring a repository and a write-up. The review reads what you shipped, not a mock-up.",
+    icon: SquareArrowOutUpRight,
   },
   {
-    step: "03",
-    title: "Defend",
-    body: "Present for five minutes, then face an adaptive AI panel that follows up on your weakest answers.",
-    icon: MessageSquareQuote,
+    title: "Present for five minutes",
+    body: "Screen, camera, and microphone. Rehearse the pitch until the timing is automatic.",
+    icon: Mic,
   },
   {
-    step: "04",
-    title: "Improve",
-    body: "End every session with a training report that tells you exactly what to fix before the next round.",
-    icon: LayoutGrid,
+    title: "Defend it under pressure",
+    body: "An AI panel that follows up on your weakest answers instead of reading a script.",
+    icon: ShieldQuestion,
+  },
+  {
+    title: "Leave with the truth",
+    body: "A written read on the whole run: what held, what didn't, and what to fix before the next one.",
+    icon: BarChart3,
   },
 ];
 
-const FOUNDATION = [
-  "Installable PWA — desktop and mobile",
-  "Supabase email & password authentication",
-  "Persistent sessions across refreshes",
-  "Protected student dashboard",
-  "Role-gated admin area",
-  "Row Level Security on every table",
+const FOR_BUSINESS = [
+  "Give every cohort the same rigorous practice",
+  "Spot who struggles where, before demo day",
+  "Keep practice off your own infrastructure",
 ];
 
 export default function Landing() {
+  const featured = SCENARIOS.filter((scenario) => scenario.featured).slice(
+    0,
+    3,
+  );
+
   return (
     <div className="flex min-h-screen flex-col bg-background">
       {/* ── Navigation ─────────────────────────────────────────────── */}
       <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-sm">
         <div className="mx-auto flex h-16 w-full max-w-6xl items-center justify-between gap-4 px-5 sm:px-8">
-          <Wordmark />
+          <Link to="/" className="shrink-0">
+            <Wordmark />
+          </Link>
+          <nav className="hidden items-center gap-1 md:flex">
+            <a
+              href="#how"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              How it works
+            </a>
+            <Link
+              to="/catalog"
+              className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              Catalog
+            </Link>
+          </nav>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" asChild>
-              <Link to="/login">Login</Link>
+              <Link to="/login">Sign in</Link>
             </Button>
             <Button size="sm" asChild>
-              <Link to="/signup">Create account</Link>
+              <Link to="/signup">Get started</Link>
             </Button>
           </div>
         </div>
@@ -80,27 +101,30 @@ export default function Landing() {
           <div className="relative mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
             <div className="mx-auto max-w-3xl text-center">
               <span className="label-mono inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1.5 text-muted-foreground">
-                <span className="size-1.5 rounded-full bg-signal" />
-                Foundation build · now in private beta
+                <span className="size-1.5 rounded-full bg-stage-report" />
+                The full simulation is coming online
               </span>
 
-              <h1 className="mt-7 text-5xl font-semibold tracking-[-0.035em] text-balance sm:text-6xl lg:text-7xl">
-                HackSim
+              <h1 className="mt-7 text-5xl font-semibold tracking-[-0.04em] text-balance sm:text-6xl lg:text-7xl">
+                Run the whole hackathon
+                <br />
+                <span className="text-brand">before it counts.</span>
               </h1>
 
-              <p className="mx-auto mt-5 max-w-xl text-lg leading-relaxed tracking-[-0.01em] text-muted-foreground sm:text-xl">
-                Practice. Build. Defend. Improve.
+              <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed tracking-[-0.01em] text-muted-foreground sm:text-xl">
+                HackSim takes a team from a raw brief all the way to standing in
+                front of judges — build, submit, present, defend, and get an
+                honest read on the whole thing.
               </p>
 
-              <p className="mx-auto mt-4 max-w-lg text-base leading-relaxed text-muted-foreground">
-                Practice the complete hackathon experience before the real
-                event.
+              <p className="mx-auto mt-4 text-base font-medium tracking-[-0.01em]">
+                Practice. Build. Defend. Improve.
               </p>
 
               <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
                 <Button size="lg" className="w-full sm:w-auto" asChild>
                   <Link to="/signup">
-                    Start Training
+                    Start your first run
                     <ArrowRight className="size-4" />
                   </Link>
                 </Button>
@@ -110,142 +134,141 @@ export default function Landing() {
                   className="w-full sm:w-auto"
                   asChild
                 >
-                  <Link to="/login">Login</Link>
+                  <Link to="/catalog">
+                    <Search className="size-4" />
+                    Browse the catalog
+                  </Link>
                 </Button>
               </div>
 
-              <p className="label-mono mt-6 text-muted-foreground">
-                No credit card · Runs in your browser · Installable
-              </p>
+              {/* The arc, as a colour key */}
+              <div className="mx-auto mt-14 max-w-2xl">
+                <StageRail
+                  active={["build", "submit", "present", "defend", "report"]}
+                />
+              </div>
             </div>
           </div>
         </section>
 
-        {/* ── The training loop ─────────────────────────────────────── */}
-        <section className="border-b border-border">
+        {/* ── How it works ──────────────────────────────────────────── */}
+        <section id="how" className="border-b border-border">
           <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
             <div className="max-w-2xl">
-              <p className="label-mono text-muted-foreground">
-                The training loop
-              </p>
+              <p className="label-mono text-brand">What a run looks like</p>
               <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-                Four stages, one continuous run.
+                Not a quiz. A simulation.
               </h2>
               <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-                HackSim walks a team through the same arc a real hackathon
-                does — from the first idea all the way to standing in front of
-                judges and defending the work.
+                You bring a problem, a clock, and a team. HackSim runs the parts
+                that usually decide how a hackathon goes.
               </p>
             </div>
 
-            <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-4">
-              {TRAINING_LOOP.map(({ step, title, body, icon: Icon }) => (
-                <div
-                  key={step}
-                  className="flex flex-col gap-4 bg-background p-7 transition-colors hover:bg-secondary/40"
+            <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {CAPABILITIES.map(({ title, body, icon: Icon }, index) => (
+                <Card
+                  key={title}
+                  className="flex flex-col gap-4 p-6 transition-colors hover:border-foreground/20"
                 >
                   <div className="flex items-center justify-between">
-                    <Icon className="size-5 text-foreground" />
+                    <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
+                      <Icon className="size-4" />
+                    </div>
                     <span className="label-mono text-muted-foreground">
-                      {step}
+                      {String(index + 1).padStart(2, "0")}
                     </span>
                   </div>
-                  <h3 className="text-base font-semibold tracking-[-0.01em]">
+                  <h3 className="text-[15px] font-semibold tracking-[-0.01em]">
                     {title}
                   </h3>
                   <p className="text-sm leading-relaxed text-muted-foreground">
                     {body}
                   </p>
-                </div>
+                </Card>
               ))}
             </div>
           </div>
         </section>
 
-        {/* ── What ships today ──────────────────────────────────────── */}
-        <section className="border-b border-border bg-secondary/25">
-          <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-            <div className="grid gap-12 lg:grid-cols-2 lg:gap-20">
-              <div>
-                <p className="label-mono text-muted-foreground">
-                  What you can do right now
-                </p>
-                <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-                  The foundation is live.
-                </h2>
-                <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-                  This first build is deliberately small. Everything below
-                  already works today — the training modules land one at a time
-                  after it.
-                </p>
-
-                {!isSupabaseConfigured && (
-                  <div className="mt-6 flex items-start gap-3 rounded-lg border border-destructive/25 bg-destructive/5 p-4">
-                    <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      Supabase isn&rsquo;t configured yet. Add{" "}
-                      <code className="font-mono text-xs text-foreground">
-                        VITE_SUPABASE_URL
-                      </code>{" "}
-                      and{" "}
-                      <code className="font-mono text-xs text-foreground">
-                        VITE_SUPABASE_ANON_KEY
-                      </code>{" "}
-                      to enable sign up and login.
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <Card className="p-7">
-                <ul className="flex flex-col gap-4">
-                  {FOUNDATION.map((item) => (
-                    <li key={item} className="flex items-start gap-3">
-                      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-signal" />
-                      <span className="text-sm leading-relaxed">{item}</span>
-                    </li>
-                  ))}
-                </ul>
-
-                <div className="mt-7 flex items-start gap-3 border-t border-border pt-6">
-                  <MonitorPlay className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    HackSim installs to your desktop or home screen, so your
-                    next session opens like a real app — even offline on the
-                    shell.
-                  </p>
-                </div>
-              </Card>
+        {/* ── For businesses ───────────────────────────────────────── */}
+        <section className="border-b border-border bg-foreground text-background">
+          <div className="mx-auto grid w-full max-w-6xl gap-12 px-5 py-20 sm:px-8 sm:py-24 lg:grid-cols-2 lg:gap-20">
+            <div>
+              <p className="label-mono text-background/50">
+                For teams and programmes
+              </p>
+              <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] text-balance sm:text-4xl">
+                Give your people the practice they never get.
+              </h2>
+              <p className="mt-4 text-base leading-relaxed text-background/70">
+                Most people go into a hackathon having never been questioned on
+                their own work under time pressure. HackSim is where that
+                happens safely, repeatedly, and with a record of what actually
+                needs work.
+              </p>
             </div>
+
+            <ul className="flex flex-col gap-5">
+              {FOR_BUSINESS.map((item) => (
+                <li key={item} className="flex items-start gap-3">
+                  <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-background/15">
+                    <Check className="size-3 text-background" />
+                  </span>
+                  <span className="text-base leading-relaxed">
+                    {item}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
 
-        {/* ── Roadmap preview ───────────────────────────────────────── */}
+        {/* ── Catalog teaser ───────────────────────────────────────── */}
         <section className="border-b border-border">
           <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-            <div className="max-w-2xl">
-              <p className="label-mono text-muted-foreground">Next up</p>
-              <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-                Built one module at a time.
-              </h2>
+            <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
+              <div className="max-w-2xl">
+                <p className="label-mono text-brand">From the catalog</p>
+                <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
+                  Real briefs, real pressure.
+                </h2>
+                <p className="mt-4 text-base leading-relaxed text-muted-foreground">
+                  Every scenario runs the full arc. Pick the stage you most want
+                  to get sharper at.
+                </p>
+              </div>
+              <Button variant="outline" asChild className="shrink-0">
+                <Link to="/catalog">
+                  See all scenarios
+                  <ArrowRight className="size-4" />
+                </Link>
+              </Button>
             </div>
 
-            <div className="mt-12 grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2 lg:grid-cols-3">
-              {[
-                { icon: Timer, title: "Hackathon simulation timer" },
-                { icon: Blocks, title: "Project submission" },
-                { icon: MessageSquareQuote, title: "AI project review" },
-                { icon: MonitorPlay, title: "5-minute presentation" },
-                { icon: MessageSquareQuote, title: "Adaptive AI defense" },
-                { icon: LayoutGrid, title: "Training report" },
-              ].map(({ icon: Icon, title }) => (
-                <div
-                  key={title}
-                  className="flex items-center gap-3 bg-background px-6 py-5"
+            <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {featured.map((scenario) => (
+                <Link
+                  key={scenario.id}
+                  to="/catalog"
+                  className="group flex flex-col gap-4 rounded-xl border border-border bg-card p-6 transition-all hover:border-foreground/25 hover:shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"
                 >
-                  <Icon className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="text-sm font-medium">{title}</span>
-                </div>
+                  <div>
+                    <p className="label-mono text-muted-foreground">
+                      {scenario.sponsor}
+                    </p>
+                    <h3 className="mt-2 text-[17px] font-semibold tracking-[-0.02em]">
+                      {scenario.title}
+                    </h3>
+                  </div>
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    {scenario.summary}
+                  </p>
+                  <StageRail
+                    active={scenario.focus}
+                    className="mt-auto pt-2"
+                  />
+                </Link>
               ))}
             </div>
           </div>
@@ -256,26 +279,44 @@ export default function Landing() {
           <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
             <Card className="flex flex-col items-start gap-6 p-8 sm:p-12">
               <div className="grid size-10 place-items-center rounded-lg border border-border bg-secondary/50">
-                <Lock className="size-4" />
+                <Sparkles className="size-4" />
               </div>
               <div className="max-w-xl">
                 <h2 className="text-2xl font-semibold tracking-[-0.025em] sm:text-3xl">
                   Your first run starts here.
                 </h2>
                 <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-                  Create an account to lock in your place. Training sessions
-                  open as each module ships.
+                  Create an account to lock in your place. Scenarios open as
+                  each stage of the simulation ships.
                 </p>
               </div>
+
+              {!isSupabaseConfigured && (
+                <div className="flex w-full items-start gap-3 rounded-lg border border-destructive/25 bg-destructive/5 p-4">
+                  <TriangleAlert className="mt-0.5 size-4 shrink-0 text-destructive" />
+                  <p className="text-sm leading-relaxed text-muted-foreground">
+                    Supabase isn&rsquo;t configured yet. Add{" "}
+                    <code className="font-mono text-xs text-foreground">
+                      VITE_SUPABASE_URL
+                    </code>{" "}
+                    and{" "}
+                    <code className="font-mono text-xs text-foreground">
+                      VITE_SUPABASE_ANON_KEY
+                    </code>{" "}
+                    to enable accounts and sign-in.
+                  </p>
+                </div>
+              )}
+
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Button size="lg" asChild>
                   <Link to="/signup">
-                    Start Training
+                    Get started
                     <ArrowRight className="size-4" />
                   </Link>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <Link to="/login">Login</Link>
+                  <Link to="/catalog">Browse scenarios</Link>
                 </Button>
               </div>
             </Card>

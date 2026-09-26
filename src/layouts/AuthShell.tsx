@@ -1,4 +1,5 @@
 import { Wordmark } from "@/components/Wordmark";
+import { STAGES } from "@/types";
 import { Link } from "react-router";
 import type { ReactNode } from "react";
 
@@ -51,28 +52,29 @@ export function AuthShell({
 
           <div className="max-w-md">
             <p className="text-3xl font-semibold leading-tight tracking-[-0.03em] text-balance">
-              Practice the complete hackathon experience before the real
-              event.
+              Run the whole hackathon before it counts.
             </p>
             <p className="mt-5 text-base leading-relaxed text-muted-foreground">
-              Practice. Build. Defend. Improve. Every stage of a hackathon,
-              rehearsed end to end.
+              Build. Submit. Present. Defend. Get an honest read on the whole
+              run — every time, before anyone is judging.
             </p>
           </div>
 
-          <div className="grid grid-cols-4 gap-px overflow-hidden rounded-lg border border-border bg-border">
-            {[
-              ["01", "Practice"],
-              ["02", "Build"],
-              ["03", "Defend"],
-              ["04", "Improve"],
-            ].map(([step, label]) => (
-              <div key={step} className="bg-background px-4 py-3">
-                <p className="label-mono text-muted-foreground">{step}</p>
-                <p className="mt-1 text-xs font-medium">{label}</p>
-              </div>
+          <ol className="grid grid-cols-5 gap-px overflow-hidden rounded-lg border border-border bg-border">
+            {STAGES.map((stage, index) => (
+              <li key={stage.id} className="bg-background px-3 py-3">
+                <span
+                  aria-hidden
+                  className="mb-2 block h-1 w-5 rounded-full"
+                  style={{ backgroundColor: stage.hue }}
+                />
+                <p className="label-mono text-muted-foreground">
+                  {String(index + 1).padStart(2, "0")}
+                </p>
+                <p className="mt-1 text-xs font-medium">{stage.label}</p>
+              </li>
             ))}
-          </div>
+          </ol>
         </div>
       </aside>
     </div>

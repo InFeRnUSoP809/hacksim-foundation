@@ -12,7 +12,9 @@ import "./index.css";
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const Login = lazy(() => import("./pages/Login.tsx"));
 const Signup = lazy(() => import("./pages/Signup.tsx"));
+const Catalog = lazy(() => import("./pages/Catalog.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const Workspace = lazy(() => import("./pages/Workspace.tsx"));
 const Admin = lazy(() => import("./pages/Admin.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -135,6 +137,7 @@ createRoot(document.getElementById("root")!).render(
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
+            <Route path="/catalog" element={<Catalog />} />
             <Route
               path="/dashboard"
               element={
@@ -144,6 +147,18 @@ createRoot(document.getElementById("root")!).render(
                   redirectImmediately
                 >
                   <Dashboard />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/workspace"
+              element={
+                <RequireAuth
+                  title="Sign in to open your workspace"
+                  description="Your submissions and material are tied to your account."
+                  redirectImmediately
+                >
+                  <Workspace />
                 </RequireAuth>
               }
             />
