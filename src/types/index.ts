@@ -2,13 +2,15 @@
 export const ROLES = ["student", "admin"] as const;
 export type Role = (typeof ROLES)[number];
 
-/** Row shape of the public `users` table (see supabase/schema.sql). */
+/** Row shape of the public `profiles` table (see supabase/001_profiles.sql). */
 export interface Profile {
   id: string;
   email: string;
-  name: string | null;
+  full_name: string | null;
   role: Role;
+  avatar_url: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export function isAdmin(profile: Profile | null): boolean {
@@ -99,6 +101,7 @@ export const CONTRIBUTION_AREAS = [
   "Product",
   "Hardware",
   "Testing",
+  "Documentation",
   "Other",
 ] as const;
 
@@ -117,16 +120,12 @@ export interface TeamMember {
   team_id: string;
   user_id: string;
   role: string;
-  contribution_description: string;
-  contribution_areas: string[];
-  planned_responsibilities: string;
-  ai_tools: string;
   joined_at: string;
 }
 
 /** A team member joined to the profile fields the UI displays. */
 export interface TeamMemberWithProfile extends TeamMember {
-  name: string | null;
+  full_name: string | null;
   email: string;
 }
 
@@ -134,16 +133,16 @@ export interface TeamMemberWithProfile extends TeamMember {
 
 export const SESSION_STATUSES = [
   "not_started",
-  "active",
-  "paused",
+  "running",
   "break",
   "completed",
   "expired",
+  "submitted",
 ] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 /** Statuses a session can still be resumed from. */
-export const LIVE_STATUSES: SessionStatus[] = ["active", "paused", "break"];
+export const LIVE_STATUSES: SessionStatus[] = ["running", "break"];
 
 export function isLive(status: SessionStatus): boolean {
   return LIVE_STATUSES.includes(status);
@@ -197,12 +196,12 @@ export const CHECKPOINTS: {
   {
     type: "planning",
     label: "Planning",
-    question: "What are you planning to build, and how will you approach it?",
+    question: "What are you planning to build?",
   },
   {
     type: "building",
     label: "Building",
-    question: "What are you currently working on?",
+    question: "What are you currently implementing?",
   },
   {
     type: "progress",
@@ -212,7 +211,7 @@ export const CHECKPOINTS: {
   {
     type: "remaining_work",
     label: "Remaining Work",
-    question: "What still needs to be completed?",
+    question: "What is still left to complete?",
   },
   {
     type: "final_preparation",
@@ -229,4 +228,49 @@ export interface BuildCheckpoint {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ── Submissions ─────────────────────────────────────────────────────────────
+
+export const SUBMISSION_STATUSES = ["draft", "submitted"] as const;
+export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
+
+export interface Submission {
+  id: string;
+  session_id: string;
+  hackathon_id: string;
+  team_id: string;
+  submitted_by: string;
+  project_name: string;
+  project_description: string;
+  github_url: string | null;
+  live_demo_url: string | null;
+  tech_stack: string;
+  key_features: string;
+  status: SubmissionStatus;
+  submitted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One person's contribution and AI disclosure within a submission. */
+export interface SubmissionMember {
+  id: string;
+  submission_id: string;
+  user_id: string;
+  contribution_description: string;
+  contribution_areas: string[];
+  planned_responsibilities: string;
+  ai_tools_used: string;
+  ai_usage_description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A submission member joined to their profile fields. */
+export interface SubmissionMemberWithProfile extends SubmissionMember {
+  full_name: string | null;
+  email: string;
+  /** Their team role, for display alongside the contribution. */
+  team_role: string;
 }

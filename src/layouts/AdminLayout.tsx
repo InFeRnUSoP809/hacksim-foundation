@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { signOut } from "@/services/auth";
 import { cn } from "@/lib/utils";
-import { LayoutGrid, LogOut, Settings2, Users, Boxes, Timer } from "lucide-react";
+import { FileText, LayoutGrid, LogOut, Settings2, Users, Boxes, Timer } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import type { ReactNode } from "react";
@@ -20,6 +20,7 @@ const ADMIN_NAV = [
   { to: "/admin/teams", label: "Teams", icon: Users },
   { to: "/admin/users", label: "Users", icon: Users },
   { to: "/admin/simulations", label: "Simulations", icon: Timer },
+  { to: "/admin/submissions", label: "Submissions", icon: FileText },
   { to: "/admin/settings", label: "Settings", icon: Settings2 },
 ];
 

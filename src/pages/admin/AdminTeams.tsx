@@ -139,10 +139,10 @@ function TeamDetail({
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             {roster.data?.map((member) => (
-              <Card key={member.id} className="flex flex-col gap-4 p-5">
+              <Card key={member.id} className="flex flex-col gap-3 p-5">
                 <div>
                   <p className="text-base font-semibold tracking-[-0.01em]">
-                    {member.name || member.email}
+                    {member.full_name || member.email}
                   </p>
                   <p className="text-sm text-muted-foreground">{member.email}</p>
                 </div>
@@ -152,54 +152,9 @@ function TeamDetail({
                   <p className="mt-1.5 text-sm">{member.role}</p>
                 </div>
 
-                {member.contribution_description && (
-                  <div>
-                    <p className="label-mono text-muted-foreground">
-                      Contribution
-                    </p>
-                    <p className="mt-1.5 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                      {member.contribution_description}
-                    </p>
-                  </div>
-                )}
-
-                {member.contribution_areas.length > 0 && (
-                  <div>
-                    <p className="label-mono text-muted-foreground">
-                      Areas
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {member.contribution_areas.map((area) => (
-                        <span
-                          key={area}
-                          className="label-mono rounded border border-border px-2 py-0.5 text-muted-foreground"
-                        >
-                          {area}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {member.planned_responsibilities && (
-                  <div>
-                    <p className="label-mono text-muted-foreground">
-                      Planned responsibilities
-                    </p>
-                    <p className="mt-1.5 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                      {member.planned_responsibilities}
-                    </p>
-                  </div>
-                )}
-
-                {member.ai_tools && (
-                  <div>
-                    <p className="label-mono text-muted-foreground">AI tools</p>
-                    <p className="mt-1.5 text-sm text-muted-foreground">
-                      {member.ai_tools}
-                    </p>
-                  </div>
-                )}
+                <p className="text-xs text-muted-foreground">
+                  Contribution detail is recorded on the team&rsquo;s submission.
+                </p>
               </Card>
             ))}
           </div>

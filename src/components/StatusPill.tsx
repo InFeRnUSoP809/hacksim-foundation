@@ -4,20 +4,20 @@ import type { HackathonStatus, SessionStatus } from "@/types";
 const SESSION_TONE: Record<SessionStatus, string> = {
   not_started:
     "border-border bg-muted text-muted-foreground",
-  active: "border-stage-report/35 bg-stage-report/10 text-stage-report",
-  paused: "border-stage-submit/35 bg-stage-submit/10 text-stage-submit",
+  running: "border-stage-report/35 bg-stage-report/10 text-stage-report",
   break: "border-stage-submit/35 bg-stage-submit/10 text-stage-submit",
   completed: "border-stage-build/35 bg-stage-build/10 text-stage-build",
   expired: "border-destructive/35 bg-destructive/10 text-destructive",
+  submitted: "border-stage-defend/35 bg-stage-defend/10 text-stage-defend",
 };
 
 const SESSION_LABEL: Record<SessionStatus, string> = {
   not_started: "Not started",
-  active: "Active",
-  paused: "Paused",
+  running: "Running",
   break: "On break",
   completed: "Completed",
   expired: "Expired",
+  submitted: "Submitted",
 };
 
 const HACKATHON_TONE: Record<HackathonStatus, string> = {

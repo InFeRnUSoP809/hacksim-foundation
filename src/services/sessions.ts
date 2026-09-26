@@ -89,7 +89,7 @@ export async function getMyActiveSession(): Promise<BuildSession | null> {
     .select(
       "id, hackathon_id, team_id, started_by, started_at, ends_at, break_ends_at, status, created_at, updated_at",
     )
-    .in("status", ["active", "paused", "break"])
+    .in("status", ["running", "break"])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -106,7 +106,7 @@ export async function getMyActiveSession(): Promise<BuildSession | null> {
  */
 export async function setSessionStatus(
   sessionId: string,
-  status: "active" | "break" | "completed",
+  status: "running" | "break" | "completed",
   breakMinutes?: number,
 ): Promise<void> {
   const { error } = await supabase.rpc("set_session_status", {

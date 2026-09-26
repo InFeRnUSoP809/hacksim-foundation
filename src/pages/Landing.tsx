@@ -99,9 +99,8 @@ export default function Landing() {
               </h1>
 
               <p className="mx-auto mt-6 max-w-xl text-lg leading-relaxed tracking-[-0.01em] text-muted-foreground sm:text-xl">
-                HackSim takes a team from a raw brief all the way to standing in
-                front of judges — build, submit, present, defend, and get an
-                honest read on the whole thing.
+                HackSim simulates a real hackathon from building and submission
+                to presentation, AI questioning, and final performance feedback.
               </p>
 
               <p className="mx-auto mt-4 text-base font-medium tracking-[-0.01em]">
@@ -111,7 +110,7 @@ export default function Landing() {
               <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
                 <Button size="lg" className="w-full sm:w-auto" asChild>
                   <Link to="/signup">
-                    Start your first run
+                    Start Hackathon Simulation
                     <ArrowRight className="size-4" />
                   </Link>
                 </Button>
@@ -121,7 +120,7 @@ export default function Landing() {
                   className="w-full sm:w-auto"
                   asChild
                 >
-                  <a href="#how">See how it works</a>
+                  <Link to="/login">Login</Link>
                 </Button>
               </div>
 
@@ -245,7 +244,7 @@ export default function Landing() {
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Button size="lg" asChild>
                   <Link to="/signup">
-                    Get started
+                    Start Hackathon Simulation
                     <ArrowRight className="size-4" />
                   </Link>
                 </Button>

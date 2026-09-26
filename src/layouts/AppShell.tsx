@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
-  const displayName = profile?.name || user?.email || "Account";
+  const displayName = profile?.full_name || user?.email || "Account";
 
   async function handleSignOut() {
     setIsSigningOut(true);

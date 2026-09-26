@@ -5,7 +5,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { getMyActiveSession } from "@/services/sessions";
 import { signOut } from "@/services/auth";
 import { cn } from "@/lib/utils";
-import { LayoutGrid, LogOut, ScrollText, Timer, Users } from "lucide-react";
+import { FileText, LayoutGrid, LogOut, ScrollText, Timer, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import type { ReactNode } from "react";
@@ -54,6 +54,11 @@ export function StudentLayout({ children }: { children: ReactNode }) {
             to: `/simulation/${activeSessionId}`,
             label: "Simulation",
             icon: Timer,
+          },
+          {
+            to: `/submission/${activeSessionId}`,
+            label: "Submission",
+            icon: FileText,
           },
         ]
       : []),
@@ -113,7 +118,7 @@ export function StudentLayout({ children }: { children: ReactNode }) {
             HackSim · Practice. Build. Defend. Improve.
           </p>
           <p className="text-xs text-muted-foreground">
-            {profile?.name || user?.email || "—"}
+            {profile?.full_name || user?.email || "—"}
           </p>
         </div>
       </footer>

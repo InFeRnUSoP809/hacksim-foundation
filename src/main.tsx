@@ -17,12 +17,14 @@ const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const HackathonPage = lazy(() => import("./pages/HackathonPage.tsx"));
 const MyTeam = lazy(() => import("./pages/MyTeam.tsx"));
 const Simulation = lazy(() => import("./pages/Simulation.tsx"));
+const SubmissionPage = lazy(() => import("./pages/SubmissionPage.tsx"));
 const Workspace = lazy(() => import("./pages/Workspace.tsx"));
 const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.tsx"));
 const AdminHackathons = lazy(() => import("./pages/admin/AdminHackathons.tsx"));
 const AdminTeams = lazy(() => import("./pages/admin/AdminTeams.tsx"));
 const AdminUsers = lazy(() => import("./pages/admin/AdminUsers.tsx"));
 const AdminSimulations = lazy(() => import("./pages/admin/AdminSimulations.tsx"));
+const AdminSubmissions = lazy(() => import("./pages/admin/AdminSubmissions.tsx"));
 const AdminSettings = lazy(() => import("./pages/admin/AdminSettings.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -183,6 +185,14 @@ createRoot(document.getElementById("root")!).render(
               }
             />
             <Route
+              path="/submission/:sessionId"
+              element={
+                <RequireAuth redirectImmediately>
+                  <SubmissionPage />
+                </RequireAuth>
+              }
+            />
+            <Route
               path="/workspace"
               element={
                 <RequireAuth
@@ -231,6 +241,14 @@ createRoot(document.getElementById("root")!).render(
               element={
                 <RequireAdmin>
                   <AdminSimulations />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/submissions"
+              element={
+                <RequireAdmin>
+                  <AdminSubmissions />
                 </RequireAdmin>
               }
             />

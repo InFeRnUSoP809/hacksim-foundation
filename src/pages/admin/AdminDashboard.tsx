@@ -12,6 +12,7 @@ import {
   Activity,
   Boxes,
   CheckCircle2,
+  FileText,
   Users,
   UsersRound,
 } from "lucide-react";
@@ -23,6 +24,7 @@ interface AdminStats {
   teams: number;
   active_sessions: number;
   completed_sessions: number;
+  submissions: number;
 }
 
 /** Counts come from a database function, so the overview is one round trip. */
@@ -132,7 +134,7 @@ export default function AdminDashboard() {
           </div>
 
           {/* ── Counts ─────────────────────────────────────────── */}
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <StatCard
               label="Active simulations"
               value={counts.data?.active_sessions ?? 0}
@@ -147,6 +149,11 @@ export default function AdminDashboard() {
               label="Teams"
               value={counts.data?.teams ?? 0}
               icon={UsersRound}
+            />
+            <StatCard
+              label="Submissions"
+              value={counts.data?.submissions ?? 0}
+              icon={FileText}
             />
             <StatCard
               label="Users"

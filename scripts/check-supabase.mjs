@@ -62,7 +62,7 @@ console.log(
 console.log("");
 let tableRes;
 try {
-  tableRes = await fetch(`${SUPABASE_URL}/rest/v1/users?select=id&limit=1`, {
+  tableRes = await fetch(`${SUPABASE_URL}/rest/v1/profiles?select=id&limit=1`, {
     headers,
   });
 } catch (err) {
@@ -71,14 +71,15 @@ try {
 }
 
 if (tableRes.status === 404) {
-  console.log("FAIL  Schema — the public.users table does not exist yet.");
-  console.log("      Run supabase/schema.sql in Supabase → SQL Editor, then:");
-  console.log("        update public.users set role = 'admin' where email = 'you@example.com';");
+  console.log("FAIL  Schema — the public.profiles table does not exist yet.");
+  console.log("      Run supabase/001_profiles.sql (then 002 and 003) in the SQL Editor,");
+  console.log("      then promote yourself:");
+  console.log("        update public.profiles set role = 'admin' where email = 'you@example.com';");
   process.exit(0);
 }
 
 if (tableRes.status === 401 || tableRes.status === 403) {
-  console.log("FAIL  Schema — the users table exists but the anon key cannot reach it.");
+  console.log("FAIL  Schema — the profiles table exists but the anon key cannot reach it.");
   process.exit(0);
 }
 
@@ -89,23 +90,26 @@ show(
   "Schema",
   exists,
   exists
-    ? "public.users exists and is reachable (RLS correctly returns nothing to anon)"
+    ? "public.profiles exists and is reachable (RLS correctly returns nothing to anon)"
     : `unexpected response (HTTP ${tableRes.status})`,
 );
 
-// 5. Phase 2/3 tables. All read-only, and all empty for an anon caller.
+// 5. Every application table. All read-only, and all empty for an anon caller.
 if (exists) {
   console.log("");
-  const PHASE2_TABLES = [
+  const TABLES = [
     "hackathons",
     "teams",
     "team_members",
     "build_sessions",
     "build_checkpoints",
+    "submissions",
+    "submission_members",
+    "submission_events",
   ];
   const missing = [];
 
-  for (const table of PHASE2_TABLES) {
+  for (const table of TABLES) {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/${table}?select=*&limit=1`,
       { headers },
@@ -120,9 +124,9 @@ if (exists) {
 
   if (missing.length > 0) {
     console.log(
-      `\nRun supabase/phase2.sql in Supabase → SQL Editor. Missing: ${missing.join(", ")}`,
+      `\nMissing tables: ${missing.join(", ")}. Run 001 → 002 → 003 in the Supabase SQL Editor.`,
     );
   } else {
-    console.log("\nAll Phase 2 tables are present. Admin and student flows can run.");
+    console.log("\nEvery application table is present. Phases 1–4 can run end to end.");
   }
 }

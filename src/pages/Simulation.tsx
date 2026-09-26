@@ -74,7 +74,7 @@ export default function Simulation() {
     );
   }
 
-  async function handleStatus(status: "break" | "active" | "completed") {
+  async function handleStatus(status: "break" | "running" | "completed") {
     if (!sessionId) return;
     setActionError(null);
 
@@ -117,7 +117,7 @@ export default function Simulation() {
     }
   }
 
-  const isLive = clock.status === "active" || clock.status === "paused";
+  const isLive = clock.status === "running";
   const onBreak = clock.status === "break";
   const finished = clock.status === "completed" || clock.status === "expired";
 
@@ -249,7 +249,7 @@ export default function Simulation() {
               bar keeps counting down.
             </p>
             <Button
-              onClick={() => void handleStatus("active")}
+              onClick={() => void handleStatus("running")}
               disabled={isMutating}
             >
               {isMutating ? (
@@ -307,23 +307,11 @@ export default function Simulation() {
                         className="border-b border-border pb-3 last:border-0 last:pb-0"
                       >
                         <p className="text-sm font-medium">
-                          {member.name || member.email}
+                          {member.full_name || member.email}
                         </p>
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {member.role}
                         </p>
-                        {member.contribution_areas.length > 0 && (
-                          <div className="mt-1.5 flex flex-wrap gap-1">
-                            {member.contribution_areas.map((area) => (
-                              <span
-                                key={area}
-                                className="label-mono rounded border border-border px-1.5 py-0.5 text-muted-foreground"
-                              >
-                                {area}
-                              </span>
-                            ))}
-                          </div>
-                        )}
                       </li>
                     ))}
                   </ul>

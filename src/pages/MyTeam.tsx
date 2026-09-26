@@ -5,25 +5,30 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useAuth } from "@/hooks/use-auth";
 import { useAsync } from "@/hooks/use-async";
-import { cn } from "@/lib/utils";
 import { friendlyError } from "@/services/errors";
+import { getMyActiveSession } from "@/services/sessions";
 import {
   addTeamMember,
   createTeam,
   getMyTeam,
   getTeamRoster,
   leaveTeam,
-  updateMyContribution,
+  updateMemberRole,
 } from "@/services/teams";
-import { UserPlus, Loader2, LogOut } from "lucide-react";
+import { FileText, Loader2, LogOut, UserPlus } from "lucide-react";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import {
   CONTRIBUTION_AREAS,
-  type ContributionArea,
   type Team,
   type TeamMemberWithProfile,
 } from "@/types";
@@ -119,7 +124,7 @@ function CreateTeam({ onCreated }: { onCreated: () => void }) {
       <div>
         <p className="label-mono text-brand">Your team</p>
         <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">
-          Create your team
+          You haven't joined a team yet.
         </h1>
         <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground">
           A simulation is run by a team. Create one now, or ask somebody else to
@@ -178,7 +183,7 @@ function TeamView({
   onLeave: () => Promise<void>;
   confirm: ReturnType<typeof useConfirmDialog>;
 }) {
-  const me = roster.find((member) => member.user_id === currentUserId);
+  const session = useAsync(() => getMyActiveSession(), []);
 
   async function handleLeave() {
     const confirmed = await confirm.ask({
@@ -216,84 +221,114 @@ function TeamView({
         </div>
       )}
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-[1fr_1.1fr]">
-        {/* Members */}
-        <div>
-          <h2 className="text-sm font-semibold tracking-[-0.01em]">Members</h2>
-          {isLoadingRoster ? (
-            <LoadingState label="Loading members" />
-          ) : (
-            <ul className="mt-4 flex flex-col gap-3">
-              {roster.map((member) => (
-                <li key={member.id}>
-                  <Card className="p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {member.name || member.email}
-                          {member.user_id === currentUserId && (
-                            <span className="label-mono ml-2 text-muted-foreground">
-                              You
-                            </span>
-                          )}
-                        </p>
-                        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                          {member.role}
-                        </p>
-                      </div>
-                    </div>
-                    {member.contribution_description && (
-                      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-                        {member.contribution_description}
-                      </p>
-                    )}
-                    {member.contribution_areas.length > 0 && (
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
-                        {member.contribution_areas.map((area) => (
-                          <span
-                            key={area}
-                            className="label-mono rounded border border-border px-1.5 py-0.5 text-muted-foreground"
-                          >
-                            {area}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </Card>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <AddMember teamId={team.id} onAdded={onChanged} />
+      {/* Contribution lives with the submission, so it is edited there. */}
+      <Card className="mt-8 flex flex-col items-start gap-3 p-6">
+        <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
+          <FileText className="size-4 text-muted-foreground" />
         </div>
-
-        {/* Own contribution */}
         <div>
-          <h2 className="text-sm font-semibold tracking-[-0.01em]">
+          <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
             Your contribution
           </h2>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            Tell the team what you are taking on. Nothing here is scored yet.
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
+            Each member describes what they built, which areas they covered, and
+            any AI tools they used. It is recorded on the submission, so nobody
+            can change it after the team submits.
           </p>
-          <div className="mt-4">
-            {me ? (
-              <ContributionForm
-                teamId={team.id}
-                member={me}
-                onSaved={onChanged}
-              />
-            ) : (
-              <Card className="p-5">
-                <p className="text-sm text-muted-foreground">
-                  Loading your details…
-                </p>
-              </Card>
-            )}
-          </div>
         </div>
+        {session.data ? (
+          <Button size="sm" variant="outline" asChild>
+            <Link to={`/submission/${session.data.id}`}>
+              Open the submission
+            </Link>
+          </Button>
+        ) : (
+          <Button size="sm" variant="outline" disabled>
+            Available once your simulation starts
+          </Button>
+        )}
+      </Card>
+
+      <div className="mt-8">
+        <h2 className="text-sm font-semibold tracking-[-0.01em]">Members</h2>
+        {isLoadingRoster ? (
+          <LoadingState label="Loading members" />
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {roster.map((member) => (
+              <li key={member.id}>
+                <Card className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">
+                      {member.full_name || member.email}
+                      {member.user_id === currentUserId && (
+                        <span className="label-mono ml-2 text-muted-foreground">
+                          You
+                        </span>
+                      )}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {member.email}
+                    </p>
+                  </div>
+                  <div className="shrink-0">
+                    <RoleSelect
+                      teamId={team.id}
+                      member={member}
+                      onChanged={onChanged}
+                    />
+                  </div>
+                </Card>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <AddMember teamId={team.id} onAdded={onChanged} />
       </div>
     </>
+  );
+}
+
+// ── Role ────────────────────────────────────────────────────────────────────
+
+function RoleSelect({
+  teamId,
+  member,
+  onChanged,
+}: {
+  teamId: string;
+  member: TeamMemberWithProfile;
+  onChanged: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleChange(role: string) {
+    setError(null);
+    try {
+      await updateMemberRole(teamId, member.user_id, role);
+      onChanged();
+    } catch (err) {
+      setError(friendlyError(err));
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Select value={member.role} onValueChange={(v) => void handleChange(v)}>
+        <SelectTrigger className="w-[160px]" aria-label={`Role for ${member.email}`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {CONTRIBUTION_AREAS.map((area) => (
+            <SelectItem key={area} value={area}>
+              {area}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+    </div>
   );
 }
 
@@ -356,161 +391,6 @@ function AddMember({
         <Button type="submit" size="sm" variant="outline" disabled={isSaving}>
           {isSaving && <Loader2 className="size-3.5 animate-spin" />}
           Add to team
-        </Button>
-      </form>
-    </Card>
-  );
-}
-
-// ── Contribution ────────────────────────────────────────────────────────────
-
-function ContributionForm({
-  teamId,
-  member,
-  onSaved,
-}: {
-  teamId: string;
-  member: TeamMemberWithProfile;
-  onSaved: () => void;
-}) {
-  const [role, setRole] = useState(member.role);
-  const [description, setDescription] = useState(member.contribution_description);
-  const [areas, setAreas] = useState<string[]>(member.contribution_areas);
-  const [responsibilities, setResponsibilities] = useState(
-    member.planned_responsibilities,
-  );
-  const [aiTools, setAiTools] = useState(member.ai_tools);
-
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  function toggleArea(area: ContributionArea) {
-    setSaved(false);
-    setAreas((current) =>
-      current.includes(area)
-        ? current.filter((item) => item !== area)
-        : [...current, area],
-    );
-  }
-
-  async function handleSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setIsSaving(true);
-    try {
-      await updateMyContribution(teamId, {
-        role,
-        contributionDescription: description,
-        contributionAreas: areas,
-        plannedResponsibilities: responsibilities,
-        aiTools,
-      });
-      setSaved(true);
-      onSaved();
-    } catch (err) {
-      setError(friendlyError(err));
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  return (
-    <Card className="p-6">
-      <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="role">Role</Label>
-          <select
-            id="role"
-            value={role}
-            onChange={(event) => {
-              setRole(event.target.value);
-              setSaved(false);
-            }}
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-          >
-            {CONTRIBUTION_AREAS.map((area) => (
-              <option key={area} value={area}>
-                {area}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="description">Contribution description</Label>
-          <Textarea
-            id="description"
-            rows={3}
-            value={description}
-            onChange={(event) => {
-              setDescription(event.target.value);
-              setSaved(false);
-            }}
-            placeholder="I will build the inventory prediction API."
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label>Contribution areas</Label>
-          <div className="flex flex-wrap gap-2">
-            {CONTRIBUTION_AREAS.map((area) => {
-              const selected = areas.includes(area);
-              return (
-                <button
-                  key={area}
-                  type="button"
-                  onClick={() => toggleArea(area)}
-                  aria-pressed={selected}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
-                    selected
-                      ? "border-brand bg-brand/10 text-brand"
-                      : "border-border text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {area}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="responsibilities">Planned responsibilities</Label>
-          <Textarea
-            id="responsibilities"
-            rows={3}
-            value={responsibilities}
-            onChange={(event) => {
-              setResponsibilities(event.target.value);
-              setSaved(false);
-            }}
-            placeholder="Model training, the prediction service, and integration with the dashboard."
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="ai-tools">AI tools used or expected</Label>
-          <Input
-            id="ai-tools"
-            value={aiTools}
-            onChange={(event) => {
-              setAiTools(event.target.value);
-              setSaved(false);
-            }}
-            placeholder="Gemini, GitHub Copilot"
-          />
-        </div>
-
-        {error && <p className="text-xs text-destructive">{error}</p>}
-        {saved && !error && (
-          <p className="text-xs text-stage-report">Saved.</p>
-        )}
-
-        <Button type="submit" size="sm" disabled={isSaving}>
-          {isSaving && <Loader2 className="size-3.5 animate-spin" />}
-          Save contribution
         </Button>
       </form>
     </Card>

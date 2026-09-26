@@ -2,76 +2,101 @@
 
 **Practice. Build. Defend. Improve.**
 
-HackSim runs a complete simulated hackathon: a team takes a brief, builds against
-the clock, submits real work, presents it in five minutes, defends it against an
-AI panel, and leaves with an honest written read on the whole run.
+HackSim simulates a real hackathon — from building and submission through to
+presentation, AI questioning, and final performance feedback — so students can
+practise the complete experience before the real event.
 
-HackSim has two clearly separated surfaces:
+This repository covers **Phases 1–4**:
 
-- **Admin — Control.** Manage hackathons, practice availability, teams, users,
-  and simulations.
-- **Student — Experience.** See the open practice hackathon, form a team, define
-  your contribution, and run the timed build.
+| Phase | What it delivers |
+| --- | --- |
+| 1 | Foundation: PWA, Supabase Auth, profiles, protected routes, theme |
+| 2 | Hackathon configuration, practice toggle, teams, contribution info |
+| 3 | Timed simulation, authoritative clock, checkpoints, breaks |
+| 4 | Project submission, per-member contributions, AI disclosure, locking |
 
 ---
 
 ## Tech stack
 
-| Layer      | Choice                                             |
-| ---------- | -------------------------------------------------- |
-| Frontend   | React 19, TypeScript, Vite, Tailwind CSS v4        |
-| Database   | Supabase PostgreSQL                                |
-| Auth       | Supabase Auth (email + password)                   |
-| Storage    | Supabase Storage — reserved for the workspace      |
-| PWA        | Web app manifest + service worker, installable      |
+| Layer | Choice |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite, Tailwind CSS v4, React Router |
+| Backend | FastAPI (Python) — optional, see [API](#api) |
+| Database | Supabase PostgreSQL |
+| Auth | Supabase Auth |
+| Storage | Supabase Storage — reserved for the workspace |
+| PWA | Web app manifest + service worker |
 
 ---
 
 ## 1. Environment variables
 
-Set these through your host's environment UI, or a local `.env.local`:
+Set these in your host's environment UI, or a local `.env.local`:
 
 ```bash
 VITE_SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-If they are absent, `src/lib/supabase-config.ts` falls back to committed values so
-the app still connects. Environment variables always take precedence.
+If they are absent, `src/lib/supabase-config.ts` falls back to committed values
+so the app still connects. Environment variables always take precedence.
 
-Only the **anon** key belongs in the frontend. It is safe to ship solely because
-every table has Row Level Security enabled. The **service-role** key must never
-appear in any module that ships to the browser.
+Only the **anon** key belongs in the frontend. It is safe to ship solely
+because every table has Row Level Security enabled.
 
 ---
 
-## 2. Supabase setup
+## 2. Database setup
 
-Run these two files in order, in **Supabase Dashboard → SQL Editor → New query**.
-Both are idempotent, so re-running is safe.
+Run these in order in **Supabase Dashboard → SQL Editor → New query**. Each file
+is idempotent, so re-running is safe.
 
-1. [`supabase/schema.sql`](./supabase/schema.sql) — the `users` table, the signup
-   trigger, and the first RLS policies.
-2. [`supabase/phase2.sql`](./supabase/phase2.sql) — hackathons, teams, sessions,
-   checkpoints, the RPCs, and all Phase 2/3 RLS policies.
+| Order | File | Creates |
+| --- | --- | --- |
+| 1 | `supabase/001_profiles.sql` | `profiles`, signup trigger, RLS |
+| 2 | `supabase/002_hackathons_teams_sessions.sql` | `hackathons`, `teams`, `team_members`, `build_sessions`, `build_checkpoints`, RPCs, RLS |
+| 3 | `supabase/003_submissions.sql` | `submissions`, `submission_members`, `submission_events`, RPCs, RLS |
+| — | `supabase/seed.sql` | *Optional.* A MediStock practice hackathon at 8 hours |
 
-Then promote yourself to admin:
+Then promote yourself to admin. There is deliberately no self-service path:
 
 ```sql
-update public.users set role = 'admin' where email = 'you@example.com';
+update public.profiles set role = 'admin' where email = 'you@example.com';
 ```
 
-Verify everything is in place without touching the app:
+Verify everything landed — this is read-only and creates nothing:
 
 ```bash
 node --experimental-strip-types scripts/check-supabase.mjs
 ```
 
-This is read-only — it creates no users, sessions, or data.
+### Schema
+
+```text
+auth.users
+     │
+     ▼
+profiles
+     ├── teams ──► team_members
+     └── hackathons
+              │
+              ▼
+        build_sessions
+              │
+              ▼
+       build_checkpoints
+              │
+              ▼
+          submissions
+              │
+              ▼
+      submission_members
+```
 
 ---
 
-## 3. Run the project
+## 3. Run the frontend
 
 ```bash
 bun install
@@ -90,94 +115,119 @@ bun run lint     # eslint
 
 ### Student
 
-| Route                  | Purpose                                                 |
-| ---------------------- | ------------------------------------------------------- |
-| `/`                    | Landing page (public)                                    |
-| `/login` `/signup`     | Authentication (public)                                  |
-| `/dashboard`           | Practice status, hackathon preview, start/continue      |
-| `/hackathon`           | The full brief, and the start-simulation confirmation   |
-| `/team`                | Create or join a team, edit your contribution           |
-| `/simulation/:id`      | The build workspace: timer, brief, team, checkpoints    |
+| Route | Purpose |
+| --- | --- |
+| `/` | Landing (public) |
+| `/login` `/signup` | Authentication (public) |
+| `/dashboard` | Practice status, hackathon preview, start or continue |
+| `/hackathon` | The full brief and the start confirmation |
+| `/team` | Create or join a team, set member roles |
+| `/simulation/:sessionId` | Build workspace: timer, brief, team, checkpoints |
+| `/submission/:sessionId` | Draft, contributions, AI disclosure, final submit |
+| `/workspace` | Personal material area |
 
 ### Admin
 
-| Route                | Purpose                                     |
-| -------------------- | ------------------------------------------- |
-| `/admin`             | Practice ON/OFF, current hackathon, counts   |
-| `/admin/hackathons`  | Create, edit, view, archive, toggle practice |
-| `/admin/teams`       | Team list and per-team roster               |
-| `/admin/users`       | Everyone with an account                    |
-| `/admin/simulations` | Every run, with read-only countdowns        |
-| `/admin/settings`    | Theme and break length                      |
+| Route | Purpose |
+| --- | --- |
+| `/admin` | Practice ON/OFF, current hackathon, counts |
+| `/admin/hackathons` | Create, edit, view, archive, toggle practice |
+| `/admin/teams` | Team list and roster |
+| `/admin/users` | Everyone with an account |
+| `/admin/simulations` | Every run, with read-only countdowns |
+| `/admin/submissions` | Every project, with per-member contributions |
+| `/admin/settings` | Theme and break length |
 
-The two surfaces use separate layouts and separate navigation. Student-only and
-admin-only routes are guarded independently.
+The two surfaces use separate layouts and separate navigation, and admin routes
+are denied to students at the route level.
 
 ---
 
 ## 5. How the rules are enforced
 
 The browser only ever holds the anon key, so the database is the only place a
-rule can actually be trusted. Every "the backend must verify" requirement is
-enforced in Postgres, not in React:
+rule can be trusted. Every "the backend must verify" requirement lives in
+Postgres — RLS policies and `SECURITY DEFINER` functions — not in React.
 
 | Rule | Enforced by |
 | --- | --- |
 | Only one practice hackathon | A partial unique index, plus `set_practice_hackathon()` |
-| Students can't manage hackathons | RLS on `hackathons` — no write policy for non-admins |
-| Problem statement hidden when practice is off | The `hackathons` SELECT policy only matches `practice_enabled and status = 'active'` |
-| Only valid teams can start a run | `start_build_session()` re-checks membership |
-| Practice must be on to start | `start_build_session()` re-checks `practice_enabled` |
-| No conflicting simultaneous run | `start_build_session()` checks the team for a live session |
-| Timer cannot be extended | Students have no INSERT/UPDATE policy on `build_sessions`; only the RPCs write |
-| Timer cannot be reset by refresh | `session_state()` computes the countdown from `now()` in Postgres |
-| Changing the device clock does nothing | Remaining time is derived from the server clock, then corrected locally |
-| Checkpoints freeze at expiry | The checkpoint policy requires the session to be `active` |
-| Teammates can see each other | `team_roster()` — a `SECURITY DEFINER` function scoped to one team |
-| Users cannot be enumerated | Invite by email through `add_team_member()`, not by browsing a directory |
-
-Turning practice off stops **new** simulations. A run already in progress keeps
-its `hackathon_id` and continues, and can still read its brief through
-`hackathon_for_session()`. Nothing is ever deleted — hackathons archive, and
-sessions persist.
+| Practice off stops **new** runs | `start_build_session()` re-checks `practice_enabled` |
+| Practice off doesn't stop existing runs | Sessions keep their `hackathon_id`; `hackathon_for_session()` keeps the brief readable |
+| Duration edits don't affect live sessions | `ends_at` is computed once at insert |
+| Timer can't be extended or reset | Students have no INSERT/UPDATE policy on `build_sessions`; only RPCs write |
+| Timer can't be beaten by changing the device clock | `session_state()` computes from `now()` in Postgres |
+| Automatic expiry | `session_state()` self-heals an elapsed run to `expired` |
+| Checkpoints freeze at expiry | The policy requires the session to be `running` |
+| One submission per session | `unique (session_id)` |
+| Submitted projects are read-only | A `BEFORE UPDATE` trigger rejects any change once `status = 'submitted'` |
+| Nobody can self-promote to admin | Signup trigger hard-codes `student`; a second trigger strips role changes |
+| Students can't enumerate users | Invites resolve by email inside `add_team_member()` |
+| Teammates see each other | `team_roster()` / `submission_roster()`, scoped to one team |
 
 ---
 
-## 6. Theme
+## 6. API
 
-Light and dark are both first-class. The choice is read from `localStorage`, and
-falls back to the operating system setting when the user has not chosen. An
-inline script in `index.html` applies the theme before React boots, so there is
-no flash of the wrong colours. The preference is device-local and is never sent
-to Supabase.
+A FastAPI service lives in `backend/`. It is **optional** — the app works
+entirely through the browser, and Postgres remains the source of truth.
+
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+Create `backend/.env` with:
+
+```bash
+APP_ENV=development
+SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
+SUPABASE_ANON_KEY=<your anon key>
+SUPABASE_SERVICE_ROLE_KEY=<server-side only>
+CORS_ORIGINS=http://localhost:5173
+RATE_LIMIT_PER_MINUTE=60
+```
+
+Then:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+It exists for work that genuinely needs a server, and as the home for the
+provider integrations coming in Phases 5–11. It never holds a user session:
+each request is resolved from the caller's Supabase token and executed through
+an RLS-scoped client, so database policies apply to API calls exactly as they
+do to browser calls.
+
+`SUPABASE_SERVICE_ROLE_KEY` is read only here, and only by
+`app/core/security.py`. It is never returned to a client and never bundled.
 
 ---
 
 ## 7. Project structure
 
-```
+```text
 src/
-  components/     UI building blocks (guards, dialogs, cards, states)
+  components/     guards, dialogs, cards, states, theme toggle
   hooks/          useAuth, useAsync, useSessionClock
   layouts/        AdminLayout, StudentLayout, AppShell, AuthShell
-  lib/            supabase client, theme, formatting helpers
+  lib/            supabase client, theme, formatting
   pages/          student routes
   pages/admin/    admin routes
-  services/       Supabase data access, one module per domain
+  services/       one module per domain
   types/          shared domain types and constants
-supabase/
-  schema.sql      phase 1
-  phase2.sql      phase 2 + 3
-scripts/
-  check-supabase.mjs   read-only connectivity + schema check
-  generate-icons.mjs
+supabase/         numbered migrations + seed
+backend/app/      FastAPI service
+scripts/          check-supabase.mjs, generate-icons.mjs
 ```
 
 ---
 
 ## Not built yet (by design)
 
-Project submission, GitHub analysis, AI project review, contribution analysis,
-presentation recording, screen sharing, camera, microphone, speech-to-text, AI
-voice output, AI defense questions, adaptive follow-ups, and the final training
-report. Those belong to Phase 4 and later.
+GitHub code analysis, AI project review, AI contribution scoring, presentation
+recording, screen sharing, camera, microphone, speech-to-text, AI defense, AI
+voice, TTS, adaptive follow-up questions, and the final training report. Those
+belong to Phases 5–11. The database and service layers are structured so each
+can be added without revisiting Phases 1–4.

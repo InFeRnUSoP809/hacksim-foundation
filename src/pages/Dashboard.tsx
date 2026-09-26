@@ -9,7 +9,7 @@ import { getPracticeHackathon } from "@/services/hackathons";
 import { getMyActiveSession } from "@/services/sessions";
 import { getMyTeam } from "@/services/teams";
 import { formatDuration, formatMinutes } from "@/lib/format";
-import { ArrowRight, CircleSlash, Clock, Play, Users } from "lucide-react";
+import { ArrowRight, CircleSlash, Clock, FileText, Play, Users } from "lucide-react";
 import { Link } from "react-router";
 import type { BuildSession, Hackathon, Team } from "@/types";
 
@@ -19,7 +19,7 @@ export default function StudentDashboard() {
   const team = useAsync<Team | null>(() => getMyTeam(), []);
   const session = useAsync<BuildSession | null>(() => getMyActiveSession(), []);
 
-  const firstName = (profile?.name || user?.email || "there").split(" ")[0];
+  const firstName = (profile?.full_name || user?.email || "there").split(" ")[0];
   const hackathon = practice.data ?? null;
   const activeSession = session.data ?? null;
 
@@ -167,6 +167,28 @@ function ActivePractice({
           Time limit {formatDuration(hackathon.simulation_duration_minutes * 60)}{" "}
           · starts the moment you begin
         </p>
+      )}
+
+      {session && (
+        <Card className="mt-4 flex flex-col items-start gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-secondary/50">
+              <FileText className="size-4" />
+            </div>
+            <div>
+              <h3 className="text-[15px] font-semibold tracking-[-0.01em]">
+                Submission
+              </h3>
+              <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+                Record your project, links, and each member&rsquo;s
+                contribution. Locked for good once you submit.
+              </p>
+            </div>
+          </div>
+          <Button size="sm" asChild className="shrink-0">
+            <Link to={`/submission/${session.id}`}>Open submission</Link>
+          </Button>
+        </Card>
       )}
     </>
   );

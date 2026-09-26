@@ -42,6 +42,11 @@ const LONG_FIELDS = [
   { key: "evaluation_criteria", label: "Evaluation criteria", rows: 5 },
 ] as const;
 
+function clamp(value: number, min: number, max: number): number {
+  if (Number.isNaN(value)) return min;
+  return Math.min(Math.max(value, min), max);
+}
+
 export default function AdminHackathons() {
   const hackathons = useAsync<Hackathon[]>(() => listHackathons(), []);
   const practice = useAsync<Hackathon | null>(() => getPracticeHackathon(), []);
@@ -281,6 +286,12 @@ function HackathonForm({
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Derived from the stored minutes value.
+  const durationHours = Math.floor(
+    (draft.simulation_duration_minutes || 0) / 60,
+  );
+  const durationRest = (draft.simulation_duration_minutes || 0) % 60;
+
   function set<K extends keyof HackathonDraft>(
     key: K,
     value: HackathonDraft[K],
@@ -340,7 +351,7 @@ function HackathonForm({
             minLength={2}
             value={draft.name}
             onChange={(event) => set("name", event.target.value)}
-            placeholder="MediStock"
+            placeholder="Give your hackathon a name"
           />
         </div>
 
@@ -365,21 +376,51 @@ function HackathonForm({
 
         <div className="grid gap-6 sm:grid-cols-2">
           <div className="flex flex-col gap-2">
-            <Label htmlFor="duration">Simulation duration (minutes)</Label>
-            <Input
-              id="duration"
-              type="number"
-              min={1}
-              max={10080}
-              required
-              value={draft.simulation_duration_minutes}
-              onChange={(event) =>
-                set("simulation_duration_minutes", Number(event.target.value))
-              }
-            />
+            <Label htmlFor="duration-hours">Simulation duration</Label>
+            {/* Stored as minutes; edited as hours + minutes so an 8-hour
+                event does not look like "480". */}
+            <div className="flex items-center gap-2">
+              <div className="flex flex-1 items-center gap-2">
+                <Input
+                  id="duration-hours"
+                  type="number"
+                  min={0}
+                  max={168}
+                  value={durationHours}
+                  onChange={(event) => {
+                    const hours = clamp(Number(event.target.value), 0, 168);
+                    set(
+                      "simulation_duration_minutes",
+                      hours * 60 + durationRest,
+                    );
+                  }}
+                  aria-label="Duration hours"
+                />
+                <span className="text-sm text-muted-foreground">h</span>
+              </div>
+              <div className="flex flex-1 items-center gap-2">
+                <Input
+                  type="number"
+                  min={0}
+                  max={59}
+                  value={durationRest}
+                  onChange={(event) => {
+                    const rest = clamp(Number(event.target.value), 0, 59);
+                    set(
+                      "simulation_duration_minutes",
+                      durationHours * 60 + rest,
+                    );
+                  }}
+                  aria-label="Duration minutes"
+                />
+                <span className="text-sm text-muted-foreground">m</span>
+              </div>
+            </div>
             <p className="text-xs text-muted-foreground">
               {formatMinutes(draft.simulation_duration_minutes || 0)} of build
-              time. Controls the simulation timer.
+              time, stored as {draft.simulation_duration_minutes} minutes.
+              Changing this never affects a simulation that has already
+              started.
             </p>
           </div>
 
