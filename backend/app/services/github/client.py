@@ -43,7 +43,9 @@ class GitHubError(RuntimeError):
 @dataclass
 class RateLimitState:
     limit: int = 0
-    remaining: int = 0
+    # -1 means "unknown". It must not default to 0: a zero default reads as
+    # "exhausted" and would refuse the very first request of every scan.
+    remaining: int = -1
     reset_epoch: float = 0.0
     # Secondary (abuse) limits are not advertised through headers in a way we
     # can rely on, so we self-impose a small pause after a 403/429.
@@ -51,7 +53,7 @@ class RateLimitState:
 
     @property
     def exhausted(self) -> bool:
-        return self.remaining <= 0 or time.time() < self.cooldown_until
+        return self.remaining == 0 or time.time() < self.cooldown_until
 
     def retry_after(self) -> float:
         if self.cooldown_until > time.time():
@@ -172,13 +174,20 @@ class GitHubClient:
         raise last_error or GitHubError("GitHub request failed.", code="network")
 
     def _read_rate_limit_headers(self, response: httpx.Response) -> None:
+        # A missing header leaves the previous value alone. Treating "absent" as
+        # 0 would mark the client exhausted on any unannotated response.
         try:
-            self.rate_limit.limit = int(response.headers.get("X-RateLimit-Limit", 0))
-            self.rate_limit.remaining = int(
-                response.headers.get("X-RateLimit-Remaining", 0)
-            )
-            reset = int(response.headers.get("X-RateLimit-Reset", 0))
-            self.rate_limit.reset_epoch = float(reset) if reset else 0.0
+            limit = response.headers.get("X-RateLimit-Limit")
+            if limit is not None:
+                self.rate_limit.limit = int(limit)
+
+            remaining = response.headers.get("X-RateLimit-Remaining")
+            if remaining is not None:
+                self.rate_limit.remaining = int(remaining)
+
+            reset = response.headers.get("X-RateLimit-Reset")
+            if reset is not None and int(reset):
+                self.rate_limit.reset_epoch = float(int(reset))
         except (TypeError, ValueError):
             # Malformed headers must never break a scan.
             pass

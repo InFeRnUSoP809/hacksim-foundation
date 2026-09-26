@@ -92,7 +92,7 @@ export default function ProjectReview() {
             Once your repository has been analysed, this page will show how your
             code relates to the brief.
             {!isApiConfigured &&
-              " The analysis service has not been configured on this deployment yet."}
+              " The analysis edge function has not been configured on this deployment yet."}
           </p>
         </Card>
       )}

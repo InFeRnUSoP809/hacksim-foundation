@@ -62,15 +62,15 @@ export default function AdminAI() {
           <Receipt className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
           <div>
             <p className="text-base font-semibold">
-              The HackSim API is not configured
+              Supabase is not configured
             </p>
             <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              AI operations run on the FastAPI service so the DeepSeek key never
-              reaches a browser. Set{" "}
-              <code className="font-mono">VITE_API_URL</code> to the deployed
-              API to enable this page. Repository analysis and review are
-              unaffected in the meantime — nothing else in the admin surface
-              depends on it.
+              AI operations run in a Supabase edge function so the DeepSeek key
+              never reaches a browser. Set{" "}
+              <code className="font-mono">VITE_SUPABASE_URL</code> and{" "}
+              <code className="font-mono">VITE_SUPABASE_ANON_KEY</code> to enable
+              this page. Repository analysis and review are unaffected in the
+              meantime — nothing else in the admin surface depends on it.
             </p>
           </div>
         </Card>

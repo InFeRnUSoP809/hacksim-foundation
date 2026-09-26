@@ -1,16 +1,20 @@
 /**
- * Client for the HackSim FastAPI service (Phase 5 + Phase 6).
+ * Client for HackSim's Phase 5 + Phase 6 services.
  *
- * Repository analysis and AI review have to run server-side: the GitHub and
- * DeepSeek credentials must never reach a browser, and the AI cache and budget
- * counters are only trustworthy in one place.
+ * Repository analysis and AI review run in Supabase Edge Functions, never in the
+ * browser: the GitHub and DeepSeek credentials are edge function secrets, and the
+ * AI cache and budget counters are only trustworthy in one place.
  *
- * The service is optional. Phase 1–4 works entirely through Supabase, so if the
- * API is not deployed, every function here fails with a clear, actionable
- * message instead of a bare network error.
+ * The frontend calls them with `supabase.functions.invoke`, so the caller's JWT
+ * travels in the Authorization header and the platform verifies it before the
+ * function runs. There is no API base URL to configure and no CORS setup.
+ *
+ * Reads that need no model still go straight to the database through RPCs
+ * (`submission_analysis`, `admin_repositories`, …), so the analysis pages keep
+ * working even if the functions are not deployed.
  */
 
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type {
   AiBudgetRow,
   AiModelConfig,
@@ -23,65 +27,67 @@ import type {
   SubmissionAnalysis,
 } from "@/types/analysis";
 
-const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+/**
+ * Whether the Phase 5/6 services can be called at all.
+ *
+ * With edge functions there is no separate API to configure: they live in the
+ * same Supabase project as the app, reached through the same client. This stays
+ * as a named export so the admin pages can keep explaining the state of the
+ * system rather than rendering a button that silently fails.
+ */
+export const isApiConfigured = isSupabaseConfigured;
 
-export class ApiUnavailableError extends Error {
-  constructor() {
-    super(
-      "Repository analysis and AI review run on the HackSim API, which isn't " +
-        "reachable. Everything else keeps working — set VITE_API_URL to the " +
-        "deployed API to enable it.",
-    );
-    this.name = "ApiUnavailableError";
+export class EdgeFunctionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EdgeFunctionError";
   }
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
-async function request<T>(
-  path: string,
-  init: RequestInit & { method?: string } = {},
+/**
+ * Invoke an edge function and normalise its error into a real message. A missing
+ * function returns a bare network error, which would otherwise surface as
+ * "Failed to fetch" and tell the user nothing.
+ */
+async function invoke<T>(
+  name: string,
+  init: { method?: "GET" | "POST"; body?: unknown; query?: Record<string, string> } = {},
 ): Promise<T> {
-  if (!API_BASE) throw new ApiUnavailableError();
+  const query = init.query
+    ? `?${new URLSearchParams(
+        Object.entries(init.query).filter(([, value]) => value !== ""),
+      ).toString()}`
+    : "";
 
-  let response: Response;
+  let response: { data: T | null; error: { message: string } | null };
   try {
-    response = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(await authHeaders()),
-        ...(init.headers ?? {}),
-      },
+    response = await supabase.functions.invoke<T>(`${name}${query}`, {
+      method: init.method ?? "POST",
+      body: init.method === "GET" ? undefined : JSON.stringify(init.body ?? {}),
     });
   } catch {
-    throw new ApiUnavailableError();
+    throw new EdgeFunctionError(
+      `The "${name}" edge function is not reachable. Deploy it with ` +
+        "`supabase functions deploy analysis`.",
+    );
   }
 
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const detail =
-      (body as { detail?: string } | null)?.detail ??
-      `The request failed (HTTP ${response.status}).`;
-    throw new Error(detail);
+  if (response.error) {
+    // supabase-js wraps an HTTP error body; the function's own `detail` is the
+    // useful part.
+    const raw = response.error.message ?? "";
+    const match = raw.match(/"detail"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    throw new EdgeFunctionError(match ? JSON.parse(`"${match[1]}"`) : raw);
   }
-
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  return response.data as T;
 }
-
-export const isApiConfigured = Boolean(API_BASE);
 
 // ── Analysis (Phase 5 + 6) ────────────────────────────────────────────────
 
 /**
  * The full analysis for a submission, read straight from the database via the
- * `submission_analysis` RPC. This works without the API, because the data is
- * already stored.
+ * `submission_analysis` RPC. This works without the edge functions, because the
+ * data is already stored.
  */
 export async function getSubmissionAnalysis(
   submissionId: string,
@@ -94,12 +100,12 @@ export async function getSubmissionAnalysis(
 }
 
 /** §13 — run Phase 5. Deterministic, and costs no AI tokens. */
-export async function analyzeRepository(
-  submissionId: string,
-): Promise<{ status: string; repository_id?: string; file_count?: number }> {
-  return request(`/api/analysis/submissions/${submissionId}/repository`, {
-    method: "POST",
-  });
+export async function analyzeRepository(submissionId: string): Promise<{
+  status: string;
+  repository_id?: string;
+  file_count?: number;
+}> {
+  return invoke("analysis", { body: { action: "repository", submission_id: submissionId } });
 }
 
 /** §42 — run the AI modules. */
@@ -107,29 +113,27 @@ export async function runReview(
   submissionId: string,
   module?: string,
 ): Promise<ReviewRunResult> {
-  const query = module ? `?only_module=${encodeURIComponent(module)}` : "";
-  return request(`/api/analysis/submissions/${submissionId}/review${query}`, {
-    method: "POST",
+  return invoke("analysis", {
+    body: {
+      action: "review",
+      submission_id: submissionId,
+      only_module: module ?? "",
+    },
   });
 }
 
 /** §89 — force a fresh scan, ignoring the commit cache. */
-export async function reanalyzeRepository(
-  submissionId: string,
-): Promise<{ status: string }> {
-  return request(`/api/analysis/submissions/${submissionId}/reanalyze`, {
-    method: "POST",
-  });
+export async function reanalyzeRepository(submissionId: string): Promise<{ status: string }> {
+  return invoke("analysis", { body: { action: "reanalyze", submission_id: submissionId } });
 }
 
 export async function retryModule(
   submissionId: string,
   module: string,
 ): Promise<{ status: string }> {
-  return request(
-    `/api/analysis/submissions/${submissionId}/retry-module?module=${encodeURIComponent(module)}`,
-    { method: "POST" },
-  );
+  return invoke("analysis", {
+    body: { action: "retry-module", submission_id: submissionId, module },
+  });
 }
 
 // ── Admin: repositories and reviews (database-only reads) ─────────────────
@@ -169,10 +173,10 @@ export async function getRepositoryForSubmission(
   return (data as Repository | null) ?? null;
 }
 
-// ── AI operations (admin, API-backed) ────────────────────────────────────
+// ── AI operations (admin) ─────────────────────────────────────────────────
 
 export async function getAiOverview(days = 30): Promise<AiOverview> {
-  return request(`/api/ai/overview?days=${days}`);
+  return invoke("ai-admin", { method: "GET", query: { view: "overview", days: String(days) } });
 }
 
 export async function getAiUsage(
@@ -186,28 +190,32 @@ export async function getAiUsage(
     offset?: number;
   } = {},
 ): Promise<{ rows: AiUsageRow[]; count: number }> {
-  const query = new URLSearchParams();
-  if (params.days) query.set("days", String(params.days));
-  if (params.operation) query.set("operation", params.operation);
-  if (params.model) query.set("model", params.model);
-  if (params.status) query.set("status", params.status);
-  if (params.submissionId) query.set("submission_id", params.submissionId);
-  if (params.limit) query.set("limit", String(params.limit));
-  if (params.offset) query.set("offset", String(params.offset));
-  return request(`/api/ai/usage?${query.toString()}`);
+  return invoke("ai-admin", {
+    method: "GET",
+    query: {
+      view: "usage",
+      days: String(params.days ?? 30),
+      operation: params.operation ?? "",
+      model: params.model ?? "",
+      status: params.status ?? "",
+      submission_id: params.submissionId ?? "",
+      limit: String(params.limit ?? 100),
+      offset: String(params.offset ?? 0),
+    },
+  });
 }
 
 export async function getAiRequest(requestId: string) {
-  return request<{
+  return invoke<{
     request: Record<string, unknown>;
     tokens: Record<string, number>;
     cost: Record<string, number>;
     pricing: Record<string, number>;
-  }>(`/api/ai/requests/${encodeURIComponent(requestId)}`);
+  }>("ai-admin", { method: "GET", query: { view: "request", request_id: requestId } });
 }
 
 export async function getAiErrors(days = 30) {
-  return request<{
+  return invoke<{
     rows: {
       id: string;
       created_at: string;
@@ -220,24 +228,19 @@ export async function getAiErrors(days = 30) {
     }[];
     counts: Record<string, number>;
     total: number;
-  }>(`/api/ai/errors?days=${days}`);
+  }>("ai-admin", { method: "GET", query: { view: "errors", days: String(days) } });
 }
 
 export async function getAiBudgets(): Promise<{ budgets: AiBudgetRow[] }> {
-  return request("/api/ai/budgets");
+  return invoke("ai-admin", { method: "GET", query: { view: "budgets" } });
 }
 
 export async function saveAiBudget(payload: Record<string, unknown>) {
-  return request<{ ok: boolean }>("/api/ai/budgets", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return invoke<{ ok: boolean }>("ai-admin", { body: { view: "budget", payload } });
 }
 
 export async function deleteAiBudget(budgetId: string) {
-  return request<{ ok: boolean }>(`/api/ai/budgets/${budgetId}`, {
-    method: "DELETE",
-  });
+  return invoke<{ ok: boolean }>("ai-admin", { body: { view: "budget-delete", budget_id: budgetId } });
 }
 
 export async function getAiSettingsPage(): Promise<{
@@ -245,28 +248,24 @@ export async function getAiSettingsPage(): Promise<{
   global_budget: Record<string, unknown> | null;
   kill_switch: { ai_enabled: boolean };
 }> {
-  return request("/api/ai/settings");
+  return invoke("ai-admin", { method: "GET", query: { view: "settings" } });
 }
 
 export async function saveAiModel(payload: Record<string, unknown>) {
-  return request<{ ok: boolean }>("/api/ai/settings/models", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return invoke<{ ok: boolean }>("ai-admin", { body: { view: "model", payload } });
 }
 
 /** §55 — the kill switch. Off means no new AI calls. */
 export async function setAiEnabled(enabled: boolean) {
-  return request<{ ok: boolean }>(
-    `/api/ai/settings/kill-switch?enabled=${enabled}`,
-    { method: "POST" },
-  );
+  return invoke<{ ok: boolean; ai_enabled: boolean }>("ai-admin", {
+    body: { view: "kill-switch", enabled },
+  });
 }
 
 export async function getCostForecast(): Promise<CostForecast> {
-  return request("/api/ai/forecast");
+  return invoke("ai-admin", { method: "GET", query: { view: "forecast" } });
 }
 
 export async function getCacheAnalytics(days = 30): Promise<CacheAnalytics> {
-  return request(`/api/ai/cache-analytics?days=${days}`);
+  return invoke("ai-admin", { method: "GET", query: { view: "cache-analytics", days: String(days) } });
 }

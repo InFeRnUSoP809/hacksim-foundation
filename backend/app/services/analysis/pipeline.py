@@ -91,7 +91,11 @@ class AnalysisStore:
                     "language": result.language,
                     "stars": result.stars,
                     "forks": result.forks,
-                    "analysis_status": result.analysis_mode,
+                    # The column's check constraint is ('completed','limited'),
+                    # not the mode names themselves.
+                    "analysis_status": (
+                        "completed" if result.analysis_mode == "full" else "limited"
+                    ),
                     "analysis_version": result.scanner_version,
                     "analysis_mode": result.analysis_mode,
                     "project_map": result.project_map,

@@ -22,7 +22,7 @@ This repository covers **Phases 1–4**:
 | Layer | Choice |
 | --- | --- |
 | Frontend | React 19, TypeScript, Vite, Tailwind CSS v4, React Router |
-| Backend | FastAPI (Python) — optional, see [API](#api) |
+| Backend | Supabase Edge Functions (Deno) — Phase 5 + 6, see [Server-side work](#6-server-side-work) |
 | Database | Supabase PostgreSQL |
 | Auth | Supabase Auth |
 | Storage | Supabase Storage — reserved for the workspace |
@@ -176,55 +176,75 @@ Postgres — RLS policies and `SECURITY DEFINER` functions — not in React.
 
 ---
 
-## 6. API
+## 6. Server-side work
 
-A FastAPI service lives in `backend/`. It is **optional** — the app works
-entirely through the browser, and Postgres remains the source of truth.
+Phase 5 (GitHub repository analysis) and Phase 6 (AI project review) cannot run
+in a browser: the GitHub and DeepSeek credentials must never reach a client, and
+the AI cache and budget counters are only trustworthy in one place. Everything
+else in HackSim is a direct Supabase call from the browser, with Postgres as the
+source of truth.
 
-```bash
-cd backend
-pip install -r requirements.txt
+There are two implementations of that server-side layer. **The edge functions are
+the supported path**; the FastAPI service is kept as a runnable reference.
+
+### 6.1 Supabase Edge Functions (supported)
+
+```
+supabase/functions/
+  analysis/          Phase 5 + Phase 6
+  ai-admin/          §68–§77 AI operations, admin only
+  _shared/
+    http.ts          CORS, caller identity, team guards, service client
+    config.ts        environment-driven settings and hashing
+    github-api.ts    GitHub REST client (cache, retry, rate limit)
+    github.ts        the deterministic scanner (Phase 5)
+    scanner.ts       scan orchestration + persistence
+    requirements.ts  the brief turned into stable REQ/CON/OUT/EVAL ids
+    retrieval.ts     bounded context packets (≤ 6 files, ≤ 120 lines)
+    ai.ts            DeepSeek client + cost, budget and cache gate
+    modules.ts       the four review modules, prompts and validation
+    review.ts        the Phase 6 orchestrator
 ```
 
-Create `backend/.env` with:
+Deploy:
 
 ```bash
-APP_ENV=development
-SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
-SUPABASE_ANON_KEY=<your anon key>
-SUPABASE_SERVICE_ROLE_KEY=<server-side only>
-CORS_ORIGINS=http://localhost:5173
-RATE_LIMIT_PER_MINUTE=60
+supabase link --project-ref <your-project-ref>
+
+# Secrets live in Supabase, not in a .env file.
+supabase secrets set DEEPSEEK_API_KEY=sk-... GITHUB_TOKEN=ghp_...
+
+supabase functions deploy analysis ai-admin
 ```
 
-Then:
+`verify_jwt = true` for both functions (see `supabase/config.toml`). The
+platform verifies the caller's JWT before the function runs, and the function
+re-checks team membership anyway — a valid token proves who you are, not what
+you may touch.
 
-```bash
-uvicorn app.main:app --reload
-```
-
-It exists for work that genuinely needs a server: Phase 5 (GitHub repository
-analysis) and Phase 6 (AI project review) run here, because the GitHub and
-DeepSeek credentials must never reach a browser. It never holds a user session:
-each request is resolved from the caller's Supabase token, and privileged work
-runs through the service client while membership is re-checked server-side.
-
-`SUPABASE_SERVICE_ROLE_KEY` is read only here, and only by
-`app/core/security.py`. It is never returned to a client and never bundled.
-
-### Phase 5 + 6 endpoints
-
-| Method | Path | Purpose |
+| Function | Request | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/analysis/submissions/{id}` | The full analysis payload |
-| `POST` | `/api/analysis/submissions/{id}/repository` | Run the deterministic scanner (0 AI tokens) |
-| `POST` | `/api/analysis/submissions/{id}/review` | Run the AI modules |
-| `POST` | `/api/analysis/submissions/{id}/reanalyze` | Force a fresh scan, bypassing the commit cache |
-| `POST` | `/api/analysis/submissions/{id}/retry-module` | Retry one failed module only |
-| `GET` | `/api/ai/overview` · `/usage` · `/errors` · `/budgets` · `/settings` · `/forecast` · `/cache-analytics` | AI operations (admin only) |
-| `POST` | `/api/ai/settings/kill-switch` | The §55 AI on/off switch |
+| `analysis` | `GET ?submission_id=…` | The full analysis payload |
+| `analysis` | `POST {action:"repository"}` | Run the deterministic scanner (0 AI tokens) |
+| `analysis` | `POST {action:"review", only_module?}` | Run the AI modules |
+| `analysis` | `POST {action:"reanalyze"}` | Force a fresh scan, bypassing the commit cache |
+| `analysis` | `POST {action:"retry-module", module}` | Retry one failed module only |
+| `ai-admin` | `GET ?view=…` | `overview` · `usage` · `errors` · `budgets` · `settings` · `forecast` · `cache-analytics` · `request` |
+| `ai-admin` | `POST {view:…}` | `budget` · `budget-delete` · `model` · `kill-switch` |
 
-### Running the service
+Optional settings, all with sane defaults: `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`,
+`GITHUB_API_BASE`, `GITHUB_MAX_RETRIES`, `ANALYSIS_MAX_FILES`,
+`ANALYSIS_LARGE_REPO_THRESHOLD`, `RETRIEVAL_MAX_FILES`.
+
+Without `DEEPSEEK_API_KEY` Phase 5 still runs in full, and Phase 6 is refused
+with an actionable message rather than failing quietly.
+
+### 6.2 FastAPI service (optional reference)
+
+A FastAPI implementation of the same contract lives in `backend/`. It exposes
+`/api/analysis/*` and `/api/ai/*` with the same behaviour, and is useful as a
+local reference, but it is not the deployed path — nothing in the frontend
+depends on it, and there is no `VITE_API_URL` to set.
 
 ```bash
 cd backend
@@ -232,17 +252,21 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Add these to the environment (never to a `.env` committed to the repo):
+Environment (a local `backend/.env`, never committed):
 
 ```text
+APP_ENV=development
+SUPABASE_URL=…
+SUPABASE_ANON_KEY=…
+SUPABASE_SERVICE_ROLE_KEY=…   # server-side only
+CORS_ORIGINS=http://localhost:5173
 DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-flash
 GITHUB_TOKEN=            # optional, but without it GitHub allows 60 req/hour
-VITE_API_URL=            # frontend: where the service is deployed
 ```
 
-Without `DEEPSEEK_API_KEY` the service still starts: Phase 5 runs in full and
-Phase 6 degrades to deterministic facts only, recording why.
+`SUPABASE_SERVICE_ROLE_KEY` is read only by `app/core/security.py`. It is never
+returned to a client and never bundled.
 
 ### Token discipline
 
@@ -263,13 +287,18 @@ src/
   components/     guards, dialogs, cards, states, analysis views
   hooks/          useAuth, useAsync, useSessionClock
   layouts/        AdminLayout, StudentLayout, AppShell, AuthShell
-  lib/            supabase client, API client, theme, formatting
+  lib/            supabase client, edge-function client, theme, formatting
   pages/          student routes
   pages/admin/    admin routes
   services/       one module per domain
   types/          shared domain types and constants
 supabase/         numbered migrations + seed
-backend/app/
+supabase/functions/
+  analysis/       Phase 5 + Phase 6
+  ai-admin/       AI operations
+  _shared/        http guards, config, GitHub client, scanner,
+                  requirements, retrieval, DeepSeek client, modules, reviewer
+backend/app/      optional FastAPI reference for the same contract
   routers/        analysis, ai_admin, and the Phase 1–4 routers
   services/
     github/       REST client, URL parsing, classification, parsers

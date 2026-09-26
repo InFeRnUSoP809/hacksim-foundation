@@ -172,7 +172,7 @@ export default function AdminSubmissionAnalysis() {
       {!isApiConfigured && (
         <Card className="mt-6 border-dashed p-5">
           <p className="text-sm leading-relaxed text-muted-foreground">
-            The HackSim API is not configured, so analysis and review cannot be
+            Supabase is not configured, so analysis and review cannot be
             started from here. Everything below is read from the database and
             works regardless.
           </p>
