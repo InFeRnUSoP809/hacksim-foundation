@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabase";
-import type { Profile, Role } from "@/types";
+import type { Profile } from "@/types";
 
 export interface SignUpInput {
   email: string;
@@ -66,30 +66,14 @@ export async function signUp({
 
   if (error) throw error;
 
-  // The profile row is normally created by the `on_auth_user_created` trigger
-  // in supabase/schema.sql, which runs with elevated privileges. This insert is
-  // only a best-effort fallback, and RLS deliberately blocks it in the normal
-  // case — so a failure here is expected and harmless.
-  if (data.user && data.session) {
-    const { error: profileError } = await supabase.from("users").upsert(
-      { id: data.user.id, email, name, role: "student" as Role },
-      { onConflict: "id" },
-    );
-    if (profileError) {
-      console.warn(
-        "[hacksim] profile fallback insert skipped (the DB trigger handles this):",
-        profileError.message,
-      );
-    }
-  }
-
+  // The profile row is created by the `on_auth_user_created` trigger in
+  // supabase/001_profiles.sql, which runs with elevated privileges and always
+  // sets role = 'student'. Nothing to do here — inserting from the browser
+  // would only ever be blocked by RLS.
   return { needsEmailConfirmation: !data.session };
 }
 
-export async function signIn({
-  email,
-  password,
-}: SignInInput): Promise<void> {
+export async function signIn({ email, password }: SignInInput): Promise<void> {
   const { error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
 }
@@ -101,8 +85,8 @@ export async function signOut(): Promise<void> {
 
 export async function getProfile(userId: string): Promise<Profile | null> {
   const { data, error } = await supabase
-    .from("users")
-    .select("id, email, name, role, created_at")
+    .from("profiles")
+    .select("id, email, full_name, role, avatar_url, created_at, updated_at")
     .eq("id", userId)
     .maybeSingle();
 

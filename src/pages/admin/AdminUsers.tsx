@@ -11,7 +11,7 @@ import type { Role } from "@/types";
 
 interface AdminUser {
   id: string;
-  name: string | null;
+  full_name: string | null;
   email: string;
   role: Role;
   created_at: string;
@@ -19,13 +19,13 @@ interface AdminUser {
 }
 
 /**
- * Admin can read every row of `users` (the existing RLS policy allows exactly
- * that), so this is a plain select — no elevated function required.
+ * Admin can read every row of `profiles` (the RLS policy allows exactly that),
+ * so this is a plain select — no elevated function required.
  */
 async function loadUsers(): Promise<AdminUser[]> {
   const { data, error } = await supabase
-    .from("users")
-    .select("id, name, email, role, created_at")
+    .from("profiles")
+    .select("id, full_name, email, role, created_at")
     .order("created_at", { ascending: false });
 
   if (error) throw error;
@@ -58,7 +58,9 @@ export default function AdminUsers() {
     <AdminLayout>
       <div>
         <p className="label-mono text-brand">Control</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">Users</h1>
+        <h1 className="mt-2 text-3xl font-semibold tracking-[-0.03em]">
+          Users
+        </h1>
         <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
           Everyone with a HackSim account, and the team they belong to.
         </p>
@@ -109,7 +111,7 @@ export default function AdminUsers() {
                       className="border-b border-border last:border-0"
                     >
                       <td className="px-5 py-3.5 font-medium">
-                        {displayName(user.name, user.email)}
+                        {displayName(user.full_name, user.email)}
                       </td>
                       <td className="px-5 py-3.5 text-muted-foreground">
                         {user.email}

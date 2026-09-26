@@ -1,5 +1,6 @@
-import '@vly-ai/integrations';
+import "@vly-ai/integrations";
 import { Toaster } from "@/components/ui/sonner";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
 import { ThemeProvider } from "@/lib/theme";
@@ -23,8 +24,12 @@ const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.tsx"));
 const AdminHackathons = lazy(() => import("./pages/admin/AdminHackathons.tsx"));
 const AdminTeams = lazy(() => import("./pages/admin/AdminTeams.tsx"));
 const AdminUsers = lazy(() => import("./pages/admin/AdminUsers.tsx"));
-const AdminSimulations = lazy(() => import("./pages/admin/AdminSimulations.tsx"));
-const AdminSubmissions = lazy(() => import("./pages/admin/AdminSubmissions.tsx"));
+const AdminSimulations = lazy(
+  () => import("./pages/admin/AdminSimulations.tsx"),
+);
+const AdminSubmissions = lazy(
+  () => import("./pages/admin/AdminSubmissions.tsx"),
+);
 const AdminSettings = lazy(() => import("./pages/admin/AdminSettings.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -140,131 +145,136 @@ createRoot(document.getElementById("root")!).render(
         <VlyToolbar />
       </ToolbarErrorBoundary>
       <ThemeProvider>
-      <BrowserRouter>
-        <RouteSyncer />
-        <ServiceWorkerRegistrar />
-        <Suspense fallback={<RouteLoading />}>
-          <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/signup" element={<Signup />} />
-            <Route
-              path="/dashboard"
-              element={
-                <RequireAuth
-                  title="Sign in to open your dashboard"
-                  description="Your training progress lives in a HackSim account."
-                  redirectImmediately
-                >
-                  <Dashboard />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/hackathon"
-              element={
-                <RequireAuth redirectImmediately>
-                  <HackathonPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/team"
-              element={
-                <RequireAuth redirectImmediately>
-                  <MyTeam />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/simulation/:sessionId"
-              element={
-                <RequireAuth redirectImmediately>
-                  <Simulation />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/submission/:sessionId"
-              element={
-                <RequireAuth redirectImmediately>
-                  <SubmissionPage />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/workspace"
-              element={
-                <RequireAuth
-                  title="Sign in to open your workspace"
-                  description="Your submissions and material are tied to your account."
-                  redirectImmediately
-                >
-                  <Workspace />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/admin"
-              element={
-                <RequireAdmin>
-                  <AdminDashboard />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/hackathons"
-              element={
-                <RequireAdmin>
-                  <AdminHackathons />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/teams"
-              element={
-                <RequireAdmin>
-                  <AdminTeams />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/users"
-              element={
-                <RequireAdmin>
-                  <AdminUsers />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/simulations"
-              element={
-                <RequireAdmin>
-                  <AdminSimulations />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/submissions"
-              element={
-                <RequireAdmin>
-                  <AdminSubmissions />
-                </RequireAdmin>
-              }
-            />
-            <Route
-              path="/admin/settings"
-              element={
-                <RequireAdmin>
-                  <AdminSettings />
-                </RequireAdmin>
-              }
-            />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
-      <Toaster />
+        {/* Mounted once at the root: both the admin surface and the student
+          workspace ask for confirmations, so a per-layout provider left pages
+          like /hackathon and /team without one. */}
+        <ConfirmDialogProvider>
+          <BrowserRouter>
+            <RouteSyncer />
+            <ServiceWorkerRegistrar />
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
+                <Route path="/" element={<Landing />} />
+                <Route path="/login" element={<Login />} />
+                <Route path="/signup" element={<Signup />} />
+                <Route
+                  path="/dashboard"
+                  element={
+                    <RequireAuth
+                      title="Sign in to open your dashboard"
+                      description="Your training progress lives in a HackSim account."
+                      redirectImmediately
+                    >
+                      <Dashboard />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/hackathon"
+                  element={
+                    <RequireAuth redirectImmediately>
+                      <HackathonPage />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/team"
+                  element={
+                    <RequireAuth redirectImmediately>
+                      <MyTeam />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/simulation/:sessionId"
+                  element={
+                    <RequireAuth redirectImmediately>
+                      <Simulation />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/submission/:sessionId"
+                  element={
+                    <RequireAuth redirectImmediately>
+                      <SubmissionPage />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/workspace"
+                  element={
+                    <RequireAuth
+                      title="Sign in to open your workspace"
+                      description="Your submissions and material are tied to your account."
+                      redirectImmediately
+                    >
+                      <Workspace />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/admin"
+                  element={
+                    <RequireAdmin>
+                      <AdminDashboard />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/hackathons"
+                  element={
+                    <RequireAdmin>
+                      <AdminHackathons />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/teams"
+                  element={
+                    <RequireAdmin>
+                      <AdminTeams />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/users"
+                  element={
+                    <RequireAdmin>
+                      <AdminUsers />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/simulations"
+                  element={
+                    <RequireAdmin>
+                      <AdminSimulations />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/submissions"
+                  element={
+                    <RequireAdmin>
+                      <AdminSubmissions />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/settings"
+                  element={
+                    <RequireAdmin>
+                      <AdminSettings />
+                    </RequireAdmin>
+                  }
+                />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
+          </BrowserRouter>
+          <Toaster />
+        </ConfirmDialogProvider>
       </ThemeProvider>
     </RootErrorBoundary>
   </StrictMode>,

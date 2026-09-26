@@ -1,11 +1,18 @@
-import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { signOut } from "@/services/auth";
 import { cn } from "@/lib/utils";
-import { FileText, LayoutGrid, LogOut, Settings2, Users, Boxes, Timer } from "lucide-react";
+import {
+  FileText,
+  LayoutGrid,
+  LogOut,
+  Settings2,
+  Users,
+  Boxes,
+  Timer,
+} from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import type { ReactNode } from "react";
@@ -40,8 +47,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <ConfirmDialogProvider>
-      <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex min-h-screen flex-col bg-background">
       <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-sm">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between gap-4 px-5 sm:px-8">
           <div className="flex items-center gap-3">
@@ -100,15 +106,12 @@ export function AdminLayout({ children }: { children: ReactNode }) {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-5 py-6 sm:px-8">
-          <p className="label-mono text-muted-foreground">
-            HackSim · Control
-          </p>
+          <p className="label-mono text-muted-foreground">HackSim · Control</p>
           <p className="text-xs text-muted-foreground">
             {profile?.email ?? "—"}
           </p>
         </div>
-        </footer>
-      </div>
-    </ConfirmDialogProvider>
+      </footer>
+    </div>
   );
 }

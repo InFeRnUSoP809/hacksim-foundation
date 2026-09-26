@@ -1,4 +1,4 @@
-import { ConfirmDialogProvider, useConfirmDialog } from "@/components/ConfirmDialog";
+import { useConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -53,9 +53,7 @@ export default function Simulation() {
   );
   const roster = useAsync<TeamMemberWithProfile[]>(
     () =>
-      session.data
-        ? getTeamRoster(session.data.team_id)
-        : Promise.resolve([]),
+      session.data ? getTeamRoster(session.data.team_id) : Promise.resolve([]),
     [session.data?.team_id],
   );
   const checkpoints = useAsync<BuildCheckpoint[]>(
@@ -222,7 +220,9 @@ export default function Simulation() {
         {finished ? (
           <Card className="flex flex-col items-start gap-4 p-8">
             <h1 className="text-2xl font-semibold tracking-[-0.025em]">
-              {clock.status === "expired" ? "Time's Up" : "Simulation Completed"}
+              {clock.status === "expired"
+                ? "Time's Up"
+                : "Simulation Completed"}
             </h1>
             <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
               {clock.status === "expired"
@@ -243,10 +243,12 @@ export default function Simulation() {
             <div className="grid size-10 place-items-center rounded-lg border border-stage-submit/40 bg-stage-submit/10">
               <Coffee className="size-4 text-stage-submit" />
             </div>
-            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Break</h1>
+            <h1 className="text-2xl font-semibold tracking-[-0.025em]">
+              Break
+            </h1>
             <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-              Step away. Your build clock is still running — the timer in the top
-              bar keeps counting down.
+              Step away. Your build clock is still running — the timer in the
+              top bar keeps counting down.
             </p>
             <Button
               onClick={() => void handleStatus("running")}
@@ -354,12 +356,10 @@ export default function Simulation() {
 // ── Shell ───────────────────────────────────────────────────────────────────
 
 function Shell({ children }: { children: React.ReactNode }) {
-  // The simulation uses its own chrome rather than StudentLayout, so it owns
-  // its confirm-dialog provider too.
+  // The simulation uses its own chrome rather than StudentLayout. The confirm
+  // dialog itself is provided once at the app root.
   return (
-    <ConfirmDialogProvider>
-      <div className="flex min-h-screen flex-col bg-background">{children}</div>
-    </ConfirmDialogProvider>
+    <div className="flex min-h-screen flex-col bg-background">{children}</div>
   );
 }
 
@@ -481,7 +481,9 @@ function CheckpointCard({
           </p>
         </div>
         {done && (
-          <span className="label-mono shrink-0 text-stage-report">Complete</span>
+          <span className="label-mono shrink-0 text-stage-report">
+            Complete
+          </span>
         )}
       </div>
 
