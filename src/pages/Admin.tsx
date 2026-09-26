@@ -2,7 +2,6 @@ import { AppShell } from "@/layouts/AppShell";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
-import { SCENARIOS, TRACKS } from "@/services/catalog";
 import {
   Bot,
   FolderGit2,
@@ -19,7 +18,7 @@ const SECTIONS = [
     title: "Scenarios",
     body: "Author briefs, set the clock, weight the stages, and control enrolment.",
     icon: LayoutGrid,
-    meta: `${SCENARIOS.length} published · ${TRACKS.length} tracks`,
+    meta: "Not published",
   },
   {
     title: "People",

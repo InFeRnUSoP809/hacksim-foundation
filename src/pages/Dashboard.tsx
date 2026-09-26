@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAuth } from "@/hooks/use-auth";
 import { isSupabaseConfigured } from "@/lib/supabase-config";
-import { Search, Sparkles, Upload } from "lucide-react";
+import { Rocket, Sparkles, Upload } from "lucide-react";
 import { Link } from "react-router";
 import { STAGES, isAdmin } from "@/types";
 
@@ -127,19 +127,19 @@ export default function Dashboard() {
         <div className="mt-8 grid gap-4 sm:grid-cols-2">
           <Card className="flex flex-col items-start gap-4 p-6">
             <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
-              <Search className="size-4" />
+              <Rocket className="size-4" />
             </div>
             <div>
               <h3 className="text-[15px] font-semibold tracking-[-0.01em]">
-                Find a scenario
+                Start a run
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                Browse the catalog and pick a brief. Enrolment opens with the
-                build stage.
+                Take a brief and start the build window. Enrolment opens with
+                the first stage.
               </p>
             </div>
-            <Button size="sm" variant="outline" asChild>
-              <Link to="/catalog">Open the catalog</Link>
+            <Button size="sm" variant="outline" disabled>
+              Coming soon
             </Button>
           </Card>
 

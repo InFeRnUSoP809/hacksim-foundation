@@ -8,9 +8,8 @@ against an AI panel that follows up on the weakest answers, and leaves with an
 honest written read on the whole run.
 
 This repository is the **foundation build (v0.1)** — an installable PWA with
-working Supabase authentication, a browsable scenario catalog, a personal
-dashboard, a workspace, and a role-gated admin area. The simulation stages ship
-in later builds, one at a time.
+working Supabase authentication, a personal dashboard, a workspace, and a
+role-gated admin area. The simulation stages ship in later builds, one at a time.
 
 ---
 
@@ -51,9 +50,19 @@ VITE_SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
+If they are not set, `src/lib/supabase-config.ts` falls back to the project's
+committed values so the app still connects. Environment variables always win —
+set them here and delete the fallback constants.
+
 Only the **anon** key belongs in the frontend. It is safe to ship solely because
 every table has Row Level Security enabled. The **service-role** key must never
 be referenced from client code.
+
+To confirm the connection without touching the app:
+
+```bash
+node --experimental-strip-types scripts/check-supabase.mjs
+```
 
 If the variables are missing the app still runs — the landing page and dashboard
 show a clear "Supabase isn't connected" notice instead of failing blank.
@@ -109,7 +118,6 @@ bun run lint     # eslint
 | Route        | Access       | Purpose                                     |
 | ------------ | ------------ | ------------------------------------------- |
 | `/`          | Public       | Landing page                                |
-| `/catalog`   | Public       | Browse and search the scenario catalog      |
 | `/signup`    | Public       | Create an account                           |
 | `/login`     | Public       | Sign in                                     |
 | `/dashboard` | Signed in    | Your runs, progress, and feedback (protected) |
@@ -144,25 +152,23 @@ change the brand mark.
 src/
   components/     UI building blocks (guards, stage chips, cards, states)
   layouts/        AppShell (app chrome) and AuthShell
-  pages/          Landing, Catalog, Login, Signup, Dashboard, Workspace, Admin
-  services/       auth calls (Supabase) and the scenario catalog
+  pages/          Landing, Login, Signup, Dashboard, Workspace, Admin
+  services/       auth calls (Supabase)
   hooks/          useAuth
   lib/            supabase client, config check, cn helper
-  types/          Profile, Role, Stage, Scenario
+  types/          Profile, Role, Stage
 supabase/
   schema.sql      users table, trigger, and RLS policies
 scripts/
   generate-icons.mjs
+  check-supabase.mjs   read-only connectivity check
 ```
-
-The scenario catalog lives in `src/services/catalog.ts` as typed data. It is
-shaped to lift into a `scenarios` table later without touching the catalog UI.
 
 ---
 
 ## Not built yet (by design)
 
-The build/submit/present/defend/report stages, the simulation clock, team
-management, GitHub analysis, AI review and questioning, screen recording,
-speech-to-text, and workspace uploads. Every surface is an honest empty state —
-nothing is stubbed to look finished.
+The build/submit/present/defend/report stages, the simulation clock, scenario
+enrolment, team management, GitHub analysis, AI review and questioning, screen
+recording, speech-to-text, and workspace uploads. Every surface is an honest
+empty state — nothing is stubbed to look finished.

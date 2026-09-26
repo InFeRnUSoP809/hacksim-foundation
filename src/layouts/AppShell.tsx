@@ -11,11 +11,12 @@ import { cn } from "@/lib/utils";
 
 /**
  * Chrome for every signed-in screen: a single quiet top bar with the wordmark,
- * the two real destinations, and sign-out. Kept deliberately flat — no sidebar
+ * the real destinations, and sign-out. Only ever rendered behind RequireAuth,
+ * so a visitor is always signed in here. Kept deliberately flat — no sidebar
  * until there is enough navigation to justify one.
  */
 export function AppShell({ children }: { children: ReactNode }) {
-  const { profile, user, isLoading, isAuthenticated } = useAuth();
+  const { profile, user, isLoading } = useAuth();
   const navigate = useNavigate();
   const [isSigningOut, setIsSigningOut] = useState(false);
 
@@ -31,16 +32,11 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
-  // The catalog is public and read-only, so it stays in the nav either way.
-  // Everything else is part of the signed-in experience.
-  const links = isAuthenticated
-    ? [
-        { to: "/dashboard", label: "Dashboard" },
-        { to: "/catalog", label: "Catalog" },
-        { to: "/workspace", label: "Workspace" },
-        ...(isAdmin(profile) ? [{ to: "/admin", label: "Admin" }] : []),
-      ]
-    : [{ to: "/catalog", label: "Catalog" }];
+  const links = [
+    { to: "/dashboard", label: "Dashboard" },
+    { to: "/workspace", label: "Workspace" },
+    ...(isAdmin(profile) ? [{ to: "/admin", label: "Admin" }] : []),
+  ];
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -70,35 +66,27 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
 
           <div className="flex items-center gap-3">
-            {isAuthenticated ? (
-              <>
-                <div className="hidden text-right sm:block">
-                  <p className="max-w-[14ch] truncate text-sm font-medium leading-tight">
-                    {isLoading ? "…" : displayName}
-                  </p>
-                  <p className="label-mono mt-0.5 text-muted-foreground">
-                    {profile?.role ?? "—"}
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleSignOut}
-                  disabled={isSigningOut}
-                >
-                  {isSigningOut ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : (
-                    <LogOut className="size-3.5" />
-                  )}
-                  <span className="hidden sm:inline">Sign out</span>
-                </Button>
-              </>
-            ) : (
-              <Button size="sm" asChild>
-                <Link to="/login">Sign in</Link>
-              </Button>
-            )}
+            <div className="hidden text-right sm:block">
+              <p className="max-w-[14ch] truncate text-sm font-medium leading-tight">
+                {isLoading ? "…" : displayName}
+              </p>
+              <p className="label-mono mt-0.5 text-muted-foreground">
+                {profile?.role ?? "—"}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSignOut}
+              disabled={isSigningOut}
+            >
+              {isSigningOut ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <LogOut className="size-3.5" />
+              )}
+              <span className="hidden sm:inline">Sign out</span>
+            </Button>
           </div>
         </div>
       </header>

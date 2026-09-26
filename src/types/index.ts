@@ -63,27 +63,3 @@ export type StageId = (typeof STAGES)[number]["id"];
 export function stageById(id: StageId) {
   return STAGES.find((stage) => stage.id === id) ?? STAGES[0];
 }
-
-export type Difficulty = "Open" | "Intermediate" | "Advanced";
-
-/**
- * One entry in the scenario catalog — a complete simulated hackathon a
- * participant can enrol in.
- */
-export interface Scenario {
-  id: string;
-  title: string;
-  sponsor: string;
-  track: string;
-  difficulty: Difficulty;
-  /** Total simulated hours, e.g. 24 for a standard weekend event. */
-  durationHours: number;
-  teamSize: number;
-  summary: string;
-  /** Stages this scenario emphasises most heavily. */
-  focus: StageId[];
-  tags: string[];
-  /** Seats left, or null for an open event. */
-  seatsLeft: number | null;
-  featured?: boolean;
-}

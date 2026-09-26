@@ -3,14 +3,12 @@ import { Card } from "@/components/ui/card";
 import { Wordmark } from "@/components/Wordmark";
 import { StageRail } from "@/components/StageChip";
 import { isSupabaseConfigured } from "@/lib/supabase-config";
-import { SCENARIOS } from "@/services/catalog";
 import {
   ArrowRight,
   BarChart3,
   Check,
   Layers,
   Mic,
-  Search,
   ShieldQuestion,
   Sparkles,
   SquareArrowOutUpRight,
@@ -53,11 +51,6 @@ const FOR_BUSINESS = [
 ];
 
 export default function Landing() {
-  const featured = SCENARIOS.filter((scenario) => scenario.featured).slice(
-    0,
-    3,
-  );
-
   return (
     <div className="flex min-h-screen flex-col bg-background">
       {/* ── Navigation ─────────────────────────────────────────────── */}
@@ -73,12 +66,6 @@ export default function Landing() {
             >
               How it works
             </a>
-            <Link
-              to="/catalog"
-              className="rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-            >
-              Catalog
-            </Link>
           </nav>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="ghost" asChild>
@@ -134,10 +121,7 @@ export default function Landing() {
                   className="w-full sm:w-auto"
                   asChild
                 >
-                  <Link to="/catalog">
-                    <Search className="size-4" />
-                    Browse the catalog
-                  </Link>
+                  <a href="#how">See how it works</a>
                 </Button>
               </div>
 
@@ -224,56 +208,6 @@ export default function Landing() {
           </div>
         </section>
 
-        {/* ── Catalog teaser ───────────────────────────────────────── */}
-        <section className="border-b border-border">
-          <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
-            <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
-              <div className="max-w-2xl">
-                <p className="label-mono text-brand">From the catalog</p>
-                <h2 className="mt-3 text-3xl font-semibold tracking-[-0.03em] sm:text-4xl">
-                  Real briefs, real pressure.
-                </h2>
-                <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-                  Every scenario runs the full arc. Pick the stage you most want
-                  to get sharper at.
-                </p>
-              </div>
-              <Button variant="outline" asChild className="shrink-0">
-                <Link to="/catalog">
-                  See all scenarios
-                  <ArrowRight className="size-4" />
-                </Link>
-              </Button>
-            </div>
-
-            <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {featured.map((scenario) => (
-                <Link
-                  key={scenario.id}
-                  to="/catalog"
-                  className="group flex flex-col gap-4 rounded-xl border border-border bg-card p-6 transition-all hover:border-foreground/25 hover:shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-12px_rgba(0,0,0,0.12)]"
-                >
-                  <div>
-                    <p className="label-mono text-muted-foreground">
-                      {scenario.sponsor}
-                    </p>
-                    <h3 className="mt-2 text-[17px] font-semibold tracking-[-0.02em]">
-                      {scenario.title}
-                    </h3>
-                  </div>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    {scenario.summary}
-                  </p>
-                  <StageRail
-                    active={scenario.focus}
-                    className="mt-auto pt-2"
-                  />
-                </Link>
-              ))}
-            </div>
-          </div>
-        </section>
-
         {/* ── Closing CTA ───────────────────────────────────────────── */}
         <section>
           <div className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-24">
@@ -286,8 +220,8 @@ export default function Landing() {
                   Your first run starts here.
                 </h2>
                 <p className="mt-3 text-base leading-relaxed text-muted-foreground">
-                  Create an account to lock in your place. Scenarios open as
-                  each stage of the simulation ships.
+                  Create an account to lock in your place. The simulation opens
+                  as each stage ships.
                 </p>
               </div>
 
@@ -316,7 +250,7 @@ export default function Landing() {
                   </Link>
                 </Button>
                 <Button size="lg" variant="outline" asChild>
-                  <Link to="/catalog">Browse scenarios</Link>
+                  <Link to="/login">Sign in</Link>
                 </Button>
               </div>
             </Card>

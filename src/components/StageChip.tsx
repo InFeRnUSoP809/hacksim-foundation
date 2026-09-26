@@ -35,14 +35,14 @@ export function StageChip({
 
 /**
  * The full five-stage arc, with the emphasised stages lit in their own colour
- * and the rest left muted. This is the recurring visual that ties a scenario,
- * a session and a report together.
+ * and the rest left muted. This is the recurring visual that ties a session and
+ * a report together.
  */
 export function StageRail({
   active,
   className,
 }: {
-  /** Stage ids this scenario or session emphasises. */
+  /** Stage ids this session emphasises. */
   active: StageId[];
   className?: string;
 }) {

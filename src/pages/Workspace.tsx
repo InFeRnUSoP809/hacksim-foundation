@@ -28,9 +28,9 @@ export default function Workspace() {
               Workspace
             </h1>
             <p className="mt-3 max-w-2xl text-base leading-relaxed text-muted-foreground">
-              Everything you bring into a run lives here — the brief you chose,
-              your repository, and the write-up that gets submitted. Only you can
-              see it.
+              Everything you bring into a run lives here — the brief you
+              worked from, your repository, and the write-up that gets
+              submitted. Only you can see it.
             </p>
           </div>
           <p className="label-mono shrink-0 text-muted-foreground">
@@ -93,9 +93,9 @@ export default function Workspace() {
           <div className="max-w-xl">
             <p className="text-base font-semibold">Nothing here yet</p>
             <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-              Your submissions will appear here once you enrol in a scenario.
-              Uploads switch on with Supabase Storage in the next build — until
-              then this stays empty rather than pretending to work.
+              Your submissions will appear here once you start a run. Uploads
+              switch on with Supabase Storage in the next build — until then
+              this stays empty rather than pretending to work.
             </p>
           </div>
           <Button disabled>Add your first submission</Button>
