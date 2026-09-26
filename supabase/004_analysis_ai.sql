@@ -74,9 +74,14 @@ create index if not exists repositories_updated_idx  on public.repositories (upd
 
 -- The commit-based cache key from §13. One scan per (submission, commit,
 -- scanner version); a repeat run reuses the stored analysis.
-create unique index if not exists repositories_cache_identity
-  on public.repositories (submission_id, coalesce(analyzed_commit_sha, ''),
-                         coalesce(analysis_version, ''));
+--
+-- Plain columns only. An expression index may not call a STABLE or VOLATILE
+-- function, and `coalesce()` is expanded to CASE, which is STABLE — so the
+-- obvious `coalesce(analyzed_commit_sha, '')` form fails with 42P17.
+-- Uniqueness is already guaranteed by `submissions unique (submission_id)`;
+-- this index exists to make the cache lookup fast.
+create index if not exists repositories_cache_identity
+  on public.repositories (submission_id, analyzed_commit_sha, analysis_version);
 
 drop trigger if exists repositories_touch on public.repositories;
 create trigger repositories_touch
@@ -507,19 +512,37 @@ create index if not exists defense_targets_pri_idx  on public.defense_targets (p
 -- ────────────────────────────────────────────────────────────────────────────
 -- The identity from §58: repository + analysis type + prompt version +
 -- context hash + model. A row under this key is reused without a new request.
+--
+-- Two plain-column partial indexes rather than one expression index. The
+-- single-expression form needs `coalesce(repository_id, submission_id, ...)`,
+-- which is rejected with 42P17: an index expression must be IMMUTABLE, and
+-- both `coalesce` (a STABLE CASE) and `gen_random_uuid()` (VOLATILE) fail that
+-- test. Splitting on "has a repository_id" keeps every column immutable and
+-- matches how `findCachedAnalysis` actually queries: by repository id, or by
+-- `repository_id is null`.
+--
+-- The predicate is `status = 'success'` rather than `status in (...)` on
+-- purpose: a partial index is only used when the planner can prove the query
+-- implies the predicate, and `= 'success'` is exactly what the cache lookup
+-- filters on. Nothing ever writes `status = 'cached'` — a cache hit returns
+-- before writing.
 
-create unique index if not exists ai_analyses_cache_identity
+create unique index if not exists ai_analyses_cache_identity_repository
   on public.ai_analyses (
-    coalesce(repository_id, submission_id, gen_random_uuid()::uuid),
-    analysis_type,
-    prompt_version,
-    coalesce(context_hash, ''),
-    model
+    repository_id, analysis_type, prompt_version, context_hash, model
   )
-  where status in ('success', 'cached');
+  where status = 'success' and repository_id is not null;
 
-comment on index public.ai_analyses_cache_identity is
-  '§58 cache identity: repo + analysis type + prompt version + context hash + model.';
+create unique index if not exists ai_analyses_cache_identity_submission
+  on public.ai_analyses (
+    submission_id, analysis_type, prompt_version, context_hash, model
+  )
+  where status = 'success' and repository_id is null and submission_id is not null;
+
+comment on index public.ai_analyses_cache_identity_repository is
+  '§58 cache identity: repository + analysis type + prompt version + context hash + model.';
+comment on index public.ai_analyses_cache_identity_submission is
+  '§58 cache identity for repository-less analyses, e.g. a requirement map.';
 
 
 -- ────────────────────────────────────────────────────────────────────────────
