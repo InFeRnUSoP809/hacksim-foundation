@@ -10,21 +10,10 @@
 -- ============================================================================
 
 
--- ────────────────────────────────────────────────────────────────────────────
--- Helpers
--- ────────────────────────────────────────────────────────────────────────────
-create or replace function public.is_team_member(p_team_id uuid)
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists (
-    select 1 from public.team_members m
-    where m.team_id = p_team_id and m.user_id = auth.uid()
-  );
-$$;
+-- NOTE ON ORDERING — Postgres validates the body of a `language sql` function
+-- when it is created, so `is_team_member()` below is deliberately defined
+-- *after* public.team_members, and admin_stats() is defined without the
+-- submissions count (section 3 adds it). Reordering either one breaks the run.
 
 
 -- ────────────────────────────────────────────────────────────────────────────
@@ -173,6 +162,21 @@ create trigger build_checkpoints_touch
 -- ────────────────────────────────────────────────────────────────────────────
 -- Team RPCs
 -- ────────────────────────────────────────────────────────────────────────────
+-- Must be declared after public.team_members exists: a `language sql` body is
+-- checked at creation time, not only when it is first called.
+create or replace function public.is_team_member(p_team_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.team_members m
+    where m.team_id = p_team_id and m.user_id = auth.uid()
+  );
+$$;
+
 create or replace function public.create_team(p_name text)
 returns uuid
 language plpgsql
@@ -553,10 +557,13 @@ as $$
     'active_sessions',    (select count(*) from public.build_sessions
                             where status in ('running', 'break')),
     'completed_sessions', (select count(*) from public.build_sessions
-                            where status in ('completed', 'expired', 'submitted')),
-    'submissions',        (select count(*) from public.submissions)
+                            where status in ('completed', 'expired', 'submitted'))
   );
 $$;
+
+-- The 'submissions' count is added by 003, which owns that table: a
+-- `language sql` body cannot reference a table that does not exist yet. 003
+-- re-creates this function with the full object.
 
 create or replace function public.admin_teams()
 returns table (

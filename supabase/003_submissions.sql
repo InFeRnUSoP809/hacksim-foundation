@@ -532,3 +532,28 @@ create policy submission_events_read on public.submission_events
         and public.is_team_member(s.team_id)
     )
   );
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Admin reporting — final version
+-- ────────────────────────────────────────────────────────────────────────────
+-- 002 creates admin_stats() before public.submissions exists, so this file
+-- re-creates it with the same body. Running the migrations in order therefore
+-- leaves the admin dashboard with a submissions count either way.
+create or replace function public.admin_stats()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select jsonb_build_object(
+    'users',              (select count(*) from public.profiles),
+    'teams',              (select count(*) from public.teams),
+    'active_sessions',    (select count(*) from public.build_sessions
+                            where status in ('running', 'break')),
+    'completed_sessions', (select count(*) from public.build_sessions
+                            where status in ('completed', 'expired', 'submitted')),
+    'submissions',        (select count(*) from public.submissions)
+  );
+$$;

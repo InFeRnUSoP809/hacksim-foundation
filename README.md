@@ -59,6 +59,11 @@ is idempotent, so re-running is safe.
 | 3 | `supabase/003_submissions.sql` | `submissions`, `submission_members`, `submission_events`, RPCs, RLS |
 | — | `supabase/seed.sql` | *Optional.* A MediStock practice hackathon at 8 hours |
 
+Prefer a single paste? `supabase/00_all_in_one.sql` contains all four files
+above, already concatenated in the correct order, in one self-contained script.
+Run that one instead of the table below — the numbered files stay as the
+readable source of truth and are what the sections map onto.
+
 Then promote yourself to admin. There is deliberately no self-service path:
 
 ```sql
