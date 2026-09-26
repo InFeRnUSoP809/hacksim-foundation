@@ -20,6 +20,22 @@
   <meta name="apple-mobile-web-app-title" content="HackSim" />
   <meta name="mobile-web-app-capable" content="yes" />
 
+  <script>
+    // Applies the saved/system theme before React boots, so a dark-mode user
+    // never sees a white flash on first paint.
+    (function () {
+      try {
+        var stored = localStorage.getItem("hacksim-theme");
+        var dark =
+          stored === "dark" ||
+          (!stored &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        if (dark) document.documentElement.classList.add("dark");
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      } catch (e) {}
+    })();
+  </script>
+
   <meta property="og:title" content="HackSim" />
   <meta property="og:description" content="Practice the complete hackathon experience before the real event." />
   <meta property="og:type" content="website" />

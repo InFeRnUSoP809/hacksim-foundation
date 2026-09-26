@@ -2,29 +2,16 @@
 
 **Practice. Build. Defend. Improve.**
 
-HackSim runs a complete simulated hackathon: a team takes a brief, builds
-against the clock, submits real work, presents it in five minutes, defends it
-against an AI panel that follows up on the weakest answers, and leaves with an
-honest written read on the whole run.
+HackSim runs a complete simulated hackathon: a team takes a brief, builds against
+the clock, submits real work, presents it in five minutes, defends it against an
+AI panel, and leaves with an honest written read on the whole run.
 
-This repository is the **foundation build (v0.1)** — an installable PWA with
-working Supabase authentication, a personal dashboard, a workspace, and a
-role-gated admin area. The simulation stages ship in later builds, one at a time.
+HackSim has two clearly separated surfaces:
 
----
-
-## The five stages
-
-Colour is the stage identity throughout the product. Each stage owns one flat,
-confident hue on a neutral ink-on-paper base — colourful, but never noisy.
-
-| Stage        | What happens                                            |
-| ------------ | ------------------------------------------------------- |
-| **Build**    | A live brief, a build window, and real checkpoints.      |
-| **Submit**   | A repository and a write-up, handed in before the deadline. |
-| **Present**  | A five-minute pitch with screen, camera, and microphone. |
-| **Defend**   | A live AI panel that presses on whatever sounds weakest.  |
-| **Report**   | A written read on the run: what held, what didn't, what to fix. |
+- **Admin — Control.** Manage hackathons, practice availability, teams, users,
+  and simulations.
+- **Student — Experience.** See the open practice hackathon, form a team, define
+  your contribution, and run the timed build.
 
 ---
 
@@ -36,65 +23,51 @@ confident hue on a neutral ink-on-paper base — colourful, but never noisy.
 | Database   | Supabase PostgreSQL                                |
 | Auth       | Supabase Auth (email + password)                   |
 | Storage    | Supabase Storage — reserved for the workspace      |
-| Backend    | FastAPI — prepared for, not wired up yet           |
 | PWA        | Web app manifest + service worker, installable      |
 
 ---
 
 ## 1. Environment variables
 
-Add these through your host's environment UI (or a local `.env.local`):
+Set these through your host's environment UI, or a local `.env.local`:
 
 ```bash
 VITE_SUPABASE_URL=https://ntkuqpuqxtdohgtmhemt.supabase.co
 VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-If they are not set, `src/lib/supabase-config.ts` falls back to the project's
-committed values so the app still connects. Environment variables always win —
-set them here and delete the fallback constants.
+If they are absent, `src/lib/supabase-config.ts` falls back to committed values so
+the app still connects. Environment variables always take precedence.
 
 Only the **anon** key belongs in the frontend. It is safe to ship solely because
 every table has Row Level Security enabled. The **service-role** key must never
-be referenced from client code.
-
-To confirm the connection without touching the app:
-
-```bash
-node --experimental-strip-types scripts/check-supabase.mjs
-```
-
-If the variables are missing the app still runs — the landing page and dashboard
-show a clear "Supabase isn't connected" notice instead of failing blank.
+appear in any module that ships to the browser.
 
 ---
 
 ## 2. Supabase setup
 
-### a) Apply the schema
+Run these two files in order, in **Supabase Dashboard → SQL Editor → New query**.
+Both are idempotent, so re-running is safe.
 
-Open **Supabase Dashboard → SQL Editor → New query** and run
-[`supabase/schema.sql`](./supabase/schema.sql). It creates:
+1. [`supabase/schema.sql`](./supabase/schema.sql) — the `users` table, the signup
+   trigger, and the first RLS policies.
+2. [`supabase/phase2.sql`](./supabase/phase2.sql) — hackathons, teams, sessions,
+   checkpoints, the RPCs, and all Phase 2/3 RLS policies.
 
-- the `public.users` table (`id`, `email`, `name`, `role`, `created_at`)
-- an `on_auth_user_created` trigger that inserts a profile row on signup
-- `is_admin()` / `current_user_role()` helper functions
-- RLS policies: a student can only read and update their own row
-
-### b) Auth settings
-
-Under **Authentication → Providers → Email**, enable the Email provider.
-Turning *Confirm email* off is fine locally; leaving it on also works — the
-signup screen shows a "check your inbox" state.
-
-### c) Make yourself an admin
-
-Everyone signs up as a `student`. To promote an account, run this in the SQL
-Editor (not from the browser):
+Then promote yourself to admin:
 
 ```sql
 update public.users set role = 'admin' where email = 'you@example.com';
 ```
+
+Verify everything is in place without touching the app:
+
+```bash
+node --experimental-strip-types scripts/check-supabase.mjs
+```
+
+This is read-only — it creates no users, sessions, or data.
 
 ---
 
@@ -115,60 +88,96 @@ bun run lint     # eslint
 
 ## 4. Routes
 
-| Route        | Access       | Purpose                                     |
-| ------------ | ------------ | ------------------------------------------- |
-| `/`          | Public       | Landing page                                |
-| `/signup`    | Public       | Create an account                           |
-| `/login`     | Public       | Sign in                                     |
-| `/dashboard` | Signed in    | Your runs, progress, and feedback (protected) |
-| `/workspace` | Signed in    | Your own submissions and material (protected) |
-| `/admin`     | `admin` role | Control room (role-gated)                   |
+### Student
 
-Refreshing any protected route is safe: Supabase restores the session from
-`localStorage` before the route renders.
+| Route                  | Purpose                                                 |
+| ---------------------- | ------------------------------------------------------- |
+| `/`                    | Landing page (public)                                    |
+| `/login` `/signup`     | Authentication (public)                                  |
+| `/dashboard`           | Practice status, hackathon preview, start/continue      |
+| `/hackathon`           | The full brief, and the start-simulation confirmation   |
+| `/team`                | Create or join a team, edit your contribution           |
+| `/simulation/:id`      | The build workspace: timer, brief, team, checkpoints    |
 
----
+### Admin
 
-## 5. PWA
+| Route                | Purpose                                     |
+| -------------------- | ------------------------------------------- |
+| `/admin`             | Practice ON/OFF, current hackathon, counts   |
+| `/admin/hackathons`  | Create, edit, view, archive, toggle practice |
+| `/admin/teams`       | Team list and per-team roster               |
+| `/admin/users`       | Everyone with an account                    |
+| `/admin/simulations` | Every run, with read-only countdowns        |
+| `/admin/settings`    | Theme and break length                      |
 
-- `public/manifest.webmanifest` — name, theme/background colours, `standalone`
-  display, and a 192/512/maskable icon set
-- `public/sw.js` — network-first for navigations (falls back to the cached
-  shell), stale-while-revalidate for same-origin assets, and a strict passthrough
-  for Supabase and other cross-origin requests so API responses are never cached
-- `src/main.tsx` registers the service worker after `load`
-
-To install: serve over HTTPS (or `localhost`), then use your browser's *Install
-app* / *Add to Home Screen* action.
-
-Icons are generated by `node scripts/generate-icons.mjs` — re-run it if you
-change the brand mark.
+The two surfaces use separate layouts and separate navigation. Student-only and
+admin-only routes are guarded independently.
 
 ---
 
-## 6. Project structure
+## 5. How the rules are enforced
+
+The browser only ever holds the anon key, so the database is the only place a
+rule can actually be trusted. Every "the backend must verify" requirement is
+enforced in Postgres, not in React:
+
+| Rule | Enforced by |
+| --- | --- |
+| Only one practice hackathon | A partial unique index, plus `set_practice_hackathon()` |
+| Students can't manage hackathons | RLS on `hackathons` — no write policy for non-admins |
+| Problem statement hidden when practice is off | The `hackathons` SELECT policy only matches `practice_enabled and status = 'active'` |
+| Only valid teams can start a run | `start_build_session()` re-checks membership |
+| Practice must be on to start | `start_build_session()` re-checks `practice_enabled` |
+| No conflicting simultaneous run | `start_build_session()` checks the team for a live session |
+| Timer cannot be extended | Students have no INSERT/UPDATE policy on `build_sessions`; only the RPCs write |
+| Timer cannot be reset by refresh | `session_state()` computes the countdown from `now()` in Postgres |
+| Changing the device clock does nothing | Remaining time is derived from the server clock, then corrected locally |
+| Checkpoints freeze at expiry | The checkpoint policy requires the session to be `active` |
+| Teammates can see each other | `team_roster()` — a `SECURITY DEFINER` function scoped to one team |
+| Users cannot be enumerated | Invite by email through `add_team_member()`, not by browsing a directory |
+
+Turning practice off stops **new** simulations. A run already in progress keeps
+its `hackathon_id` and continues, and can still read its brief through
+`hackathon_for_session()`. Nothing is ever deleted — hackathons archive, and
+sessions persist.
+
+---
+
+## 6. Theme
+
+Light and dark are both first-class. The choice is read from `localStorage`, and
+falls back to the operating system setting when the user has not chosen. An
+inline script in `index.html` applies the theme before React boots, so there is
+no flash of the wrong colours. The preference is device-local and is never sent
+to Supabase.
+
+---
+
+## 7. Project structure
 
 ```
 src/
-  components/     UI building blocks (guards, stage chips, cards, states)
-  layouts/        AppShell (app chrome) and AuthShell
-  pages/          Landing, Login, Signup, Dashboard, Workspace, Admin
-  services/       auth calls (Supabase)
-  hooks/          useAuth
-  lib/            supabase client, config check, cn helper
-  types/          Profile, Role, Stage
+  components/     UI building blocks (guards, dialogs, cards, states)
+  hooks/          useAuth, useAsync, useSessionClock
+  layouts/        AdminLayout, StudentLayout, AppShell, AuthShell
+  lib/            supabase client, theme, formatting helpers
+  pages/          student routes
+  pages/admin/    admin routes
+  services/       Supabase data access, one module per domain
+  types/          shared domain types and constants
 supabase/
-  schema.sql      users table, trigger, and RLS policies
+  schema.sql      phase 1
+  phase2.sql      phase 2 + 3
 scripts/
+  check-supabase.mjs   read-only connectivity + schema check
   generate-icons.mjs
-  check-supabase.mjs   read-only connectivity check
 ```
 
 ---
 
 ## Not built yet (by design)
 
-The build/submit/present/defend/report stages, the simulation clock, scenario
-enrolment, team management, GitHub analysis, AI review and questioning, screen
-recording, speech-to-text, and workspace uploads. Every surface is an honest
-empty state — nothing is stubbed to look finished.
+Project submission, GitHub analysis, AI project review, contribution analysis,
+presentation recording, screen sharing, camera, microphone, speech-to-text, AI
+voice output, AI defense questions, adaptive follow-ups, and the final training
+report. Those belong to Phase 4 and later.

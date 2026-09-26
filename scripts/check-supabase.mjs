@@ -93,7 +93,36 @@ show(
     : `unexpected response (HTTP ${tableRes.status})`,
 );
 
+// 5. Phase 2/3 tables. All read-only, and all empty for an anon caller.
 if (exists) {
-  console.log("\nAll checks passed. You can sign up, sign in, and use the dashboard.");
-  console.log("If /admin says access is required, promote yourself with the UPDATE above.");
+  console.log("");
+  const PHASE2_TABLES = [
+    "hackathons",
+    "teams",
+    "team_members",
+    "build_sessions",
+    "build_checkpoints",
+  ];
+  const missing = [];
+
+  for (const table of PHASE2_TABLES) {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/${table}?select=*&limit=1`,
+      { headers },
+    );
+    if (res.status === 404) {
+      missing.push(table);
+      console.log(`FAIL  ${table} — table not found`);
+    } else {
+      show(table, true, `reachable (HTTP ${res.status})`);
+    }
+  }
+
+  if (missing.length > 0) {
+    console.log(
+      `\nRun supabase/phase2.sql in Supabase → SQL Editor. Missing: ${missing.join(", ")}`,
+    );
+  } else {
+    console.log("\nAll Phase 2 tables are present. Admin and student flows can run.");
+  }
 }

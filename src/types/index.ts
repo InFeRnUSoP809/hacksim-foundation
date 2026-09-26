@@ -25,35 +25,30 @@ export const STAGES = [
     id: "build",
     label: "Build",
     hue: "var(--stage-build)",
-    tailwind: "text-stage-build",
     summary: "Turn a brief into a working prototype against the clock.",
   },
   {
     id: "submit",
     label: "Submit",
     hue: "var(--stage-submit)",
-    tailwind: "text-stage-submit",
     summary: "Package the work and hand it in before the deadline.",
   },
   {
     id: "present",
     label: "Present",
     hue: "var(--stage-present)",
-    tailwind: "text-stage-present",
     summary: "Pitch the idea in five minutes and hold the room.",
   },
   {
     id: "defend",
     label: "Defend",
     hue: "var(--stage-defend)",
-    tailwind: "text-stage-defend",
     summary: "Answer an AI panel that pushes on your weakest points.",
   },
   {
     id: "report",
     label: "Report",
     hue: "var(--stage-report)",
-    tailwind: "text-stage-report",
     summary: "Get a written read on how the whole run went.",
   },
 ] as const;
@@ -62,4 +57,176 @@ export type StageId = (typeof STAGES)[number]["id"];
 
 export function stageById(id: StageId) {
   return STAGES.find((stage) => stage.id === id) ?? STAGES[0];
+}
+
+// ── Hackathons ──────────────────────────────────────────────────────────────
+
+export const HACKATHON_STATUSES = ["draft", "active", "archived"] as const;
+export type HackathonStatus = (typeof HACKATHON_STATUSES)[number];
+
+export interface Hackathon {
+  id: string;
+  name: string;
+  problem_statement: string;
+  requirements: string;
+  constraints: string;
+  expected_outcome: string;
+  evaluation_criteria: string;
+  simulation_duration_minutes: number;
+  status: HackathonStatus;
+  practice_enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** The fields an admin can edit. */
+export type HackathonDraft = Omit<
+  Hackathon,
+  "id" | "practice_enabled" | "created_at" | "updated_at"
+>;
+
+// ── Teams ───────────────────────────────────────────────────────────────────
+
+/** Contribution areas a team member can claim. Kept open-ended by design. */
+export const CONTRIBUTION_AREAS = [
+  "Frontend",
+  "Backend",
+  "Database",
+  "AI/ML",
+  "UI/UX",
+  "DevOps",
+  "Research",
+  "Product",
+  "Hardware",
+  "Testing",
+  "Other",
+] as const;
+
+export type ContributionArea = (typeof CONTRIBUTION_AREAS)[number];
+
+export interface Team {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TeamMember {
+  id: string;
+  team_id: string;
+  user_id: string;
+  role: string;
+  contribution_description: string;
+  contribution_areas: string[];
+  planned_responsibilities: string;
+  ai_tools: string;
+  joined_at: string;
+}
+
+/** A team member joined to the profile fields the UI displays. */
+export interface TeamMemberWithProfile extends TeamMember {
+  name: string | null;
+  email: string;
+}
+
+// ── Build sessions ──────────────────────────────────────────────────────────
+
+export const SESSION_STATUSES = [
+  "not_started",
+  "active",
+  "paused",
+  "break",
+  "completed",
+  "expired",
+] as const;
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
+
+/** Statuses a session can still be resumed from. */
+export const LIVE_STATUSES: SessionStatus[] = ["active", "paused", "break"];
+
+export function isLive(status: SessionStatus): boolean {
+  return LIVE_STATUSES.includes(status);
+}
+
+export interface BuildSession {
+  id: string;
+  hackathon_id: string;
+  team_id: string;
+  started_by: string;
+  started_at: string;
+  ends_at: string;
+  break_ends_at: string | null;
+  status: SessionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+/** A session joined to the names the admin tables need. */
+export interface SessionWithNames extends BuildSession {
+  hackathon_name: string;
+  team_name: string;
+  started_by_name: string;
+}
+
+/** The authoritative clock, always computed by Postgres. */
+export interface SessionState {
+  status: SessionStatus;
+  remaining_seconds: number;
+  break_remaining_seconds: number;
+  server_now: string;
+}
+
+// ── Checkpoints ─────────────────────────────────────────────────────────────
+
+export const CHECKPOINT_TYPES = [
+  "planning",
+  "building",
+  "progress",
+  "remaining_work",
+  "final_preparation",
+] as const;
+export type CheckpointType = (typeof CHECKPOINT_TYPES)[number];
+
+/** Order, label and prompt for each checkpoint in the build. */
+export const CHECKPOINTS: {
+  type: CheckpointType;
+  label: string;
+  question: string;
+}[] = [
+  {
+    type: "planning",
+    label: "Planning",
+    question: "What are you planning to build, and how will you approach it?",
+  },
+  {
+    type: "building",
+    label: "Building",
+    question: "What are you currently working on?",
+  },
+  {
+    type: "progress",
+    label: "Progress",
+    question: "What have you completed so far?",
+  },
+  {
+    type: "remaining_work",
+    label: "Remaining Work",
+    question: "What still needs to be completed?",
+  },
+  {
+    type: "final_preparation",
+    label: "Final Preparation",
+    question: "What are you preparing before submission?",
+  },
+];
+
+export interface BuildCheckpoint {
+  id: string;
+  session_id: string;
+  checkpoint_type: CheckpointType;
+  response: string;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
 }

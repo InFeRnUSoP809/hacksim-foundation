@@ -2,6 +2,7 @@ import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
+import { ThemeProvider } from "@/lib/theme";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
@@ -13,8 +14,16 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const Login = lazy(() => import("./pages/Login.tsx"));
 const Signup = lazy(() => import("./pages/Signup.tsx"));
 const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const HackathonPage = lazy(() => import("./pages/HackathonPage.tsx"));
+const MyTeam = lazy(() => import("./pages/MyTeam.tsx"));
+const Simulation = lazy(() => import("./pages/Simulation.tsx"));
 const Workspace = lazy(() => import("./pages/Workspace.tsx"));
-const Admin = lazy(() => import("./pages/Admin.tsx"));
+const AdminDashboard = lazy(() => import("./pages/admin/AdminDashboard.tsx"));
+const AdminHackathons = lazy(() => import("./pages/admin/AdminHackathons.tsx"));
+const AdminTeams = lazy(() => import("./pages/admin/AdminTeams.tsx"));
+const AdminUsers = lazy(() => import("./pages/admin/AdminUsers.tsx"));
+const AdminSimulations = lazy(() => import("./pages/admin/AdminSimulations.tsx"));
+const AdminSettings = lazy(() => import("./pages/admin/AdminSettings.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -128,6 +137,7 @@ createRoot(document.getElementById("root")!).render(
       <ToolbarErrorBoundary>
         <VlyToolbar />
       </ToolbarErrorBoundary>
+      <ThemeProvider>
       <BrowserRouter>
         <RouteSyncer />
         <ServiceWorkerRegistrar />
@@ -149,6 +159,30 @@ createRoot(document.getElementById("root")!).render(
               }
             />
             <Route
+              path="/hackathon"
+              element={
+                <RequireAuth redirectImmediately>
+                  <HackathonPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/team"
+              element={
+                <RequireAuth redirectImmediately>
+                  <MyTeam />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/simulation/:sessionId"
+              element={
+                <RequireAuth redirectImmediately>
+                  <Simulation />
+                </RequireAuth>
+              }
+            />
+            <Route
               path="/workspace"
               element={
                 <RequireAuth
@@ -164,7 +198,47 @@ createRoot(document.getElementById("root")!).render(
               path="/admin"
               element={
                 <RequireAdmin>
-                  <Admin />
+                  <AdminDashboard />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/hackathons"
+              element={
+                <RequireAdmin>
+                  <AdminHackathons />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/teams"
+              element={
+                <RequireAdmin>
+                  <AdminTeams />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <RequireAdmin>
+                  <AdminUsers />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/simulations"
+              element={
+                <RequireAdmin>
+                  <AdminSimulations />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/settings"
+              element={
+                <RequireAdmin>
+                  <AdminSettings />
                 </RequireAdmin>
               }
             />
@@ -173,6 +247,7 @@ createRoot(document.getElementById("root")!).render(
         </Suspense>
       </BrowserRouter>
       <Toaster />
+      </ThemeProvider>
     </RootErrorBoundary>
   </StrictMode>,
 );
