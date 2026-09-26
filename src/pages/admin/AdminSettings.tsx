@@ -1,9 +1,7 @@
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { Card } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
 import { useTheme } from "@/lib/theme";
 import { Settings2 } from "lucide-react";
-import { useState } from "react";
 
 /**
  * Settings that genuinely work today. Anything that needs server-side
@@ -11,7 +9,6 @@ import { useState } from "react";
  */
 export default function AdminSettings() {
   const { theme, setTheme } = useTheme();
-  const [breakMinutes, setBreakMinutes] = useState(10);
 
   return (
     <AdminLayout>
@@ -65,37 +62,6 @@ export default function AdminSettings() {
           </div>
         </Card>
 
-        {/* ── Break configuration ───────────────────────────────── */}
-        <Card className="p-6">
-          <h2 className="text-sm font-semibold tracking-[-0.01em]">
-            Break length
-          </h2>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            How long a student's break lasts when they take one. The build
-            clock keeps running through a break.
-          </p>
-          <div className="mt-4 flex flex-wrap items-end gap-4">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="break-minutes">Break minutes</Label>
-              <input
-                id="break-minutes"
-                type="number"
-                min={1}
-                max={120}
-                value={breakMinutes}
-                onChange={(event) =>
-                  setBreakMinutes(Number(event.target.value) || 1)
-                }
-                className="h-9 w-28 rounded-md border border-input bg-background px-3 text-sm"
-              />
-            </div>
-            <p className="pb-2 text-xs text-muted-foreground">
-              Applied from this browser. A database-wide default is a later
-              addition.
-            </p>
-          </div>
-        </Card>
-
         {/* ── Not yet implemented ───────────────────────────────── */}
         <Card className="flex items-start gap-3 border-dashed p-6">
           <Settings2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
@@ -104,8 +70,8 @@ export default function AdminSettings() {
               Not configurable yet
             </h2>
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-              AI model selection, judging rubrics, and automatic break scheduling
-              are not built. Nothing here is a placeholder that pretends to save.
+              AI model selection and judging rubrics are not built. Nothing here
+              is a placeholder that pretends to save.
             </p>
           </div>
         </Card>

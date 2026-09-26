@@ -18,7 +18,7 @@ import {
 } from "@/services/sessions";
 import { getTeamRoster } from "@/services/teams";
 import { friendlyError } from "@/services/errors";
-import { Check, Coffee, Loader2, Play, Users } from "lucide-react";
+import { Check, Loader2, Users } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import {
@@ -28,8 +28,6 @@ import {
   type Hackathon,
   type TeamMemberWithProfile,
 } from "@/types";
-
-const BREAK_MINUTES = 10;
 
 export default function Simulation() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -72,39 +70,22 @@ export default function Simulation() {
     );
   }
 
-  async function handleStatus(status: "break" | "running" | "completed") {
+  async function handleFinish() {
     if (!sessionId) return;
     setActionError(null);
 
-    if (status === "break") {
-      const confirmed = await confirm.ask({
-        title: `Take a ${BREAK_MINUTES}-minute break?`,
-        message:
-          "The build clock keeps running during a break, so plan accordingly.",
-        confirmLabel: "Take break",
-        cancelLabel: "Keep building",
-      });
-      if (!confirmed) return;
-    }
-
-    if (status === "completed") {
-      const confirmed = await confirm.ask({
-        title: "Finish this simulation?",
-        message: "This ends the run for your whole team. It cannot be undone.",
-        confirmLabel: "Finish simulation",
-        cancelLabel: "Keep working",
-        tone: "warning",
-      });
-      if (!confirmed) return;
-    }
+    const confirmed = await confirm.ask({
+      title: "Finish this simulation?",
+      message: "This ends the run for your whole team. It cannot be undone.",
+      confirmLabel: "Finish simulation",
+      cancelLabel: "Keep working",
+      tone: "warning",
+    });
+    if (!confirmed) return;
 
     setIsMutating(true);
     try {
-      await setSessionStatus(
-        sessionId,
-        status,
-        status === "break" ? BREAK_MINUTES : undefined,
-      );
+      await setSessionStatus(sessionId, "completed");
       await clock.refresh();
       session.reload();
       checkpoints.reload();
@@ -116,7 +97,6 @@ export default function Simulation() {
   }
 
   const isLive = clock.status === "running";
-  const onBreak = clock.status === "break";
   const finished = clock.status === "completed" || clock.status === "expired";
 
   if (clock.isLoading) {
@@ -177,33 +157,19 @@ export default function Simulation() {
                 "rounded-lg border px-4 py-2 text-center",
                 finished
                   ? "border-destructive/40 bg-destructive/10"
-                  : onBreak
-                    ? "border-stage-submit/40 bg-stage-submit/10"
-                    : "border-stage-report/40 bg-stage-report/10",
+                  : "border-stage-report/40 bg-stage-report/10",
               )}
             >
               <p className="label-mono text-muted-foreground">
-                {onBreak
-                  ? "Break remaining"
-                  : finished
-                    ? "Finished"
-                    : "Time remaining"}
+                {finished ? "Finished" : "Time remaining"}
               </p>
               <p
                 className={cn(
                   "font-mono text-2xl font-semibold tracking-tight tabular-nums",
-                  finished
-                    ? "text-destructive"
-                    : onBreak
-                      ? "text-stage-submit"
-                      : "text-stage-report",
+                  finished ? "text-destructive" : "text-stage-report",
                 )}
               >
-                {finished
-                  ? "00:00:00"
-                  : formatDuration(
-                      onBreak ? clock.breakRemaining : clock.remaining,
-                    )}
+                {finished ? "00:00:00" : formatDuration(clock.remaining)}
               </p>
             </div>
           </div>
@@ -237,30 +203,6 @@ export default function Simulation() {
                 <Link to="/team">View your team</Link>
               </Button>
             </div>
-          </Card>
-        ) : onBreak ? (
-          <Card className="flex flex-col items-start gap-4 p-8">
-            <div className="grid size-10 place-items-center rounded-lg border border-stage-submit/40 bg-stage-submit/10">
-              <Coffee className="size-4 text-stage-submit" />
-            </div>
-            <h1 className="text-2xl font-semibold tracking-[-0.025em]">
-              Break
-            </h1>
-            <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-              Step away. Your build clock is still running — the timer in the
-              top bar keeps counting down.
-            </p>
-            <Button
-              onClick={() => void handleStatus("running")}
-              disabled={isMutating}
-            >
-              {isMutating ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Play className="size-4" />
-              )}
-              Resume
-            </Button>
           </Card>
         ) : (
           <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
@@ -326,15 +268,7 @@ export default function Simulation() {
                 </h2>
                 <Button
                   variant="outline"
-                  onClick={() => void handleStatus("break")}
-                  disabled={isMutating || !isLive}
-                >
-                  <Coffee className="size-4" />
-                  Take a break
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => void handleStatus("completed")}
+                  onClick={() => void handleFinish()}
                   disabled={isMutating || !isLive}
                 >
                   <Check className="size-4" />

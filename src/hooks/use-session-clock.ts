@@ -6,8 +6,6 @@ interface Clock {
   status: SessionStatus;
   /** Seconds left in the build, derived from the server clock. */
   remaining: number;
-  /** Seconds left in the break, when a break is running. */
-  breakRemaining: number;
 }
 
 /**
@@ -29,7 +27,6 @@ export function useSessionClock(sessionId: string | undefined) {
   const [clock, setClock] = useState<Clock>({
     status: "not_started",
     remaining: 0,
-    breakRemaining: 0,
   });
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,9 +36,8 @@ export function useSessionClock(sessionId: string | undefined) {
   // Seconds captured at the last sync, and the local time it was captured at.
   const lastSyncRef = useRef<{
     remaining: number;
-    breakRemaining: number;
     at: number;
-  }>({ remaining: 0, breakRemaining: 0, at: 0 });
+  }>({ remaining: 0, at: 0 });
   const statusRef = useRef<SessionStatus>("not_started");
 
   const sync = useCallback(async () => {
@@ -53,7 +49,6 @@ export function useSessionClock(sessionId: string | undefined) {
       offsetRef.current = serverNow - Date.now();
       lastSyncRef.current = {
         remaining: state.remaining_seconds,
-        breakRemaining: state.break_remaining_seconds,
         at: Date.now(),
       };
       statusRef.current = state.status;
@@ -61,7 +56,6 @@ export function useSessionClock(sessionId: string | undefined) {
       setClock({
         status: state.status,
         remaining: state.remaining_seconds,
-        breakRemaining: state.break_remaining_seconds,
       });
       setError(null);
     } catch (err) {
@@ -89,7 +83,6 @@ export function useSessionClock(sessionId: string | undefined) {
       setClock({
         status: statusRef.current,
         remaining: Math.max(0, lastSyncRef.current.remaining - elapsed),
-        breakRemaining: Math.max(0, lastSyncRef.current.breakRemaining - elapsed),
       });
     }, 1000);
 

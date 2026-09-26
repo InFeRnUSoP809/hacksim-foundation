@@ -13,14 +13,13 @@ import {
  * membership, practice availability, and session conflicts — this call cannot
  * bypass any of those rules even if the UI is manipulated.
  */
-export async function startBuildSession(
-  hackathonId: string,
-): Promise<string> {
+export async function startBuildSession(hackathonId: string): Promise<string> {
   const { data, error } = await supabase.rpc("start_build_session", {
     p_hackathon_id: hackathonId,
   });
 
-  if (error) throw new Error(friendlyError(error, "Couldn't start the simulation."));
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't start the simulation."));
   return data as string;
 }
 
@@ -36,7 +35,8 @@ export async function getSessionState(
     p_session_id: sessionId,
   });
 
-  if (error) throw new Error(friendlyError(error, "Couldn't load the simulation."));
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't load the simulation."));
 
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) throw new Error("Simulation not found.");
@@ -78,7 +78,8 @@ export async function getSession(
     .eq("id", sessionId)
     .maybeSingle();
 
-  if (error) throw new Error(friendlyError(error, "Couldn't load the simulation."));
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't load the simulation."));
   return (data as BuildSession | null) ?? null;
 }
 
@@ -100,22 +101,21 @@ export async function getMyActiveSession(): Promise<BuildSession | null> {
 }
 
 /**
- * Moves a live session between active, break, and completed. The database
- * refuses anything else, so a student cannot extend a timer or resurrect an
- * expired session.
+ * Moves a live session to completed. The database refuses anything else, so a
+ * student cannot extend a timer or resurrect an expired session.
  */
 export async function setSessionStatus(
   sessionId: string,
-  status: "running" | "break" | "completed",
-  breakMinutes?: number,
+  status: "completed",
 ): Promise<void> {
   const { error } = await supabase.rpc("set_session_status", {
     p_session_id: sessionId,
     p_status: status,
-    p_break_minutes: breakMinutes ?? null,
+    p_break_minutes: null,
   });
 
-  if (error) throw new Error(friendlyError(error, "Couldn't update the simulation."));
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't update the simulation."));
 }
 
 /** A team's name, for the simulation header. */
@@ -147,7 +147,8 @@ export interface AdminSessionRow {
 
 export async function listSessionsForAdmin(): Promise<AdminSessionRow[]> {
   const { data, error } = await supabase.rpc("admin_sessions");
-  if (error) throw new Error(friendlyError(error, "Couldn't load simulations."));
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't load simulations."));
 
   return ((data ?? []) as AdminSessionRow[]).map((row) => ({
     id: row.id,
