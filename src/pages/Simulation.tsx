@@ -2,16 +2,12 @@ import { useConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { useSessionClock } from "@/hooks/use-session-clock";
 import { useFormatEngine } from "@/hooks/use-format-engine";
 import {
   formatCountdown,
-  lockProblemDiscovery,
   revealWildcard,
-  saveProblemDiscovery,
   syncSessionPhase,
-  type ProblemDiscovery,
   type WildcardReveal,
 } from "@/lib/format-engine";
 import { useAsync } from "@/hooks/use-async";
@@ -19,7 +15,6 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/format";
-import { supabase } from "@/lib/supabase";
 import {
   getHackathonForSession,
   getSession,
@@ -28,7 +23,7 @@ import {
 } from "@/services/sessions";
 import { getTeamRoster } from "@/services/teams";
 import { friendlyError } from "@/services/errors";
-import { Check, Loader2, Sparkles, Users } from "lucide-react";
+import { Check, Loader2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
@@ -248,12 +243,6 @@ export default function Simulation() {
             <div className="flex flex-col gap-6">
               <ProblemPanel hackathon={hackathon.data} />
 
-              <ProblemDiscoveryPanel
-                sessionId={sessionId}
-                required={engine.brief?.hackathon.problem_discovery_required ?? false}
-                disabled={!isLive}
-              />
-
               {engine.brief?.wildcard_scenario_id && (
                 <WildcardCard
                   scenarioId={engine.brief.wildcard_scenario_id}
@@ -316,206 +305,6 @@ export default function Simulation() {
         )}
       </main>
     </Shell>
-  );
-}
-
-// ── Problem discovery (§1.3) ───────────────────────────────────────────────
-
-interface DiscoveryDraft {
-  problem_statement: string;
-  why_it_matters: string;
-  target_users: string;
-  pain_point: string;
-  proposed_solution: string;
-  expected_outcome: string;
-}
-
-const DISCOVERY_FIELDS: {
-  key: keyof DiscoveryDraft;
-  label: string;
-  placeholder: string;
-}[] = [
-  {
-    key: "problem_statement",
-    label: "Identified problem",
-    placeholder: "What problem did you choose to solve?",
-  },
-  {
-    key: "why_it_matters",
-    label: "Why it matters",
-    placeholder: "Who feels this problem, and what does it cost them?",
-  },
-  {
-    key: "target_users",
-    label: "Target users",
-    placeholder: "Who exactly is this for?",
-  },
-  {
-    key: "pain_point",
-    label: "Current pain point",
-    placeholder: "How do they cope today, and why does it fall short?",
-  },
-  {
-    key: "proposed_solution",
-    label: "Proposed solution",
-    placeholder: "What will your team build?",
-  },
-  {
-    key: "expected_outcome",
-    label: "Expected outcome",
-    placeholder: "What should be true when you are done?",
-  },
-];
-
-function ProblemDiscoveryPanel({
-  sessionId,
-  required,
-  disabled,
-}: {
-  sessionId: string;
-  required: boolean;
-  disabled: boolean;
-}) {
-  const [draft, setDraft] = useState<DiscoveryDraft>({
-    problem_statement: "",
-    why_it_matters: "",
-    target_users: "",
-    pain_point: "",
-    proposed_solution: "",
-    expected_outcome: "",
-  });
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [missing, setMissing] = useState<string[] | null>(null);
-
-  // Load the team's existing draft, if one has been started. RLS scopes the
-  // read to this team, and only the current draft is editable.
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const { data } = await supabase
-        .from("problem_discoveries")
-        .select(
-          "id, problem_statement, why_it_matters, target_users, pain_point, " +
-            "proposed_solution, expected_outcome, status",
-        )
-        .eq("session_id", sessionId)
-        .neq("status", "locked")
-        .order("created_at", { ascending: false })
-        .limit(1);
-      if (!cancelled && data && data.length > 0) {
-        const row = data[0] as unknown as Record<string, string>;
-        setDraft({
-          problem_statement: row.problem_statement ?? "",
-          why_it_matters: row.why_it_matters ?? "",
-          target_users: row.target_users ?? "",
-          pain_point: row.pain_point ?? "",
-          proposed_solution: row.proposed_solution ?? "",
-          expected_outcome: row.expected_outcome ?? "",
-        });
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId]);
-
-  async function handleSave() {
-    setIsSaving(true);
-    setError(null);
-    setMissing(null);
-    try {
-      await saveProblemDiscovery(sessionId, {
-        problemStatement: draft.problem_statement,
-        whyItMatters: draft.why_it_matters,
-        targetUsers: draft.target_users,
-        painPoint: draft.pain_point,
-        proposedSolution: draft.proposed_solution,
-        expectedOutcome: draft.expected_outcome,
-      });
-      setSaved(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't save.");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  async function handleLock() {
-    setError(null);
-    setMissing(null);
-    try {
-      const result = await lockProblemDiscovery(sessionId);
-      if (!result.ok) {
-        setMissing(result.missingFields);
-        return;
-      }
-      setSaved(false);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't lock.");
-    }
-  }
-
-  return (
-    <Card className="p-5">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold tracking-[-0.01em]">Problem discovery</h2>
-          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            {required
-              ? "Identify the problem your team will solve. There is no single right answer — what matters is that you can defend the one you chose."
-              : "Optional here — your hackathon does not require a discovered problem, but recording one sharpens the build."}
-          </p>
-        </div>
-        <Sparkles className="size-4 shrink-0 text-muted-foreground" />
-      </div>
-
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        {DISCOVERY_FIELDS.map((field) => (
-          <div
-            key={field.key}
-            className={cn(
-              "flex flex-col gap-1.5",
-              field.key === "problem_statement" && "sm:col-span-2",
-            )}
-          >
-            <label className="text-xs font-medium text-muted-foreground">{field.label}</label>
-            <Textarea
-              rows={2}
-              disabled={disabled}
-              value={draft[field.key]}
-              onChange={(e) => {
-                setDraft((d) => ({ ...d, [field.key]: e.target.value }));
-                setSaved(false);
-              }}
-              placeholder={field.placeholder}
-            />
-          </div>
-        ))}
-      </div>
-
-      {missing && missing.length > 0 && (
-        <p className="mt-3 text-xs text-destructive">
-          Fill in {missing.length} more {missing.length === 1 ? "field" : "fields"} before locking:
-          "" {missing.map((m) => m.replace(/_/g, " ")).join(", ")}.
-        </p>
-      )}
-      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
-      {saved && !error && <p className="mt-3 text-xs text-stage-report">Draft saved.</p>}
-
-      <div className="mt-4 flex justify-end gap-2">
-        <Button size="sm" variant="outline" onClick={() => void handleSave()} disabled={disabled || isSaving}>
-          {isSaving && <Loader2 className="size-3.5 animate-spin" />}
-          Save draft
-        </Button>
-        <Button size="sm" onClick={() => void handleLock()} disabled={disabled}>
-          <Check className="size-3.5" />
-          Lock problem
-        </Button>
-      </div>
-    </Card>
   );
 }
 
