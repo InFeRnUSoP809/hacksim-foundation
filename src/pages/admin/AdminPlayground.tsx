@@ -16,7 +16,7 @@ import {
   scanRepository,
   type PlaygroundEntry,
 } from "@/services/playground";
-import type { SubmissionAnalysis } from "@/types/analysis";
+import type { ReviewRunResult, SubmissionAnalysis } from "@/types/analysis";
 import {
   FileSearch,
   FlaskConical,
@@ -48,6 +48,13 @@ export default function AdminPlayground() {
   const [submissionId, setSubmissionId] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "scanning" | "reviewing">("idle");
   const [error, setError] = useState<string | null>(null);
+  // Bumped after every scan/review so the result panel refetches and shows the
+  // freshly stored output instead of the state it loaded earlier.
+  const [resultVersion, setResultVersion] = useState(0);
+  const [reviewOutcome, setReviewOutcome] = useState<{
+    submissionId: string;
+    outcome: ReviewRunResult;
+  } | null>(null);
 
   async function handleCreate() {
     setError(null);
@@ -55,7 +62,9 @@ export default function AdminPlayground() {
     try {
       const created = await createPlayground(url, name);
       setSubmissionId(created.submission_id);
+      setReviewOutcome(null);
       await scanRepository(created.submission_id);
+      setResultVersion((v) => v + 1);
       toast.success("Scan complete.");
       list.reload();
     } catch (err) {
@@ -71,6 +80,8 @@ export default function AdminPlayground() {
     setPhase("reviewing");
     try {
       const outcome = await runPlaygroundReview(submissionId);
+      setReviewOutcome({ submissionId, outcome });
+      setResultVersion((v) => v + 1);
       toast.success(`Review finished (${outcome.modules?.length ?? 0} modules).`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "The review failed.");
@@ -200,7 +211,13 @@ export default function AdminPlayground() {
 
         <div>
           {submissionId ? (
-            <PlaygroundResult submissionId={submissionId} />
+            <PlaygroundResult
+              submissionId={submissionId}
+              reloadKey={resultVersion}
+              reviewOutcome={
+                reviewOutcome?.submissionId === submissionId ? reviewOutcome.outcome : null
+              }
+            />
           ) : (
             <Card className="flex h-full flex-col items-start gap-3 border-dashed p-8">
               <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
@@ -224,10 +241,18 @@ export default function AdminPlayground() {
   );
 }
 
-function PlaygroundResult({ submissionId }: { submissionId: string }) {
+function PlaygroundResult({
+  submissionId,
+  reloadKey,
+  reviewOutcome,
+}: {
+  submissionId: string;
+  reloadKey: number;
+  reviewOutcome: ReviewRunResult | null;
+}) {
   const analysis = useAsync<SubmissionAnalysis>(
     () => getPlaygroundAnalysis(submissionId),
-    [submissionId],
+    [submissionId, reloadKey],
   );
 
   if (analysis.isLoading) return <LoadingState label="Loading analysis" />;
@@ -242,10 +267,14 @@ function PlaygroundResult({ submissionId }: { submissionId: string }) {
     <Card className="p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold tracking-[-0.01em]">Result</h2>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Badge variant="outline">{data?.repository?.analysis_status ?? "unknown"}</Badge>
+          <Badge variant="outline">review: {data?.review?.status ?? "none"}</Badge>
           <Badge variant="outline">{data?.evidence?.length ?? 0} evidence</Badge>
           <Badge variant="outline">{findings.length} findings</Badge>
+          <Link to={`/review/${submissionId}`} className="label-mono text-xs text-brand">
+            Open full review →
+          </Link>
         </div>
       </div>
 
@@ -271,6 +300,65 @@ function PlaygroundResult({ submissionId }: { submissionId: string }) {
             )}
           </ul>
         </section>
+
+        {data?.review?.summary && (
+          <section>
+            <h3 className="label-mono text-muted-foreground">AI summary</h3>
+            <p className="mt-2 text-sm font-medium leading-relaxed">
+              {data.review.summary.headline}
+            </p>
+            {(data.review.summary.strengths?.length ?? 0) > 0 && (
+              <div className="mt-2">
+                <p className="text-xs font-medium">Strengths</p>
+                <ul className="mt-1 list-disc pl-4 text-xs leading-relaxed text-muted-foreground">
+                  {data.review.summary.strengths.map((s, i) => (
+                    <li key={`s-${i}`}>{s}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(data.review.summary.areas_to_clarify?.length ?? 0) > 0 && (
+              <div className="mt-2">
+                <p className="text-xs font-medium">Areas to clarify</p>
+                <ul className="mt-1 list-disc pl-4 text-xs leading-relaxed text-muted-foreground">
+                  {data.review.summary.areas_to_clarify.map((s, i) => (
+                    <li key={`c-${i}`}>{s}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {data.review.problem_alignment && (
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                <Badge variant="outline" className="label-mono mr-2">
+                  {data.review.problem_alignment.status}
+                </Badge>
+                {data.review.problem_alignment.explanation}
+              </p>
+            )}
+          </section>
+        )}
+
+        {reviewOutcome && reviewOutcome.modules.length > 0 && (
+          <section>
+            <h3 className="label-mono text-muted-foreground">Review run (modules)</h3>
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {reviewOutcome.modules.map((m) => (
+                <li key={m.module} className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="label-mono text-brand">{m.module}</span>
+                  <Badge variant="outline">{m.status}</Badge>
+                  <Badge variant="outline">{m.source}</Badge>
+                  {m.input_tokens + m.output_tokens > 0 && (
+                    <span className="text-muted-foreground">
+                      {m.input_tokens + m.output_tokens} tokens
+                    </span>
+                  )}
+                  {m.reason && <span className="text-muted-foreground">{m.reason}</span>}
+                  {m.error && <span className="text-destructive">{m.error}</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section>
           <h3 className="label-mono text-muted-foreground">Review findings</h3>
