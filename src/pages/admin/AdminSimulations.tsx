@@ -5,11 +5,10 @@ import { Card } from "@/components/ui/card";
 import { useSessionClock } from "@/hooks/use-session-clock";
 import { useAsync } from "@/hooks/use-async";
 import { formatDateTime, formatDuration } from "@/lib/format";
-import { getCheckpoints } from "@/services/checkpoints";
 import { listSessionsForAdmin } from "@/services/sessions";
 import { useState } from "react";
 import { ChevronLeft, Timer } from "lucide-react";
-import { isLive, CHECKPOINTS, type BuildCheckpoint } from "@/types";
+import { isLive } from "@/types";
 import type { AdminSessionRow } from "@/services/sessions";
 
 export default function AdminSimulations() {
@@ -126,10 +125,6 @@ function SimulationDetail({
   onBack: () => void;
 }) {
   const sessions = useAsync<AdminSessionRow[]>(() => listSessionsForAdmin(), []);
-  const checkpoints = useAsync<BuildCheckpoint[]>(
-    () => getCheckpoints(sessionId),
-    [sessionId],
-  );
   const clock = useSessionClock(sessionId);
 
   const session = sessions.data?.find((row) => row.id === sessionId);
@@ -176,42 +171,6 @@ function SimulationDetail({
               : "—"}
           </p>
         </Card>
-      </div>
-
-      <div className="mt-8">
-        <h2 className="text-lg font-semibold tracking-[-0.02em]">Checkpoints</h2>
-        {checkpoints.isLoading ? (
-          <LoadingState label="Loading checkpoints" />
-        ) : (
-          <ol className="mt-4 flex flex-col gap-3">
-            {CHECKPOINTS.map((checkpoint) => {
-              const record = checkpoints.data?.find(
-                (row) => row.checkpoint_type === checkpoint.type,
-              );
-              const done = Boolean(record?.completed_at);
-
-              return (
-                <Card key={checkpoint.type} className="p-5">
-                  <div className="flex items-center gap-2.5">
-                    <span
-                      className={
-                        done
-                          ? "text-base leading-none text-stage-report"
-                          : "text-base leading-none text-muted-foreground/50"
-                      }
-                    >
-                      {done ? "✓" : "○"}
-                    </span>
-                    <p className="text-sm font-semibold">{checkpoint.label}</p>
-                  </div>
-                  <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                    {record?.response || "No response yet."}
-                  </p>
-                </Card>
-              );
-            })}
-          </ol>
-        )}
       </div>
     </AdminLayout>
   );
