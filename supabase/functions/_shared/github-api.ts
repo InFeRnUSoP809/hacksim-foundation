@@ -103,6 +103,18 @@ export class GitHubClient {
         );
       }
 
+      if (response.status === 401) {
+        // A token GitHub refuses is the single most common setup failure, so it
+        // gets its own message rather than a generic rejection.
+        throw new GitHubError(
+          "GitHub rejected the GITHUB_TOKEN (HTTP 401). The token is invalid, " +
+            "expired, or was saved with extra characters — recheck the secret " +
+            "value in Edge Function secrets.",
+          "unauthorized",
+          401,
+        );
+      }
+
       if (response.status >= 500) {
         lastError = new GitHubError(
           `GitHub is unavailable (${response.status}).`,
@@ -110,7 +122,11 @@ export class GitHubClient {
           response.status,
         );
       } else {
-        throw new GitHubError("GitHub rejected the request.", "client_error", response.status);
+        throw new GitHubError(
+          `GitHub rejected the request (HTTP ${response.status}).`,
+          "client_error",
+          response.status,
+        );
       }
 
       // Exponential backoff, but only for retryable transport/server errors.

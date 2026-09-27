@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 4987 lines, self-contained — safe to paste into the Supabase dashboard.
+// 4998 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -2430,6 +2430,13 @@ var GitHubClient = class {
           response.status
         );
       }
+      if (response.status === 401) {
+        throw new GitHubError(
+          "GitHub rejected the GITHUB_TOKEN (HTTP 401). The token is invalid, expired, or was saved with extra characters \u2014 recheck the secret value in Edge Function secrets.",
+          "unauthorized",
+          401
+        );
+      }
       if (response.status >= 500) {
         lastError = new GitHubError(
           `GitHub is unavailable (${response.status}).`,
@@ -2437,7 +2444,11 @@ var GitHubClient = class {
           response.status
         );
       } else {
-        throw new GitHubError("GitHub rejected the request.", "client_error", response.status);
+        throw new GitHubError(
+          `GitHub rejected the request (HTTP ${response.status}).`,
+          "client_error",
+          response.status
+        );
       }
       if (attempt < githubMaxRetries - 1) {
         await sleep(Math.min(8e3, 750 * 2 ** attempt));
