@@ -31,7 +31,7 @@ const EMPTY_DRAFT: HackathonDraft = {
   expected_outcome: "",
   evaluation_criteria: "",
   simulation_duration_minutes: 60,
-  github_submission_window_enabled: false,
+  github_submission_window_enabled: true,
   github_submission_window_minutes: 10,
   status: "draft",
 };
@@ -281,7 +281,7 @@ function HackathonForm({
           expected_outcome: hackathon.expected_outcome,
           evaluation_criteria: hackathon.evaluation_criteria,
           simulation_duration_minutes: hackathon.simulation_duration_minutes,
-          github_submission_window_enabled: hackathon.github_submission_window_enabled ?? false,
+          github_submission_window_enabled: hackathon.github_submission_window_enabled ?? true,
           github_submission_window_minutes: hackathon.github_submission_window_minutes ?? 10,
           status: hackathon.status,
         }

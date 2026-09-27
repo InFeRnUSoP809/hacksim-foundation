@@ -106,6 +106,13 @@ export default function SubmissionPage() {
           </p>
         </div>
 
+        {engine.error && !engine.brief && (
+          <p className="mt-6 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs leading-relaxed text-destructive">
+            Scenario engine unavailable — {engine.error} You can still fill in the form below,
+            but the submission deadline needs the 006 and 007 database functions.
+          </p>
+        )}
+
         {locked ? (
           <LockedNotice submission={current!} />
         ) : engine.phase === "closed" ? (

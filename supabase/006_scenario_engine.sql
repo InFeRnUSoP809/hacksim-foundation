@@ -51,8 +51,8 @@ alter table public.hackathons
   -- Part 20 — the post-build GitHub window is per-hackathon configuration,
   -- never a hardcoded constant. The UI may offer common values, but any
   -- duration between 1 and 240 minutes is valid.
-  add column if not exists github_submission_window_enabled boolean not null default false,
-  add column if not exists github_submission_window_minutes integer not null default 5
+  add column if not exists github_submission_window_enabled boolean not null default true,
+  add column if not exists github_submission_window_minutes integer not null default 10
     check (github_submission_window_minutes between 1 and 240);
 
 comment on column public.hackathons.hackathon_type is
@@ -153,8 +153,8 @@ alter table public.build_sessions
   -- simulations keep the deadline they started with; only new simulations
   -- pick up the new value. Without the snapshot, editing the hackathon would
   -- silently move an active team's deadline.
-  add column if not exists github_submission_window_enabled boolean not null default false,
-  add column if not exists github_submission_window_minutes integer not null default 5
+  add column if not exists github_submission_window_enabled boolean not null default true,
+  add column if not exists github_submission_window_minutes integer not null default 10
     check (github_submission_window_minutes between 1 and 240);
 
 -- `ends_at` is the build deadline and is never null; build_ends_at mirrors it
@@ -634,3 +634,22 @@ create policy submission_claims_read on public.submission_claims
 
 -- Writes to the knowledge and target tables are server-side only. A student
 -- cannot rewrite the record of what was found about their project.
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- Backfill: the upload phase is on by default
+--
+-- The window defaulted to "off" when it was introduced, which meant a run could
+-- end with no upload step at all — the build timer reached zero and nothing
+-- followed it. The window is the point of the end of a hackathon, so existing
+-- hackathons are switched on here and an admin can still turn it off per
+-- hackathon afterwards. Re-runnable: it only touches rows that are off.
+update public.hackathons
+   set github_submission_window_enabled = true
+ where github_submission_window_enabled = false;
+
+-- Keep the column default aligned for rows created by anything other than
+-- start_build_session (admin tooling, seed data, a future import).
+alter table public.hackathons
+  alter column github_submission_window_enabled set default true;
+alter table public.build_sessions
+  alter column github_submission_window_enabled set default true;

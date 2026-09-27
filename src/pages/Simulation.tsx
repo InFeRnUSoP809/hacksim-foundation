@@ -2,9 +2,10 @@ import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useSessionClock } from "@/hooks/use-session-clock";
-import { useFormatEngine } from "@/hooks/use-format-engine";
+import { useFormatEngine, type SimulationPhase } from "@/hooks/use-format-engine";
 import {
   formatCountdown,
+  openGithubWindow,
   revealWildcard,
   syncSessionPhase,
   type WildcardReveal,
@@ -13,7 +14,8 @@ import { useAsync } from "@/hooks/use-async";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
-import { formatDuration } from "@/lib/format";import {
+import { formatDuration } from "@/lib/format";
+import {
   getHackathonForSession,
   getSession,
   getTeamName,
@@ -26,6 +28,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import {
   type BuildSession,
   type Hackathon,
+  type SessionStatus,
   type TeamMemberWithProfile,
 } from "@/types";
 
@@ -59,61 +62,52 @@ export default function Simulation() {
   // and the derived phase. Syncs the session through build-expiry on load.
   const engine = useFormatEngine(sessionId);
   useEffect(() => {
-    if (sessionId) void syncSessionPhase(sessionId).then(() => engine.refresh());
+    if (!sessionId) return;
+    void syncSessionPhase(sessionId)
+      .then(() => engine.refresh())
+      .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  // When the build ends, the page moves itself to the GitHub submission. The
-  // window is short and its only job is the repository URL, so there is no
-  // "finish" step to confirm and nothing to do on this view once time is up —
-  // the timer crossing zero is the finish. Two triggers, one guard:
-  //   * the local countdown reaching zero — instant, optimistic, no waiting
-  //     for a server round-trip, taken only when this run's own snapshot says
-  //     a submission window exists;
-  //   * the server-derived phase arriving at "window" — the backstop for a
-  //     page loaded (or refreshed) after the build already ended.
-  const redirectedRef = useRef(false);
-  const runHasWindow =
-    (engine.brief?.clock.github_submission_window_enabled ?? false) &&
-    (engine.brief?.clock.github_submission_window_minutes ?? 0) > 0;
+  // ── End of build: hand over to the submission page ─────────────────────
+  // The timer reaching zero is the finish — there is no "finish" button to
+  // confirm and nothing left to build, so the page moves itself to the GitHub
+  // upload step.
+  //
+  // The trigger is the session clock (`session_state`) — the same one the
+  // header counts down with — and deliberately not the scenario engine's
+  // clock. The engine's numbers arrive through `session_brief`, and a run must
+  // still end on time when the engine's database functions are unavailable:
+  // otherwise a missing function silently freezes the phase at "build" and the
+  // page never moves. The server stays the only thing that decides whether the
+  // upload is still accepted.
+  const OVER_STATUSES: SessionStatus[] = ["completed", "submitted", "cancelled"];
+  const buildElapsed =
+    !clock.isLoading &&
+    clock.remaining <= 0 &&
+    clock.status !== "not_started" &&
+    !OVER_STATUSES.includes(clock.status);
+
+  const handedOverRef = useRef(false);
 
   useEffect(() => {
-    if (
-      sessionId &&
-      !redirectedRef.current &&
-      engine.brief &&
-      runHasWindow &&
-      engine.buildRemaining <= 0
-    ) {
-      redirectedRef.current = true;
-      navigate(`/submission/${sessionId}`);
-    }
-  }, [engine.brief, engine.buildRemaining, runHasWindow, sessionId, navigate]);
+    if (!sessionId || handedOverRef.current) return;
+    // Two ways in, one handover: the build clock reaching zero, or the engine
+    // reporting the server-derived submission phase — the backstop for a page
+    // loaded (or refreshed) after the build already ended.
+    if (!buildElapsed && engine.phase !== "window") return;
 
-  useEffect(() => {
-    if (engine.phase === "window" && sessionId && !redirectedRef.current) {
-      redirectedRef.current = true;
-      navigate(`/submission/${sessionId}`);
-    }
-  }, [engine.phase, sessionId, navigate]);
-
-  // The instant the local countdown crosses zero, have the server advance the
-  // session (build expiry, window open) and refetch the brief. Without this
-  // the server-side state could lag up to one poll interval behind what the
-  // timer shows, and the submission page would re-derive the phase from the
-  // stale snapshot.
-  const zeroSyncedRef = useRef(false);
-  useEffect(() => {
-    if (engine.brief && engine.buildRemaining <= 0 && !zeroSyncedRef.current) {
-      zeroSyncedRef.current = true;
-      if (sessionId) {
-        void syncSessionPhase(sessionId)
-          .then(() => engine.refresh())
-          .catch(() => undefined);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine.brief, engine.buildRemaining, sessionId]);
+    handedOverRef.current = true;
+    // Best effort: have the database record the phase change and open the
+    // window before the submission page reads them. A failure here is not
+    // fatal — that page re-derives the phase from its own clock. The page
+    // itself flips to its end-of-run card from `buildElapsed` in the same
+    // frame, so the handover is never a blank pause.
+    void syncSessionPhase(sessionId)
+      .then(() => openGithubWindow(sessionId))
+      .catch(() => undefined)
+      .finally(() => navigate(`/submission/${sessionId}`));
+  }, [buildElapsed, engine.phase, sessionId, navigate]);
 
   if (!sessionId) {
     return (
@@ -128,7 +122,15 @@ export default function Simulation() {
   // would otherwise mask the submission window entirely. "window" shows the
   // submission banner, "closed" and "done" show the end-of-run cards, and
   // "build" is the working view.
-  const phase = engine.phase;
+  //
+  // With no brief loaded the engine reports "build" forever, so the session
+  // clock stands in — otherwise an unreachable engine would leave the working
+  // view on screen after time is up.
+  const phase: SimulationPhase = engine.brief
+    ? engine.phase
+    : buildElapsed
+      ? "closed"
+      : "build";
   const finished = phase === "closed" || phase === "done";
   const inSubmissionWindow = phase === "window";
   const buildOver = phase === "window" || phase === "closed";
@@ -217,6 +219,14 @@ export default function Simulation() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 sm:px-8">
+        {engine.error && (
+          <p className="mb-6 rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-xs leading-relaxed text-destructive">
+            Scenario engine unavailable — {engine.error} The build timer still ends this run
+            correctly, but the submission window and wildcard reveals need the 006 and 007
+            database functions.
+          </p>
+        )}
+
         {finished ? (
           <Card className="flex flex-col items-start gap-4 p-8">
             <h1 className="text-2xl font-semibold tracking-[-0.025em]">
@@ -224,9 +234,9 @@ export default function Simulation() {
             </h1>
             <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
               {phase === "closed"
-                ? windowEnabled
-                  ? "The submission window has closed. Nothing further can be submitted for this run."
-                  : "This run has no GitHub upload phase — the submission window was disabled when the run started, so the build simply ended. Runs started after enabling the window will move to the upload automatically."
+                ? engine.brief && !windowEnabled
+                  ? "This run has no GitHub upload phase — the submission window was disabled when the run started, so the build simply ended. Enable it on the hackathon and start a new run to get the upload step."
+                  : "The build is over. Nothing further can be added for this run."
                 : "Your team finished this run. Your work is saved and ready for submission review."}
             </p>
             <div className="flex gap-3">
@@ -433,6 +443,3 @@ function ProblemPanel({ hackathon }: { hackathon: Hackathon | null }) {
     </Card>
   );
 }
-
-// ── Checkpoint ──────────────────────────────────────────────────────────────
-

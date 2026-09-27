@@ -3,14 +3,19 @@
  * Strategy:
  *   - navigations  : network-first, falling back to the cached shell so a
  *                    refresh on /dashboard still works offline
- *   - same-origin  : stale-while-revalidate (icons, built assets)
+ *   - built assets : stale-while-revalidate (content-hashed, so a new build is
+ *                    always a new URL and can never be stale)
+ *   - anything else same-origin (dev modules, /src/... , config): network-first.
+ *                    Those URLs are NOT fingerprinted, so serving them from the
+ *                    cache first pins the browser to an old build until it
+ *                    happens to revalidate.
  *   - everything else (Supabase API, third-party): passthrough, never cached
  *
  * No build-time precache manifest is used, so this stays correct as the app
  * grows without any extra tooling.
  */
 
-const VERSION = "v1";
+const VERSION = "v2";
 const SHELL_CACHE = `hacksim-shell-${VERSION}`;
 const ASSET_CACHE = `hacksim-assets-${VERSION}`;
 
@@ -71,7 +76,29 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Static same-origin assets: serve fast from cache, refresh in the background.
+  // Only fingerprinted build output may be served from the cache before the
+  // network. Everything else same-origin has a stable URL, so a cached copy is
+  // an old copy.
+  const isFingerprintedAsset =
+    url.pathname.startsWith("/assets/") ||
+    /\.(?:png|svg|jpg|jpeg|webp|ico|woff2?)$/.test(url.pathname);
+
+  if (!isFingerprintedAsset) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response && response.status === 200 && response.type === "basic") {
+            const copy = response.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || caches.match("/index.html"))),
+    );
+    return;
+  }
+
+  // Fingerprinted assets: serve fast from cache, refresh in the background.
   event.respondWith(
     caches.match(request).then((cached) => {
       const network = fetch(request)
