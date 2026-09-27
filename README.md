@@ -58,6 +58,7 @@ is idempotent, so re-running is safe.
 | 2 | `supabase/002_hackathons_teams_sessions.sql` | `hackathons`, `teams`, `team_members`, `build_sessions`, `build_checkpoints`, RPCs, RLS |
 | 3 | `supabase/003_submissions.sql` | `submissions`, `submission_members`, `submission_events`, RPCs, RLS |
 | 4 | `supabase/004_analysis_ai.sql` | **Phase 5+6.** `repositories`, `repository_files`, `code_chunks`, `ai_analyses`, `ai_usage`, `ai_budgets`, `ai_model_configs`, `hackathon_requirement_maps`, `requirement_evaluations`, `project_reviews`, `project_review_findings`, `defense_targets` |
+| 5 | `supabase/005_model_pricing.sql` | The `deepseek-flash` price row. Without it the budget gate refuses every call: a missing model is not a default, it is a refusal. |
 | — | `supabase/seed.sql` | *Optional.* A MediStock practice hackathon at 8 hours |
 
 For Phases 1–4 only, `supabase/00_all_in_one.sql` is the same content as
@@ -206,16 +207,29 @@ supabase/functions/
     review.ts        the Phase 6 orchestrator
 ```
 
-Deploy:
+Deploy — one command, after `supabase link` and after the secrets exist:
 
 ```bash
-supabase link --project-ref <your-project-ref>
-
-# Secrets live in Supabase, not in a .env file.
-supabase secrets set DEEPSEEK_API_KEY=sk-... GITHUB_TOKEN=ghp_...
-
-supabase functions deploy analysis ai-admin
+npx supabase functions deploy analysis ai-admin --use-api
 ```
+
+`--use-api` bundles server-side instead of locally, so it needs no Docker. The
+equivalent in the CLI proper is `supabase functions deploy analysis ai-admin`
+when you have a working Docker daemon.
+
+Secrets go in the dashboard, not in a `.env` file and never in
+`config.toml` — **Project Settings → Edge Functions → Secrets → Add new secret**:
+
+| Name | Required | Notes |
+| --- | --- | --- |
+| `DEEPSEEK_API_KEY` | for Phase 6 | Without it Phase 5 still runs in full; Phase 6 is refused with a reason |
+| `GITHUB_TOKEN` | strongly recommended | A fine-grained token with public-repo read only. Without it GitHub allows 60 requests/hour per IP, which a real repository exhausts |
+| `DEEPSEEK_MODEL` | no | Defaults to `deepseek-flash` |
+| `GITHUB_API_BASE` | no | Defaults to `https://api.github.com` |
+
+`Deno.env.get` reads secrets at function start, so **adding or changing a secret
+requires a redeploy** for it to take effect. Set the secrets first, then run the
+deploy command above once.
 
 `verify_jwt = true` for both functions (see `supabase/config.toml`). The
 platform verifies the caller's JWT before the function runs, and the function
