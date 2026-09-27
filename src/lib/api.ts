@@ -74,13 +74,41 @@ async function invoke<T>(
   }
 
   if (response.error) {
-    // supabase-js wraps an HTTP error body; the function's own `detail` is the
-    // useful part.
-    const raw = response.error.message ?? "";
-    const match = raw.match(/"detail"\s*:\s*"((?:[^"\\]|\\.)*)"/);
-    throw new EdgeFunctionError(match ? JSON.parse(`"${match[1]}"`) : raw);
+    throw new EdgeFunctionError(await edgeErrorMessage(response.error));
   }
   return response.data as T;
+}
+
+/**
+ * Pull the function's own `detail` out of a failed invoke.
+ *
+ * Older supabase-js embedded the response body in `error.message`; current
+ * versions keep the raw `Response` on `error.context` and reduce the message
+ * to a bare "Edge Function returned a non-2xx status code" — which hides
+ * everything the function tried to say (a GitHub rate limit, a missing
+ * secret, a bad URL). Both shapes are handled here so the pages can show the
+ * real reason a scan failed.
+ */
+async function edgeErrorMessage(error: unknown): Promise<string> {
+  const context = (error as { context?: unknown })?.context as Response | undefined;
+  if (context && typeof context.json === "function") {
+    try {
+      const body = (await context.json()) as { detail?: unknown; message?: unknown };
+      const detail =
+        typeof body.detail === "string"
+          ? body.detail
+          : typeof body.message === "string"
+            ? body.message
+            : "";
+      if (detail) return detail;
+    } catch {
+      // Non-JSON body (a platform error page, an empty body) — fall through.
+    }
+  }
+
+  const raw = (error as { message?: string })?.message ?? "";
+  const match = raw.match(/"detail"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  return match ? JSON.parse(`"${match[1]}"`) : raw;
 }
 
 // ── Analysis (Phase 5 + 6) ────────────────────────────────────────────────
