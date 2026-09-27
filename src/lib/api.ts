@@ -137,16 +137,23 @@ export async function analyzeRepository(submissionId: string): Promise<{
   return invoke("analysis", { body: { action: "repository", submission_id: submissionId } });
 }
 
-/** §42 — run the AI modules. */
+/**
+ * Run the analysis.
+ *
+ * The function plans the work itself: it reads the hackathon, decides which
+ * dimensions matter, retrieves the code each requirement actually needs, and
+ * calls a model only where the scan could not conclude. `onlyTask` re-runs a
+ * single named task, which is what a "retry" button uses.
+ */
 export async function runReview(
   submissionId: string,
-  module?: string,
+  onlyTask?: string,
 ): Promise<ReviewRunResult> {
   return invoke("analysis", {
     body: {
-      action: "review",
+      action: "analyze",
       submission_id: submissionId,
-      only_module: module ?? "",
+      only_task: onlyTask ?? "",
     },
   });
 }
@@ -158,10 +165,19 @@ export async function reanalyzeRepository(submissionId: string): Promise<{ statu
 
 export async function retryModule(
   submissionId: string,
-  module: string,
+  task: string,
 ): Promise<{ status: string }> {
   return invoke("analysis", {
-    body: { action: "retry-module", submission_id: submissionId, module },
+    body: { action: "retry-task", submission_id: submissionId, task },
+  });
+}
+
+/** §55 — why the analysis concluded what it did. Admin only. */
+export async function getAnalysisDiagnostics(
+  submissionId: string,
+): Promise<Record<string, unknown>> {
+  return invoke("analysis", {
+    body: { action: "diagnostics", submission_id: submissionId },
   });
 }
 

@@ -1,0 +1,23 @@
+{
+  "hackathon": {
+    "id": "fixture-medistock",
+    "name": "Pharmacy Supply Challenge",
+    "hackathon_type": "problem_statement",
+    "theme": null,
+    "problem_statement": "Pharmacies struggle to know what medicine to reorder and when. Stock runs out on essential medicines while slow-moving items tie up capital, and decisions are made from memory instead of data.",
+    "requirements": "- Ingest historical purchase and stock dataset\n- Produce a demand forecast per medicine for a configurable future window\n- Recommend reorder quantity and reorder date per medicine\n- Surface low-stock risk before stockout happens\n- Show a confidence or data-quality signal for each recommendation\n- Provide an interface a pharmacist can use in a few seconds per item",
+    "constraints": "- No paid third-party data services\n- No patient data may be stored\n- Data must not be entered manually",
+    "expected_outcome": "A working prototype in which a pharmacist can open a dashboard, see which medicines are at risk of stocking out, understand why, and either accept the suggested reorder or adjust it.",
+    "evaluation_criteria": "- Forecast quality and whether the method is explained\n- Honesty about uncertainty and data gaps\n- Usability for a pharmacist under time pressure\n- Engineering quality of the implementation",
+    "simulation_duration_minutes": 1440,
+    "status": "active"
+  },
+  "submission": {
+    "id": "fixture-submission",
+    "project_name": "MediStock",
+    "project_description": "MediStock analyses historical pharmacy sales and batch stock to forecast demand per medicine, recommend reorder quantity and date, and warn about medicines likely to stock out. A dashboard lets a pharmacist review and adjust each recommendation.",
+    "key_features": "- Demand trend and forecast per medicine\n- Reorder quantity and date recommendation\n- Low-stock and stockout risk alerts\n- Purchase order creation and status tracking\n- Inventory and batch level views",
+    "tech_stack": "Python, FastAPI, scikit-learn, pandas, SQLite, vanilla HTML/CSS/JavaScript",
+    "github_url": "https://github.com/jeniljani30/MediStock"
+  }
+}

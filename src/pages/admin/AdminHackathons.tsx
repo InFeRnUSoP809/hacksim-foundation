@@ -21,27 +21,44 @@ import {
 } from "@/services/hackathons";
 import { friendlyError } from "@/services/errors";
 import { Archive, Loader2, Plus, Power, X } from "lucide-react";
-import type { Hackathon, HackathonDraft } from "@/types";
+import { HACKATHON_TYPES, type Hackathon, type HackathonDraft } from "@/types";
 
 const EMPTY_DRAFT: HackathonDraft = {
   name: "",
   problem_statement: "",
+  hackathon_type: "problem_statement",
+  theme: "",
   requirements: "",
   constraints: "",
   expected_outcome: "",
   evaluation_criteria: "",
+  custom_instructions: "",
+  technology_restrictions: "",
+  dataset_requirements: "",
+  deployment_requirements: "",
+  config_version: 1,
   simulation_duration_minutes: 60,
   github_submission_window_enabled: true,
   github_submission_window_minutes: 10,
   status: "draft",
 };
 
+/**
+ * Every one of these is optional on purpose. A theme-only open-innovation brief
+ * is valid, and the analysis adapts: no problem statement means no alignment
+ * task, no requirements means no invented REQ-001.
+ */
 const LONG_FIELDS = [
-  { key: "problem_statement", label: "Problem statement", rows: 7 },
-  { key: "requirements", label: "Requirements", rows: 5 },
-  { key: "constraints", label: "Constraints", rows: 4 },
-  { key: "expected_outcome", label: "Expected outcome", rows: 4 },
-  { key: "evaluation_criteria", label: "Evaluation criteria", rows: 5 },
+  { key: "problem_statement", label: "Problem statement (optional)", rows: 7 },
+  { key: "theme", label: "Theme (optional)", rows: 2 },
+  { key: "requirements", label: "Requirements (optional)", rows: 5 },
+  { key: "constraints", label: "Constraints (optional)", rows: 4 },
+  { key: "expected_outcome", label: "Expected outcome (optional)", rows: 4 },
+  { key: "evaluation_criteria", label: "Evaluation criteria (optional)", rows: 5 },
+  { key: "custom_instructions", label: "Custom instructions (optional)", rows: 4 },
+  { key: "technology_restrictions", label: "Technology restrictions (optional)", rows: 3 },
+  { key: "dataset_requirements", label: "Dataset requirements (optional)", rows: 3 },
+  { key: "deployment_requirements", label: "Deployment requirements (optional)", rows: 3 },
 ] as const;
 
 function clamp(value: number, min: number, max: number): number {
@@ -275,11 +292,18 @@ function HackathonForm({
     hackathon
       ? {
           name: hackathon.name,
-          problem_statement: hackathon.problem_statement,
-          requirements: hackathon.requirements,
-          constraints: hackathon.constraints,
-          expected_outcome: hackathon.expected_outcome,
-          evaluation_criteria: hackathon.evaluation_criteria,
+          problem_statement: hackathon.problem_statement ?? "",
+          hackathon_type: hackathon.hackathon_type || "problem_statement",
+          theme: hackathon.theme ?? "",
+          requirements: hackathon.requirements ?? "",
+          constraints: hackathon.constraints ?? "",
+          expected_outcome: hackathon.expected_outcome ?? "",
+          evaluation_criteria: hackathon.evaluation_criteria ?? "",
+          custom_instructions: hackathon.custom_instructions ?? "",
+          technology_restrictions: hackathon.technology_restrictions ?? "",
+          dataset_requirements: hackathon.dataset_requirements ?? "",
+          deployment_requirements: hackathon.deployment_requirements ?? "",
+          config_version: hackathon.config_version ?? 1,
           simulation_duration_minutes: hackathon.simulation_duration_minutes,
           github_submission_window_enabled: hackathon.github_submission_window_enabled ?? true,
           github_submission_window_minutes: hackathon.github_submission_window_minutes ?? 10,
@@ -359,6 +383,27 @@ function HackathonForm({
           />
         </div>
 
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="hackathon_type">Hackathon type</Label>
+          <select
+            id="hackathon_type"
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            value={draft.hackathon_type || "problem_statement"}
+            onChange={(event) => set("hackathon_type", event.target.value)}
+          >
+            {HACKATHON_TYPES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            The type changes what the analysis looks at. A theme-only
+            open-innovation brief produces no requirements and no alignment
+            task, because inventing either would be inventing an expectation.
+          </p>
+        </div>
+
         {LONG_FIELDS.map((field) => (
           <div key={field.key} className="flex flex-col gap-2">
             <Label htmlFor={field.key}>{field.label}</Label>
@@ -372,6 +417,10 @@ function HackathonForm({
               placeholder={
                 field.key === "problem_statement"
                   ? "Describe the problem students must solve…"
+                  : field.key === "theme"
+                  ? "The theme, if this is a theme-based or open-innovation brief…"
+                  : field.key === "requirements"
+                  ? "One requirement per line. Leave empty for an open-innovation brief."
                   : undefined
               }
             />

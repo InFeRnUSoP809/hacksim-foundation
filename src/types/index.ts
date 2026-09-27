@@ -66,14 +66,41 @@ export function stageById(id: StageId) {
 export const HACKATHON_STATUSES = ["draft", "active", "archived"] as const;
 export type HackathonStatus = (typeof HACKATHON_STATUSES)[number];
 
+/**
+ * §5 — the type list is a starting set, not a whitelist. The column is plain
+ * text so an organiser can run a "fintech_regulatory_sandbox" and the engine
+ * carries the label through instead of refusing to store it.
+ */
+export const HACKATHON_TYPES = [
+  { value: "problem_statement", label: "Problem statement" },
+  { value: "open_innovation", label: "Open innovation" },
+  { value: "theme_based", label: "Theme based" },
+  { value: "ai_ml", label: "AI / ML" },
+  { value: "web", label: "Web development" },
+  { value: "mobile", label: "Mobile" },
+  { value: "iot_hardware", label: "IoT / hardware" },
+  { value: "data_science", label: "Data science" },
+  { value: "security", label: "Cybersecurity" },
+  { value: "blockchain", label: "Blockchain" },
+  { value: "custom", label: "Custom" },
+] as const;
+
 export interface Hackathon {
   id: string;
   name: string;
+  /** Optional: an open-innovation brief legitimately has no problem statement. */
   problem_statement: string;
+  hackathon_type: string;
+  theme: string;
   requirements: string;
   constraints: string;
   expected_outcome: string;
   evaluation_criteria: string;
+  custom_instructions: string;
+  technology_restrictions: string;
+  dataset_requirements: string;
+  deployment_requirements: string;
+  config_version: number;
   simulation_duration_minutes: number;
   /** Part 20 — post-build GitHub submission window (admin-configured). */
   github_submission_window_enabled: boolean;

@@ -1,20 +1,22 @@
 /**
- * HackSim analysis — Phase 5 (repository scan) and Phase 6 (AI review).
+ * HackSim analysis — repository scan and project analysis.
  *
- * Routes (one Supabase function, so the browser needs a single endpoint):
+ * One Supabase function, so the browser needs a single endpoint:
  *
- *   GET  ?submission_id=…                              read the analysis
- *   POST {action:"repository", submission_id}          run Phase 5
- *   POST {action:"review",     submission_id, only_module?}  run Phase 6
- *   POST {action:"reanalyze",  submission_id}          force a fresh scan
- *   POST {action:"retry-module", submission_id, module} retry one module
+ *   GET  ?submission_id=…                                  read the analysis
+ *   POST {action:"repository", submission_id}               scan the repository
+ *   POST {action:"reanalyze", submission_id}                force a fresh scan
+ *   POST {action:"analyze",   submission_id, only_task?}    run the analysis
+ *   POST {action:"retry-task", submission_id, task}         re-run one task
+ *   POST {action:"diagnostics", submission_id}               why it concluded that
  *
  * The split between read and act is the whole authorisation story. A valid JWT
  * proves who you are, not what you may touch, so every route re-checks team
  * membership server-side with the service client.
  *
- * Phase 5 is deterministic and costs no AI tokens. Phase 6 calls a model only
- * where the deterministic pass could not conclude.
+ * The repository scan is deterministic and costs no AI tokens. The analysis asks
+ * a model only where the scan could not conclude, and a scan that could not
+ * read the whole repository says so instead of reporting a negative.
  */
 
 import {
@@ -24,17 +26,20 @@ import {
   HttpError,
   json,
   loadHackathon,
-  loadMembers,
   loadSubmission,
   requireTeamAccess,
   withErrorHandling,
   type Caller,
 } from "../_shared/http.ts";
 import { analyzeSubmission, AnalysisStore } from "../_shared/scanner.ts";
-import { runReview } from "../_shared/review.ts";
+import { runAnalysis } from "../_shared/review.ts";
 import { aiConfigured } from "../_shared/ai.ts";
 import { rateLimiter } from "../_shared/security.ts";
-import type { Evidence, ProjectMap } from "../_shared/github.ts";
+import { rescoreRelevance } from "../_shared/datasets.ts";
+import { briefVocabulary, analyseRequirement } from "../_shared/concepts.ts";
+import { getRequirementMap } from "../_shared/requirements.ts";
+import type { Evidence } from "../_shared/github.ts";
+import type { ConceptSet } from "../_shared/concepts.ts";
 
 async function requireCaller(req: Request): Promise<Caller> {
   const caller = await getCaller(req);
@@ -59,7 +64,7 @@ async function readAnalysis(req: Request, url: URL): Promise<Response> {
 
   return json({
     ...(data ?? {}),
-    // The browser needs to know whether Phase 6 can run at all.
+    // The browser needs to know whether the analysis can run at all.
     ai_available: aiConfigured(),
   });
 }
@@ -92,16 +97,31 @@ async function act(req: Request): Promise<Response> {
       await new AnalysisStore().markStale(submissionId);
       return json(await runScan(submissionId, githubUrl, true));
 
-    case "review": {
-      const onlyModule = body?.only_module ? [String(body.only_module)] : null;
-      return json(await runReviewFor(submission, onlyModule, caller));
+    case "analyze": {
+      const onlyTask = body?.only_task ? [String(body.only_task)] : null;
+      return json(
+        await runAnalysisFor(
+          submission as unknown as Record<string, unknown> & SubmissionKeys,
+          onlyTask,
+          caller,
+        ),
+      );
     }
 
-    case "retry-module": {
-      const module = String(body?.module ?? "");
-      if (!module) throw new HttpError("A module name is required.", 400);
-      return json(await runReviewFor(submission, [module], caller));
+    case "retry-task": {
+      const task = String(body?.task ?? "");
+      if (!task) throw new HttpError("A task name is required.", 400);
+      return json(
+        await runAnalysisFor(
+          submission as unknown as Record<string, unknown> & SubmissionKeys,
+          [task],
+          caller,
+        ),
+      );
     }
+
+    case "diagnostics":
+      return json(await diagnosticsFor(submissionId, caller));
 
     default:
       throw new HttpError("Unknown action.", 400);
@@ -122,55 +142,160 @@ async function runScan(submissionId: string, githubUrl: string, reanalyze: boole
 
   if (outcome.status === "failed") {
     // §89 — the submission itself is untouched and the failure is recorded.
+    // §57 — a technical failure is named as a technical failure, never turned
+    // into a statement about the project.
     throw new HttpError(outcome.error ?? "Repository analysis failed.", 502);
   }
-  return outcome;
+  return {
+    ...outcome,
+    state: outcome.status,
+  };
 }
 
-async function runReviewFor(
-  submission: { id: string; hackathon_id: string; session_id: string },
-  onlyModules: string[] | null,
+type SubmissionKeys = {
+  id: string;
+  hackathon_id: string;
+  session_id: string;
+};
+
+async function runAnalysisFor(
+  submission: Record<string, unknown> & SubmissionKeys,
+  onlyTasks: string[] | null,
   caller: Caller,
 ) {
   const store = new AnalysisStore();
   const loaded = await store.loadForReview(submission.id);
 
   if (!loaded || !["completed", "limited"].includes(loaded.repository.analysis_status as string)) {
-    throw new HttpError("Analyse the repository before running an AI review.", 409);
+    throw new HttpError("Analyse the repository before running the analysis.", 409);
   }
 
   if (!aiConfigured()) {
     throw new HttpError(
-      "AI review is not configured on this deployment. Add DEEPSEEK_API_KEY as an " +
+      "The analysis is not configured on this deployment. Add DEEPSEEK_API_KEY as an " +
         "edge function secret; repository analysis still works without it.",
       503,
     );
   }
 
-  const outcome = await runReview({
+  const hackathon = await loadHackathon(submission.hackathon_id);
+  const requirementMap = await getRequirementMap(submission.hackathon_id, hackathon);
+
+  // Dataset relevance is a question about *this* challenge, so it is answered
+  // here rather than during the repository scan.
+  const vocabulary = briefVocabulary(requirementMap);
+  const concepts: ConceptSet[] = [
+    ...(requirementMap.requirements ?? []).map((entry) =>
+      analyseRequirement(entry.text, vocabulary, requirementMap),
+    ),
+    {
+      text: String(submission.project_description ?? ""),
+      intent: String(submission.project_description ?? "").slice(0, 300),
+      focus: "general",
+      phrases: [],
+      actions: [],
+      subjects: [],
+      qualifiers: [],
+      terms: [],
+      domainTerms: [],
+      facets: [],
+      artifacts: [],
+    } as ConceptSet,
+  ];
+  const datasetProfiles = (loaded.datasetProfiles ?? []).map((profile) =>
+    rescoreRelevance(profile, concepts),
+  );
+
+  const outcome = await runAnalysis({
     submission: submission as unknown as Record<string, unknown>,
-    hackathon: await loadHackathon(submission.hackathon_id),
+    hackathon,
     repository: loaded.repository,
     files: loaded.files,
     chunks: loaded.chunks,
     evidence: (loaded.evidence ?? []) as unknown as Evidence[],
-    projectMap: (loaded.projectMap ?? {}) as unknown as ProjectMap,
-    members: await loadMembers(submission.id),
+    projectMap: loaded.projectMap,
+    datasetProfiles,
+    semantics: loaded.semantics,
+    routes: loaded.routes,
+    inspection: loaded.inspection,
     actorId: caller.id,
     sessionId: submission.session_id,
-    onlyModules,
+    onlyTasks,
   });
 
   return {
     status: outcome.status,
     review_id: outcome.reviewId,
-    modules: outcome.modules.map((module) => ({
-      module: module.module,
-      status: module.status,
-      source: module.source,
-      reason: module.reason ?? "",
+    plan: outcome.plan.summary,
+    requirements_enabled: outcome.plan.requirementsEnabled,
+    dimensions: outcome.plan.dimensions
+      .filter((dimension) => dimension.relevance !== "not_applicable")
+      .map((dimension) => ({
+        key: dimension.key,
+        label: dimension.label,
+        relevance: dimension.relevance,
+        reason: dimension.reason,
+      })),
+    tasks: outcome.tasks.map((task) => ({
+      key: task.key,
+      kind: task.kind,
+      scope: task.scope,
+      status: task.status,
+      reason: task.reason,
+      input_tokens: task.inputTokens,
+      output_tokens: task.outputTokens,
+      cost_usd: Number(task.costUsd.toFixed(6)),
+      validation_errors: task.validationErrors,
+      rejected_evidence_ids: task.rejectedEvidenceIds,
+      repairs: task.repairs,
     })),
+    conclusions: outcome.conclusions.map((row) => ({
+      id: row.subject_id,
+      kind: row.kind,
+      status: row.status,
+      confidence: row.confidence,
+      evidence_ids: row.evidence_ids,
+      method: row.method,
+    })),
+    diagnostics: outcome.diagnostics,
+    diff: outcome.diff,
     error: outcome.error ?? null,
+  };
+}
+
+/** §55 — why the analysis concluded what it did, for an admin. */
+async function diagnosticsFor(
+  submissionId: string,
+  caller: Caller,
+): Promise<Record<string, unknown>> {
+  if (caller.role !== "admin") {
+    throw new HttpError("Diagnostics are available to administrators only.", 403);
+  }
+
+  const { data, error } = await db()
+    .from("analysis_snapshots")
+    .select(
+      "id, commit_sha, hackathon_version, analysis_version, created_at, " +
+        "plan, conclusions, evidence_count, input_tokens, output_tokens, " +
+        "cached_tokens, estimated_cost_usd",
+    )
+    .eq("submission_id", submissionId)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) throw new HttpError("Could not load diagnostics.", 500);
+
+  const { data: usage } = await db()
+    .from("ai_usage")
+    .select("operation, status, input_tokens, output_tokens, cached_tokens, " +
+      "estimated_cost_usd, prompt_version, created_at, error_code")
+    .eq("submission_id", submissionId)
+    .order("created_at", { ascending: false })
+    .limit(100);
+
+  return {
+    submission_id: submissionId,
+    runs: data ?? [],
+    ai_usage: usage ?? [],
   };
 }
 

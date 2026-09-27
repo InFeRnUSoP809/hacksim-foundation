@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 4983 lines, self-contained — safe to paste into the Supabase dashboard.
+// 9889 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -258,27 +258,6 @@ async function loadHackathon(hackathonId) {
   if (!data) throw new HttpError("That hackathon was not found.", 404);
   return data;
 }
-async function loadMembers(submissionId) {
-  const { data: raw } = await db().from("submission_members").select(
-    "id, user_id, contribution_description, contribution_areas, planned_responsibilities, ai_tools_used, ai_usage_description"
-  ).eq("submission_id", submissionId).order("created_at");
-  const members = raw ?? [];
-  if (members.length === 0) return [];
-  const { data: rawProfiles } = await db().from("profiles").select("id, full_name, email").in(
-    "id",
-    members.map((m) => m.user_id).filter((id) => Boolean(id))
-  );
-  const profiles = rawProfiles ?? [];
-  const byId = new Map(profiles.map((p) => [p.id, p]));
-  return members.map((member) => {
-    const profile = byId.get(member.user_id);
-    return {
-      ...member,
-      full_name: profile?.full_name ?? null,
-      email: profile?.email ?? null
-    };
-  });
-}
 function withErrorHandling(handler) {
   return async (req) => {
     if (req.method === "OPTIONS") return withSecurityHeaders(preflight());
@@ -359,25 +338,25 @@ var AIError = class extends Error {
 };
 function parseJson(content) {
   if (!content) return null;
-  let text = content.trim();
-  if (text.startsWith("```")) {
-    const parts = text.split("```");
-    text = parts.length >= 2 ? parts[1] : text;
-    if (text.toLowerCase().startsWith("json")) text = text.slice(4);
-    text = text.trim();
+  let text2 = content.trim();
+  if (text2.startsWith("```")) {
+    const parts = text2.split("```");
+    text2 = parts.length >= 2 ? parts[1] : text2;
+    if (text2.toLowerCase().startsWith("json")) text2 = text2.slice(4);
+    text2 = text2.trim();
   }
   try {
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text2);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed;
     }
   } catch {
   }
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
+  const start = text2.indexOf("{");
+  const end = text2.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
   try {
-    const parsed = JSON.parse(text.slice(start, end + 1));
+    const parsed = JSON.parse(text2.slice(start, end + 1));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed;
     }
@@ -926,6 +905,12 @@ var CATEGORY_BY_EXTENSION = {
   ".ts": "source",
   ".tsx": "component",
   ".jsx": "component",
+  ".csv": "dataset",
+  ".tsv": "dataset",
+  ".tab": "dataset",
+  ".jsonl": "dataset",
+  ".ndjson": "dataset",
+  ".parquet": "dataset",
   ".js": "source",
   ".mjs": "source",
   ".cjs": "source",
@@ -953,6 +938,7 @@ var CATEGORY_BY_EXTENSION = {
   ".yaml": "config",
   ".yml": "config",
   ".toml": "config",
+  ".log": "documentation",
   ".ini": "config",
   ".cfg": "config",
   ".conf": "config",
@@ -1115,6 +1101,7 @@ function importanceOf(path, category) {
   if (["api", "model", "component", "config", "source", "test"].includes(category)) {
     return "medium";
   }
+  if (category === "dataset") return "medium";
   return "low";
 }
 function isSourceLike(category) {
@@ -1217,22 +1204,82 @@ function scanFileForSecrets(path, content) {
   }
   return findings;
 }
-function looksBinary(content) {
+var TEXT_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".py",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".go",
+  ".java",
+  ".kt",
+  ".rb",
+  ".rs",
+  ".php",
+  ".cs",
+  ".c",
+  ".h",
+  ".cpp",
+  ".hpp",
+  ".swift",
+  ".dart",
+  ".sql",
+  ".html",
+  ".htm",
+  ".css",
+  ".scss",
+  ".sass",
+  ".less",
+  ".vue",
+  ".svelte",
+  ".json",
+  ".jsonl",
+  ".ndjson",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".md",
+  ".mdx",
+  ".rst",
+  ".txt",
+  ".csv",
+  ".tsv",
+  ".sh",
+  ".bash",
+  ".ps1",
+  ".tf",
+  ".graphql",
+  ".gql",
+  ".prisma",
+  ".proto",
+  ".env",
+  ".example",
+  ".gitignore"
+]);
+function looksBinary(content, path) {
   const sample = content.slice(0, 8e3);
   if (sample.length === 0) return false;
+  const name = String(path ?? "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot !== -1 && TEXT_EXTENSIONS.has(name.slice(dot))) return false;
   let nulls = 0;
   let printable = 0;
   for (const byte of sample) {
     if (byte === 0) nulls++;
-    if (byte === 9 || byte === 10 || byte === 13 || byte >= 32 && byte <= 126) {
+    if (byte === 9 || byte === 10 || byte === 13 || byte >= 32 && byte <= 126 || byte >= 128) {
       printable++;
     }
   }
   if (nulls > 0) return true;
-  return printable / sample.length < 0.98;
+  return printable / sample.length < 0.85;
 }
-function decodeText(content) {
-  if (looksBinary(content)) return null;
+function decodeText(content, path) {
+  if (looksBinary(content, path)) return null;
   try {
     return new TextDecoder("utf-8", { fatal: false }).decode(content);
   } catch {
@@ -1440,8 +1487,8 @@ function parsePyproject(content) {
     }
   }
   const poetry = data.tool?.poetry ?? {};
-  for (const [section2, dev] of [["dependencies", false], ["dev-dependencies", true]]) {
-    for (const [pkg, spec] of Object.entries(poetry[section2] ?? {})) {
+  for (const [section, dev] of [["dependencies", false], ["dev-dependencies", true]]) {
+    for (const [pkg, spec] of Object.entries(poetry[section] ?? {})) {
       pushTarget(out, pkg, cleanPythonVersion(String(spec)), "pypi", dev);
     }
   }
@@ -1451,12 +1498,12 @@ function parsePackageJson(content) {
   const out = [];
   const data = parseJson2(content);
   if (!data) return out;
-  for (const [section2, dev] of [
+  for (const [section, dev] of [
     ["dependencies", false],
     ["devDependencies", true],
     ["peerDependencies", true]
   ]) {
-    const block = data[section2] ?? {};
+    const block = data[section] ?? {};
     for (const [pkg, spec] of Object.entries(block)) {
       pushTarget(out, pkg, spec ? String(spec).replace(/^[\^~>=<\s]+/, "") : null, "npm", dev);
     }
@@ -1521,8 +1568,8 @@ function parseComposer(content) {
   const out = [];
   const data = parseJson2(content);
   if (!data) return out;
-  for (const [section2, dev] of [["require", false], ["require-dev", true]]) {
-    for (const [pkg, spec] of Object.entries(data[section2] ?? {})) {
+  for (const [section, dev] of [["require", false], ["require-dev", true]]) {
+    for (const [pkg, spec] of Object.entries(data[section] ?? {})) {
       if (pkg === "php" || pkg.startsWith("ext-")) continue;
       pushTarget(out, pkg, String(spec).replace(/^[\^~>=<\s]+/, ""), "composer", dev);
     }
@@ -2169,19 +2216,6 @@ var EvidenceRegistry = class {
     return this.items;
   }
 };
-function compactEvidence(items, limit) {
-  const compact = items.map((item) => ({
-    id: item.id,
-    type: item.type,
-    claim: item.claim.slice(0, 220),
-    file: item.file ?? null,
-    lines: item.lines ?? null
-  }));
-  const filtered = compact.filter(
-    (item) => item.file || ["repository", "readme", "framework", "dependency", "test_framework", "analysis_mode"].includes(item.type)
-  );
-  return limit ? filtered.slice(0, limit) : filtered;
-}
 var MAX_ROUTES = 40;
 var MAX_DEPENDENCIES = 45;
 var MAX_IMPORTANT_FILES = 25;
@@ -2324,6 +2358,19 @@ function buildProjectMap(input) {
     apis: routes.slice(0, MAX_ROUTES),
     external_integrations: input.integrations.slice(0, MAX_INTEGRATIONS),
     features: (input.readme?.features ?? []).slice(0, MAX_FEATURES),
+    data_sources: (input.datasetProfiles ?? []).slice(0, 25).map((profile) => ({
+      ...profile,
+      columns: profile.columns.slice(0, 30),
+      sample_rows: (profile.sample_rows ?? []).slice(0, 4)
+    })),
+    business_logic: (input.semantics ?? []).flatMap((file) => [
+      ...file.rules.map((item) => ({ ...item, file: file.path, kind: "rule" })),
+      ...file.calculations.map((item) => ({ ...item, file: file.path, kind: "calculation" }))
+    ]).slice(0, 40),
+    calculations: (input.semantics ?? []).flatMap((file) => file.calculations.map((item) => ({ ...item, file: file.path }))).slice(0, 40),
+    models: (input.semantics ?? []).flatMap((file) => file.models.map((item) => ({ ...item, file: file.path }))).slice(0, 25),
+    data_access: (input.semantics ?? []).flatMap((file) => file.dataAccess.map((item) => ({ ...item, file: file.path }))).slice(0, 30),
+    ui_flows: (input.semantics ?? []).flatMap((file) => file.ui.map((item) => ({ ...item, file: file.path }))).slice(0, 30),
     testing: {
       test_file_count: input.tests.file_count,
       frameworks: input.tests.frameworks.map((f) => f.name),
@@ -2587,8 +2634,2219 @@ var GitHubClient = class {
   }
 };
 
+// _shared/concepts.ts
+var FOCUS_ORDER = [
+  "data",
+  "analytics",
+  "decision",
+  "trust",
+  "interface",
+  "platform",
+  "general"
+];
+var FOCUS_LABEL = {
+  data: "data sources and ingestion",
+  analytics: "computation, models and prediction",
+  decision: "decision logic, recommendations and risk",
+  trust: "confidence, quality and explainability",
+  interface: "interface, workflow and usability",
+  platform: "platform, APIs and deployment",
+  general: "general capability"
+};
+var CAPABILITIES = [
+  {
+    group: "data",
+    triggers: [
+      "ingest",
+      "ingestion",
+      "import",
+      "upload",
+      "load",
+      "dataset",
+      "data set",
+      "csv",
+      "json",
+      "source data",
+      "input data",
+      "historical data",
+      "history",
+      "transaction",
+      "records",
+      "read",
+      "parse",
+      "extract",
+      "etl",
+      "schema",
+      "preprocess",
+      "clean",
+      "seed",
+      "populate"
+    ],
+    synonyms: [
+      "ingest",
+      "ingestion",
+      "read_csv",
+      "readcsv",
+      "load_csv",
+      "csv",
+      "tsv",
+      "jsonl",
+      "ndjson",
+      "parse",
+      "parser",
+      "loader",
+      "load_data",
+      "read_data",
+      "import",
+      "upload",
+      "file",
+      "files",
+      "dataframe",
+      "dataset",
+      "raw",
+      "source",
+      "history",
+      "historical",
+      "transaction",
+      "transactions",
+      "record",
+      "records",
+      "row",
+      "rows",
+      "column",
+      "columns",
+      "schema",
+      "migration",
+      "seed",
+      "fixture",
+      "sample",
+      "snapshot",
+      "extract",
+      "ingested",
+      "preprocess",
+      "clean",
+      "normalize",
+      "scrub",
+      "listdir",
+      "exists",
+      "input",
+      "inputs",
+      "bulk",
+      "batch"
+    ],
+    weight: 6
+  },
+  {
+    group: "analytics",
+    triggers: [
+      "forecast",
+      "prediction",
+      "predict",
+      "estimate",
+      "projection",
+      "project",
+      "model",
+      "machine learning",
+      "ml",
+      "ai",
+      "inference",
+      "trend",
+      "time series",
+      "timeseries",
+      "statistics",
+      "statistical",
+      "regression",
+      "analytics",
+      "compute",
+      "calculation",
+      "calculate",
+      "aggregate",
+      "score"
+    ],
+    synonyms: [
+      "forecast",
+      "forecasting",
+      "predict",
+      "predicts",
+      "prediction",
+      "predictions",
+      "predicted",
+      "estimate",
+      "estimated",
+      "estimation",
+      "projection",
+      "projected",
+      "project",
+      "extrapolate",
+      "interpolate",
+      "inference",
+      "infer",
+      "model",
+      "models",
+      "modeling",
+      "regressor",
+      "regression",
+      "classifier",
+      "classification",
+      "fit",
+      "train",
+      "training",
+      "trained",
+      "predictor",
+      "estimator",
+      "pipeline",
+      "feature",
+      "features",
+      "transform",
+      "aggregate",
+      "aggregation",
+      "mean",
+      "average",
+      "moving",
+      "trend",
+      "trendline",
+      "seasonal",
+      "seasonality",
+      "horizon",
+      "window",
+      "future",
+      "slope",
+      "coefficient",
+      "weight",
+      "weights",
+      "score",
+      "rmse",
+      "mae",
+      "mape",
+      "accuracy",
+      "backtest",
+      "holdout",
+      "timeseries",
+      "series",
+      "deviation",
+      "expected",
+      "residual"
+    ],
+    weight: 6
+  },
+  {
+    group: "decision",
+    triggers: [
+      "recommend",
+      "recommendation",
+      "suggest",
+      "suggestion",
+      "reorder",
+      "replenish",
+      "restock",
+      "alert",
+      "alerts",
+      "risk",
+      "warning",
+      "threshold",
+      "prioritise",
+      "prioritize",
+      "triage",
+      "plan",
+      "policy",
+      "rule",
+      "decision",
+      "trigger",
+      "notify"
+    ],
+    synonyms: [
+      "recommend",
+      "recommended",
+      "recommendation",
+      "recommendations",
+      "suggest",
+      "suggested",
+      "suggestion",
+      "reorder",
+      "reordering",
+      "reorder_quantity",
+      "reorder_date",
+      "replenish",
+      "replenishment",
+      "restock",
+      "restocking",
+      "refill",
+      "buy",
+      "purchase",
+      "order",
+      "order_quantity",
+      "lead_time",
+      "leadtime",
+      "safety_stock",
+      "stockout",
+      "shortage",
+      "low_stock",
+      "risk",
+      "risk_score",
+      "risk_level",
+      "alert",
+      "alerts",
+      "alerting",
+      "warn",
+      "warning",
+      "threshold",
+      "thresholds",
+      "trigger",
+      "rule",
+      "rules",
+      "policy",
+      "decide",
+      "decision",
+      "policy",
+      "priority",
+      "prioritise",
+      "prioritize",
+      "triage",
+      "action",
+      "actionable",
+      "plan",
+      "planner",
+      "inventory",
+      "stock",
+      "level",
+      "levels",
+      "balance",
+      "onhand",
+      "available"
+    ],
+    weight: 6
+  },
+  {
+    group: "trust",
+    triggers: [
+      "confidence",
+      "uncertainty",
+      "reliability",
+      "explainable",
+      "explainability",
+      "transparency",
+      "data quality",
+      "quality",
+      "accuracy",
+      "validation",
+      "provenance",
+      "audit",
+      "caveat",
+      "assumption",
+      "limitations",
+      "honest"
+    ],
+    synonyms: [
+      "confidence",
+      "confident",
+      "uncertainty",
+      "uncertain",
+      "reliability",
+      "reliable",
+      "explain",
+      "explanation",
+      "explainable",
+      "explainability",
+      "rationale",
+      "reason",
+      "because",
+      "justify",
+      "transparent",
+      "transparency",
+      "data_quality",
+      "quality",
+      "validate",
+      "validation",
+      "valid",
+      "provenance",
+      "audit",
+      "caveat",
+      "assumption",
+      "limitations",
+      "missing",
+      "null",
+      "nan",
+      "impute",
+      "outlier",
+      "completeness",
+      "coverage",
+      "sample",
+      "samples",
+      "sample_size",
+      "n_obs",
+      "interval",
+      "band",
+      "residual",
+      "score",
+      "metric",
+      "metrics",
+      "mae",
+      "rmse",
+      "r2",
+      "holdout",
+      "backtest",
+      "cross_validation",
+      "cv",
+      "distribution",
+      "std",
+      "variance",
+      "deviation",
+      "accuracy",
+      "benchmark",
+      "baseline"
+    ],
+    weight: 6
+  },
+  {
+    group: "interface",
+    triggers: [
+      "dashboard",
+      "interface",
+      "ui",
+      "screen",
+      "page",
+      "view",
+      "form",
+      "table",
+      "chart",
+      "graph",
+      "display",
+      "show",
+      "visualise",
+      "visualize",
+      "user can",
+      "workflow",
+      "click",
+      "button",
+      "usability",
+      "usable",
+      "responsive",
+      "frontend",
+      "presentation"
+    ],
+    synonyms: [
+      "dashboard",
+      "dashboards",
+      "screen",
+      "screens",
+      "page",
+      "pages",
+      "view",
+      "views",
+      "ui",
+      "frontend",
+      "front_end",
+      "client",
+      "app",
+      "application",
+      "html",
+      "template",
+      "jinja",
+      "blade",
+      "render",
+      "rendered",
+      "display",
+      "displayed",
+      "show",
+      "shown",
+      "chart",
+      "charts",
+      "graph",
+      "plot",
+      "canvas",
+      "svg",
+      "table",
+      "tables",
+      "list",
+      "card",
+      "cards",
+      "modal",
+      "form",
+      "forms",
+      "input",
+      "button",
+      "buttons",
+      "click",
+      "onclick",
+      "submit",
+      "filter",
+      "search",
+      "sort",
+      "column",
+      "badge",
+      "status",
+      "spinner",
+      "loading",
+      "toast",
+      "alert_box",
+      "workflow",
+      "usability",
+      "usable",
+      "intuitive",
+      "responsive",
+      "css",
+      "style",
+      "layout",
+      "dom"
+    ],
+    weight: 5
+  },
+  {
+    group: "platform",
+    triggers: [
+      "api",
+      "endpoint",
+      "service",
+      "deploy",
+      "deployment",
+      "hosting",
+      "authentication",
+      "authorisation",
+      "authorization",
+      "login",
+      "role",
+      "permission",
+      "database",
+      "storage",
+      "integration",
+      "webhook",
+      "real-time",
+      "realtime",
+      "responsive time",
+      "performance",
+      "scalability",
+      "scale"
+    ],
+    synonyms: [
+      "api",
+      "apis",
+      "endpoint",
+      "endpoints",
+      "route",
+      "routes",
+      "router",
+      "controller",
+      "handler",
+      "rest",
+      "graphql",
+      "grpc",
+      "webhook",
+      "service",
+      "server",
+      "backend",
+      "back_end",
+      "fastapi",
+      "flask",
+      "express",
+      "django",
+      "deploy",
+      "deployment",
+      "deployments",
+      "hosting",
+      "hosted",
+      "docker",
+      "container",
+      "vercel",
+      "netlify",
+      "fly",
+      "render",
+      "heroku",
+      "railway",
+      "auth",
+      "authenticate",
+      "authentication",
+      "authorize",
+      "authorization",
+      "login",
+      "logout",
+      "signup",
+      "register",
+      "session",
+      "jwt",
+      "token",
+      "role",
+      "roles",
+      "permission",
+      "permissions",
+      "rbac",
+      "middleware",
+      "guard",
+      "database",
+      "db",
+      "sql",
+      "postgres",
+      "postgresql",
+      "mysql",
+      "sqlite",
+      "mongo",
+      "mongodb",
+      "supabase",
+      "firebase",
+      "prisma",
+      "orm",
+      "query",
+      "queries",
+      "select",
+      "insert",
+      "update",
+      "table",
+      "storage",
+      "cache",
+      "redis",
+      "queue",
+      "worker",
+      "cron",
+      "scheduler",
+      "integration",
+      "webhook",
+      "socket",
+      "websocket",
+      "sse",
+      "realtime",
+      "real_time"
+    ],
+    weight: 5
+  }
+];
+var STOPWORDS = /* @__PURE__ */ new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "at",
+  "be",
+  "been",
+  "being",
+  "by",
+  "can",
+  "for",
+  "from",
+  "has",
+  "have",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "of",
+  "on",
+  "or",
+  "that",
+  "the",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "this",
+  "those",
+  "to",
+  "was",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "why",
+  "will",
+  "with",
+  "within",
+  "without",
+  "would",
+  "should",
+  "could",
+  "must",
+  "may",
+  "able",
+  "each",
+  "every",
+  "any",
+  "all",
+  "both",
+  "per",
+  "via",
+  "using",
+  "use",
+  "used",
+  "able",
+  "user",
+  "users",
+  "system",
+  "solution",
+  "project",
+  "application",
+  "app",
+  "build",
+  "provide",
+  "provides",
+  "allow",
+  "allows",
+  "allow",
+  "support",
+  "supports",
+  "make",
+  "makes",
+  "need",
+  "needs",
+  "want",
+  "wants",
+  "should",
+  "given",
+  "based",
+  "including",
+  "include",
+  "includes",
+  "such",
+  "than",
+  "other",
+  "others",
+  "some",
+  "more",
+  "most",
+  "not",
+  "no",
+  "also",
+  "only",
+  "over",
+  "under",
+  "about",
+  "after",
+  "before",
+  "between",
+  "up",
+  "down",
+  "out",
+  "off",
+  "again",
+  "further",
+  "once",
+  "here",
+  "does",
+  "doing",
+  "done",
+  "how",
+  "very",
+  "just",
+  "now",
+  "new",
+  "one",
+  "two",
+  "three",
+  "first",
+  "second",
+  "next",
+  "last",
+  "same",
+  "own",
+  "too",
+  "s",
+  "t",
+  "don",
+  "doesn",
+  "isn",
+  "product",
+  "option",
+  "options",
+  "default",
+  "default",
+  "simple",
+  "easily",
+  "quickly",
+  "small",
+  "large",
+  "different",
+  "sure",
+  "etc",
+  "eg",
+  "ie"
+]);
+var WEAK_TERMS = /* @__PURE__ */ new Set([
+  "data",
+  "model",
+  "models",
+  "system",
+  "app",
+  "application",
+  "file",
+  "files",
+  "code",
+  "page",
+  "pages",
+  "list",
+  "value",
+  "values",
+  "item",
+  "items",
+  "user",
+  "users",
+  "result",
+  "results",
+  "type",
+  "types",
+  "name",
+  "names",
+  "id",
+  "ids",
+  "service",
+  "services",
+  "state",
+  "info",
+  "information",
+  "number",
+  "count",
+  "set",
+  "get",
+  "run",
+  "use",
+  "make",
+  "add",
+  "new",
+  "all",
+  "test",
+  "tests"
+]);
+function termsOf(text2) {
+  if (!text2) return [];
+  const out = [];
+  const raw = String(text2).replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-./\\]+/g, " ").toLowerCase();
+  for (const token of raw.split(/[^a-z0-9]+/)) {
+    if (token.length < 2 || token.length > 40) continue;
+    if (STOPWORDS.has(token)) continue;
+    out.push(token);
+  }
+  return out;
+}
+var UNFOLDABLE = /* @__PURE__ */ new Set([
+  "ingest",
+  "business",
+  "series",
+  "process",
+  "status",
+  "analysis",
+  "access",
+  "address",
+  "class",
+  "loss",
+  "bias",
+  "news",
+  "press",
+  "canvas",
+  "basis",
+  "hypothesis",
+  "synthesis",
+  "axis",
+  "crisis",
+  "thesis",
+  "focus",
+  "radius",
+  "virus",
+  "census",
+  "bonus",
+  "consensus",
+  "gas",
+  "less",
+  "this",
+  "was",
+  "has",
+  "its",
+  "us",
+  "plus",
+  "as",
+  "is",
+  "up",
+  "app",
+  "map",
+  "gap",
+  "map",
+  "web",
+  "redis",
+  "less",
+  "across",
+  "less",
+  "series",
+  "always",
+  "perhaps",
+  "unless",
+  "unless",
+  "cross",
+  "less",
+  "styles",
+  "styles",
+  "caches",
+  "boxes",
+  "indexes"
+]);
+function stem(word) {
+  if (word.length <= 4 || UNFOLDABLE.has(word)) return word;
+  if (word.endsWith("ies") && word.length >= 6) return `${word.slice(0, -3)}y`;
+  if (word.endsWith("ing") && word.length >= 7) return word.slice(0, -3);
+  if (word.endsWith("ed") && word.length >= 6) return word.slice(0, -2);
+  if (word.endsWith("es") && word.length >= 6) return word.slice(0, -2);
+  if (word.endsWith("s") && word.length >= 5) return word.slice(0, -1);
+  return word;
+}
+function termVariants(terms) {
+  const out = /* @__PURE__ */ new Set();
+  for (const term of terms) {
+    out.add(term);
+    const stemmed = stem(term);
+    if (stemmed !== term) out.add(stemmed);
+  }
+  return [...out];
+}
+function briefVocabulary(map) {
+  const words = /* @__PURE__ */ new Set();
+  const phrases = [];
+  const source = [
+    map.problem_summary ?? "",
+    ...(map.requirements ?? []).map((r) => r.text),
+    ...(map.constraints ?? []).map((r) => r.text),
+    ...(map.expected_outcomes ?? []).map((r) => r.text)
+  ].join("\n");
+  for (const term of termsOf(source)) {
+    words.add(term);
+    words.add(stem(term));
+  }
+  for (const entry of [
+    ...map.requirements ?? [],
+    ...map.expected_outcomes ?? []
+  ]) {
+    for (const phrase of nounPhrases(entry.text)) {
+      if (phrase.split(" ").length > 1) phrases.push(phrase);
+    }
+  }
+  return { words, phrases: [...new Set(phrases)].slice(0, 120) };
+}
+function nounPhrases(text2) {
+  const tokens = termsOf(text2);
+  const phrases = [];
+  for (let i = 0; i < tokens.length; i++) {
+    phrases.push(tokens[i]);
+    if (i + 1 < tokens.length) phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
+    if (i + 2 < tokens.length) {
+      phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
+    }
+  }
+  return [...new Set(phrases)].filter((p) => p.length > 2);
+}
+function capabilityFor(word) {
+  for (const capability of CAPABILITIES) {
+    if (capability.triggers.includes(word)) return capability;
+  }
+  return null;
+}
+function artifactHintsFor(group) {
+  switch (group) {
+    case "data":
+      return [
+        "dataset",
+        "data_loading",
+        "file_read",
+        "schema",
+        "query",
+        "ingestion"
+      ];
+    case "analytics":
+      return ["calculation", "model", "function", "route", "dataset"];
+    case "decision":
+      return ["calculation", "route", "function", "ui"];
+    case "trust":
+      return ["calculation", "test", "readme", "model", "dataset"];
+    case "interface":
+      return ["ui", "route", "function", "readme"];
+    case "platform":
+      return ["route", "configuration", "dependency", "file", "schema"];
+    default:
+      return ["function", "route", "ui", "dataset", "configuration", "readme"];
+  }
+}
+function analyseRequirement(text2, vocabulary, map) {
+  const clean2 = String(text2 ?? "").trim();
+  if (!clean2) {
+    return {
+      text: "",
+      intent: "",
+      focus: "general",
+      phrases: [],
+      actions: [],
+      subjects: [],
+      qualifiers: [],
+      terms: [],
+      domainTerms: [],
+      facets: [],
+      artifacts: []
+    };
+  }
+  const own = termsOf(clean2);
+  const present = /* @__PURE__ */ new Map();
+  for (const word of own) {
+    const capability = capabilityFor(word) ?? capabilityFor(stem(word));
+    if (!capability) continue;
+    const slot = present.get(capability.group);
+    if (slot) slot.hits += 1;
+    else present.set(capability.group, { capability, hits: 1 });
+  }
+  const groups = [...present.values()].sort((a, b) => b.hits - a.hits);
+  const focus = groups[0]?.capability.group ?? "general";
+  const termSet = new Set(termVariants(own));
+  const actions = /* @__PURE__ */ new Set();
+  const subjects = /* @__PURE__ */ new Set();
+  for (const word of own) {
+    const capability = capabilityFor(word) ?? capabilityFor(stem(word));
+    if (capability) {
+      actions.add(word);
+      continue;
+    }
+    if (WEAK_TERMS.has(word)) continue;
+    subjects.add(word);
+  }
+  for (const { capability } of groups) {
+    for (const synonym of capability.synonyms) {
+      termSet.add(synonym);
+      termSet.add(stem(synonym));
+    }
+  }
+  const domainTerms = /* @__PURE__ */ new Set();
+  for (const word of subjects) {
+    if (vocabulary?.words.has(word) || vocabulary?.words.has(stem(word))) {
+      domainTerms.add(word);
+    }
+  }
+  for (const word of actions) {
+    if (vocabulary?.words.has(word) || vocabulary?.words.has(stem(word))) {
+      domainTerms.add(word);
+    }
+  }
+  const qualifiers = detectQualifiers(clean2);
+  const phrases = nounPhrases(clean2).filter((phrase) => {
+    const parts = phrase.split(" ");
+    return parts.every((part) => !capabilityFor(part));
+  });
+  const facets = buildFacets(clean2, own, groups.map((g) => g.capability.group));
+  return {
+    text: clean2,
+    intent: intentOf(clean2, map),
+    focus,
+    phrases: [...new Set(phrases)].slice(0, 24),
+    actions: [...actions].slice(0, 12),
+    subjects: [...subjects].slice(0, 16),
+    qualifiers,
+    terms: [...termSet],
+    domainTerms: [...domainTerms].slice(0, 40),
+    facets,
+    artifacts: artifactHintsFor(focus)
+  };
+}
+var QUALIFIER_PATTERNS = [
+  /\bconfigurable\b/i,
+  /\bcustomi[sz]able\b/i,
+  /\badjustable\b/i,
+  /\beditable\b/i,
+  /\boptional\b/i,
+  /\breal[\s-]?time\b/i,
+  /\bnear[\s-]?real[\s-]?time\b/i,
+  /\blive\b/i,
+  /\bper\s+\w+/i,
+  /\bfor\s+each\b/i,
+  /\bwithin\s+\w+\s+\w+/i,
+  /\bwithout\b/i,
+  /\bmust\s+not\b/i,
+  /\bno\s+\w+\s+services?\b/i,
+  /\bfree\b/i,
+  /\bpaid\b/i,
+  /\boffline\b/i,
+  /\bautomatically\b/i,
+  /\bmanually\b/i,
+  /\bsecure\b/i,
+  /\bscalable\b/i,
+  /\bfast\b/i,
+  /\bquickly\b/i,
+  /\bunder\s+\w+\s+\w+/i
+];
+function detectQualifiers(text2) {
+  const found = [];
+  for (const pattern of QUALIFIER_PATTERNS) {
+    const match = text2.match(pattern);
+    if (match) found.push(match[0].toLowerCase().trim());
+  }
+  return [...new Set(found)].slice(0, 8);
+}
+function intentOf(text2, map) {
+  const first = text2.split(/[.;\n]/)[0]?.trim() ?? text2;
+  const goal = first.replace(/^(the|a|an)\s+/i, "").slice(0, 220);
+  if (!map) return goal;
+  const problem = (map.problem_summary ?? "").split(/[.\n]/)[0]?.trim();
+  return problem ? `${goal} (in service of: ${problem.slice(0, 160)})` : goal;
+}
+function buildFacets(text2, own, groups) {
+  const facets = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const group of groups) {
+    const capability = CAPABILITIES.find((c) => c.group === group);
+    if (!capability) continue;
+    const matching = own.filter(
+      (word) => capability.triggers.includes(word) || capability.triggers.includes(stem(word))
+    );
+    const label = matching[0] ?? group;
+    const key = `${group}:${label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    facets.push({
+      phrase: matching.join(" ") || group,
+      focus: group,
+      terms: [label, ...capability.synonyms.slice(0, 24)]
+    });
+  }
+  for (const phrase of nounPhrases(text2)) {
+    const parts = phrase.split(" ");
+    if (parts.length < 2 || parts.length > 3) continue;
+    if (seen.has(phrase)) continue;
+    seen.add(phrase);
+    facets.push({ phrase, focus: "general", terms: [phrase, ...parts] });
+  }
+  return facets.slice(0, 8);
+}
+function groupRequirements(map) {
+  const vocabulary = briefVocabulary(map);
+  const groups = /* @__PURE__ */ new Map();
+  if ((map.requirements ?? []).length === 0) return [];
+  for (const entry of map.requirements ?? []) {
+    const concepts = analyseRequirement(entry.text, vocabulary, map);
+    const existing = groups.get(concepts.focus);
+    if (existing) {
+      existing.entries.push(entry);
+      existing.concepts.push(concepts);
+    } else {
+      groups.set(concepts.focus, {
+        focus: concepts.focus,
+        label: FOCUS_LABEL[concepts.focus],
+        entries: [entry],
+        concepts: [concepts]
+      });
+    }
+  }
+  return FOCUS_ORDER.filter((focus) => groups.has(focus)).map(
+    (focus) => groups.get(focus)
+  );
+}
+function analyseBriefItems(items, map) {
+  const vocabulary = briefVocabulary(map);
+  return (items ?? []).filter((item) => Boolean(item?.text?.trim())).map((item) => analyseRequirement(item.text, vocabulary, map));
+}
+
+// _shared/datasets.ts
+var MAX_PROFILE_BYTES = 2e6;
+var SAMPLE_LINES = 200;
+var MAX_SAMPLE_ROWS = 4;
+var MAX_CELL_CHARS = 40;
+function rescoreRelevance(profile, concepts) {
+  const { level, terms } = relevanceOf(profile.path, profile.column_names, concepts);
+  return { ...profile, relevance: level, relevance_terms: terms };
+}
+var EXTENSION_FORMATS = {
+  ".csv": "csv",
+  ".tsv": "tsv",
+  ".tab": "tsv",
+  ".jsonl": "jsonl",
+  ".ndjson": "jsonl",
+  ".json": "json",
+  ".txt": "text",
+  ".dat": "text"
+};
+var MAX_DATASET_BYTES = 20 * 1024 * 1024;
+function datasetFormatOf(path) {
+  const lower = path.toLowerCase();
+  for (const [extension, format] of Object.entries(EXTENSION_FORMATS)) {
+    if (lower.endsWith(extension)) return format;
+  }
+  return null;
+}
+var ROLE_TERMS = {
+  date: [
+    "date",
+    "day",
+    "month",
+    "year",
+    "week",
+    "time",
+    "timestamp",
+    "datetime",
+    "period",
+    "expiry",
+    "expires",
+    "expiration",
+    "created",
+    "updated",
+    "due",
+    "issued",
+    "received",
+    "recorded",
+    "birth",
+    "start",
+    "end",
+    "valid_from",
+    "valid_to",
+    "age",
+    "horizon"
+  ],
+  identifier: [
+    "id",
+    "uuid",
+    "guid",
+    "pk",
+    "key",
+    "code",
+    "ref",
+    "reference",
+    "sku",
+    "isbn",
+    "serial",
+    "number",
+    "no",
+    "hash",
+    "token"
+  ],
+  entity: [
+    "product",
+    "item",
+    "items",
+    "medicine",
+    "medicines",
+    "drug",
+    "drugs",
+    "medication",
+    "patient",
+    "customer",
+    "user",
+    "account",
+    "company",
+    "org",
+    "organisation",
+    "organization",
+    "supplier_item",
+    "article",
+    "article_id",
+    "name",
+    "title",
+    "label",
+    "category_name",
+    "vehicle",
+    "asset",
+    "device",
+    "sensor",
+    "course",
+    "student",
+    "room",
+    "booking",
+    "ticket",
+    "asset_id"
+  ],
+  quantity: [
+    "quantity",
+    "qty",
+    "amount",
+    "count",
+    "units",
+    "unit",
+    "packs",
+    "volume",
+    "sold",
+    "purchased",
+    "ordered",
+    "consumed",
+    "issued",
+    "delivered",
+    "dispensed",
+    "received",
+    "net",
+    "gross",
+    "total",
+    "sum",
+    "n"
+  ],
+  stock: [
+    "stock",
+    "stocklevel",
+    "stock_level",
+    "inventory",
+    "onhand",
+    "on_hand",
+    "balance",
+    "available",
+    "remaining",
+    "reserved",
+    "in_stock",
+    "capacity",
+    "min_stock",
+    "max_stock",
+    "reorder",
+    "reorder_level",
+    "safety"
+  ],
+  price: [
+    "price",
+    "cost",
+    "revenue",
+    "spend",
+    "spent",
+    "budget",
+    "fee",
+    "charge",
+    "rate",
+    "value",
+    "total_price",
+    "unit_price",
+    "mrp",
+    "sell",
+    "buying"
+  ],
+  supplier: [
+    "supplier",
+    "vendor",
+    "distributor",
+    "manufacturer",
+    "provider",
+    "seller",
+    "wholesaler",
+    "source",
+    "agency",
+    "pharmacy",
+    "store",
+    "branch",
+    "warehouse"
+  ],
+  category: [
+    "category",
+    "type",
+    "kind",
+    "class",
+    "group",
+    "segment",
+    "status",
+    "state",
+    "tag",
+    "label",
+    "level",
+    "tier",
+    "priority",
+    "region",
+    "zone",
+    "location",
+    "city",
+    "country",
+    "department"
+  ],
+  numeric: ["value", "score", "rate", "ratio", "index", "metric", "weight"],
+  text: [
+    "name",
+    "description",
+    "notes",
+    "note",
+    "comment",
+    "text",
+    "title",
+    "reason",
+    "detail",
+    "details",
+    "summary",
+    "address",
+    "email",
+    "phone",
+    "message",
+    "body",
+    "content"
+  ],
+  boolean: [
+    "active",
+    "enabled",
+    "disabled",
+    "deleted",
+    "archived",
+    "flag",
+    "valid",
+    "verified",
+    "available",
+    "expired",
+    "is_"
+  ]
+};
+var BOOLEAN_VALUES = /* @__PURE__ */ new Set(["true", "false", "yes", "no", "0", "1", "y", "n"]);
+var DATE_RE = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/;
+function looksNumeric(value) {
+  return /^-?[\d,]*\.?\d+([eE][-+]?\d+)?%?$/.test(value.trim()) && /\d/.test(value);
+}
+function looksDate(value) {
+  const text2 = value.trim();
+  if (DATE_RE.test(text2)) return true;
+  if (/^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}$/.test(text2)) return true;
+  if (/^\d{4}-\d{2}$/.test(text2)) return true;
+  const monthNames = "jan feb mar apr may jun jul aug sep oct nov dec";
+  const lower = text2.toLowerCase();
+  return lower.length >= 6 && monthNames.split(" ").some((m) => lower.startsWith(m));
+}
+function roleFor(name, numeric, date) {
+  const tokens = /* @__PURE__ */ new Set();
+  for (const token of termsOf(name)) {
+    tokens.add(token);
+    tokens.add(stem(token));
+  }
+  const joined = name.toLowerCase();
+  if (tokens.has("id") || /(?:^|_)id$/.test(joined) || tokens.has("uuid")) {
+    return "identifier";
+  }
+  if (date) return "date";
+  for (const [role, words] of Object.entries(ROLE_TERMS)) {
+    if (words.some((word) => tokens.has(word) || tokens.has(stem(word)))) return role;
+  }
+  if (numeric) return "numeric";
+  return "text";
+}
+function splitDelimited(line, delimiter) {
+  const cells = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (char === delimiter && !quoted) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current);
+  return cells.map((cell) => cell.trim());
+}
+function sniffDelimiter(sample) {
+  const firstLine = sample.split("\n", 1)[0] ?? "";
+  const counts = {
+    ",": (firstLine.match(/,/g) ?? []).length,
+    "	": (firstLine.match(/\t/g) ?? []).length,
+    ";": (firstLine.match(/;/g) ?? []).length,
+    "|": (firstLine.match(/\|/g) ?? []).length
+  };
+  let best = ",";
+  let bestCount = 0;
+  for (const [delimiter, count] of Object.entries(counts)) {
+    if (count > bestCount) {
+      best = delimiter;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+function truncateCell(value) {
+  const text2 = String(value ?? "").trim();
+  return text2.length > MAX_CELL_CHARS ? `${text2.slice(0, MAX_CELL_CHARS)}\u2026` : text2;
+}
+function profileDataset(input, concepts = []) {
+  const format = datasetFormatOf(input.path);
+  if (!format) return null;
+  const notes = [];
+  if (input.sizeBytes > MAX_DATASET_BYTES) {
+    notes.push("File exceeds the dataset size limit and was not profiled.");
+    return null;
+  }
+  const truncatedForProfiling = input.sizeBytes > MAX_PROFILE_BYTES || input.content.length < input.sizeBytes * 0.95;
+  const content = truncatedForProfiling ? input.content.slice(0, MAX_PROFILE_BYTES) : input.content;
+  let columns = [];
+  let sampleRows = [];
+  let dataLines = 0;
+  let approxRowCount = 0;
+  let rowCountExact = false;
+  if (format === "csv" || format === "tsv" || format === "text") {
+    const delimiter = format === "tsv" ? "	" : sniffDelimiter(content);
+    const lines = content.split("\n");
+    const nonEmpty = [];
+    for (const line of lines) {
+      if (line.trim()) nonEmpty.push(line);
+    }
+    if (nonEmpty.length === 0) return null;
+    const header = splitDelimited(nonEmpty[0], delimiter);
+    if (header.length === 1 && nonEmpty.length > 1) {
+      const retry = sniffDelimiter(nonEmpty.slice(0, 5).join("\n"));
+      return retry === delimiter ? null : withDelimiter(input, concepts, retry);
+    }
+    columns = header.map((name) => buildColumn(name, []));
+    const body = nonEmpty.slice(1, 1 + SAMPLE_LINES);
+    for (const line of body) {
+      const cells = splitDelimited(line, delimiter);
+      sampleRows.push(cells);
+    }
+    columns = columns.map(
+      (column, index) => buildColumn(
+        column.name,
+        sampleRows.map((row) => row[index] ?? "")
+      )
+    );
+    dataLines = Math.max(0, nonEmpty.length - 1);
+    if (truncatedForProfiling) {
+      const bytesPerLine = content.length / Math.max(1, nonEmpty.length);
+      approxRowCount = Math.round(
+        input.sizeBytes / Math.max(1, bytesPerLine) - 1
+      );
+      notes.push(
+        `Profiled the first ${Math.round(MAX_PROFILE_BYTES / 1024)} KB of a ${Math.round(input.sizeBytes / 1024)} KB file; the row count is an estimate.`
+      );
+    } else {
+      approxRowCount = dataLines;
+      rowCountExact = true;
+    }
+  } else {
+    const parsed = profileJsonLike(content, format);
+    if (!parsed) return null;
+    columns = parsed.columns;
+    sampleRows = parsed.rows;
+    approxRowCount = parsed.approxRowCount;
+    rowCountExact = parsed.rowCountExact;
+  }
+  if (columns.length === 0) return null;
+  const columnNames = columns.map((column) => column.name);
+  const byRole = (role) => columns.filter((column) => column.role === role).map((column) => column.name);
+  const { level, terms } = relevanceOf(input.path, columnNames, concepts);
+  if (level === "none" && format === "text") return null;
+  return {
+    path: input.path,
+    format,
+    size_bytes: input.sizeBytes,
+    approx_row_count: approxRowCount,
+    row_count_exact: rowCountExact,
+    columns,
+    column_names: columnNames,
+    date_columns: byRole("date"),
+    entity_columns: byRole("entity"),
+    quantity_columns: byRole("quantity"),
+    stock_columns: byRole("stock"),
+    price_columns: byRole("price"),
+    supplier_columns: byRole("supplier"),
+    identifier_columns: byRole("identifier"),
+    numeric_columns: columns.filter((column) => column.inferred_type === "number").map((column) => column.name),
+    categorical_columns: columns.filter((column) => column.inferred_type === "text").map((column) => column.name).slice(0, 12),
+    sample_rows: sampleRows.slice(0, MAX_SAMPLE_ROWS).map(
+      (row) => row.map(truncateCell)
+    ),
+    likely_purpose: purposeOf(input.path, columns),
+    relevance: level,
+    relevance_terms: terms,
+    notes
+  };
+}
+function withDelimiter(input, concepts, delimiter) {
+  const lines = input.content.split("\n");
+  if (lines.length === 0) return null;
+  const header = splitDelimited(lines[0], delimiter);
+  if (header.length === 1) return null;
+  const sampleRows = lines.slice(1, 1 + SAMPLE_LINES).filter((line) => line.trim()).map((line) => splitDelimited(line, delimiter));
+  const columns = header.map(
+    (name, index) => buildColumn(name, sampleRows.map((row) => row[index] ?? ""))
+  );
+  const dataLines = lines.filter((line) => line.trim()).length - 1;
+  const columnNames = columns.map((column) => column.name);
+  const { level, terms } = relevanceOf(input.path, columnNames, concepts);
+  const byRole = (role) => columns.filter((column) => column.role === role).map((column) => column.name);
+  return {
+    path: input.path,
+    format: "csv",
+    size_bytes: input.sizeBytes,
+    approx_row_count: Math.max(0, dataLines),
+    row_count_exact: input.sizeBytes <= MAX_PROFILE_BYTES,
+    columns,
+    column_names: columnNames,
+    date_columns: byRole("date"),
+    entity_columns: byRole("entity"),
+    quantity_columns: byRole("quantity"),
+    stock_columns: byRole("stock"),
+    price_columns: byRole("price"),
+    supplier_columns: byRole("supplier"),
+    identifier_columns: byRole("identifier"),
+    numeric_columns: columns.filter((column) => column.inferred_type === "number").map((column) => column.name),
+    categorical_columns: columns.filter((column) => column.inferred_type === "text").map((column) => column.name).slice(0, 12),
+    sample_rows: sampleRows.slice(0, MAX_SAMPLE_ROWS).map(
+      (row) => row.map(truncateCell)
+    ),
+    likely_purpose: purposeOf(input.path, columns),
+    relevance: level,
+    relevance_terms: terms,
+    notes: [`Delimiter inferred as "${delimiter === "	" ? "\\t" : delimiter}".`]
+  };
+}
+function buildColumn(name, values) {
+  const present = values.map((value) => String(value ?? "").trim()).filter(Boolean);
+  const nonEmpty = present.length;
+  const numericCount = present.filter(looksNumeric).length;
+  const dateCount = present.filter(looksDate).length;
+  const boolCount = present.filter(
+    (value) => BOOLEAN_VALUES.has(value.toLowerCase())
+  ).length;
+  let inferredType = "text";
+  if (nonEmpty > 0) {
+    if (dateCount / nonEmpty >= 0.7) inferredType = "date";
+    else if (numericCount / nonEmpty >= 0.8) inferredType = "number";
+    else if (boolCount / nonEmpty >= 0.9) inferredType = "boolean";
+  }
+  const distinct = new Set(present.slice(0, SAMPLE_LINES));
+  return {
+    name: truncateCell(name) || "(unnamed)",
+    inferred_type: inferredType,
+    role: roleFor(name, inferredType === "number", inferredType === "date"),
+    approx_distinct: distinct.size,
+    nullable: nonEmpty < values.length,
+    sample: [...distinct].slice(0, 3).map(truncateCell)
+  };
+}
+function profileJsonLike(content, format) {
+  if (format === "jsonl") {
+    const lines = content.split("\n").filter((line) => line.trim());
+    if (!lines.length) return null;
+    const objects2 = [];
+    for (const line of lines.slice(0, SAMPLE_LINES)) {
+      try {
+        const parsed2 = JSON.parse(line);
+        if (parsed2 && typeof parsed2 === "object") {
+          objects2.push(parsed2);
+        }
+      } catch {
+      }
+    }
+    if (!objects2.length) return null;
+    const names2 = /* @__PURE__ */ new Set();
+    for (const object of objects2) for (const key of Object.keys(object)) names2.add(key);
+    const keys2 = [...names2].slice(0, 40);
+    const rows = objects2.map((object) => keys2.map((key) => stringify(object[key])));
+    return {
+      columns: keys2.map(
+        (key) => buildColumn(key, objects2.map((object) => stringify(object[key])))
+      ),
+      rows,
+      approxRowCount: lines.length,
+      rowCountExact: content.length < MAX_PROFILE_BYTES
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  const array = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.items) ? parsed.items : Array.isArray(parsed?.data) ? parsed.data : null;
+  if (!array) return null;
+  const objects = array.slice(0, SAMPLE_LINES).filter(
+    (item) => Boolean(item) && typeof item === "object" && !Array.isArray(item)
+  );
+  if (!objects.length) return null;
+  const names = /* @__PURE__ */ new Set();
+  for (const object of objects) for (const key of Object.keys(object)) names.add(key);
+  const keys = [...names].slice(0, 40);
+  return {
+    columns: keys.map(
+      (key) => buildColumn(key, objects.map((object) => stringify(object[key])))
+    ),
+    rows: objects.map((object) => keys.map((key) => stringify(object[key]))),
+    approxRowCount: array.length,
+    rowCountExact: true
+  };
+}
+function stringify(value) {
+  if (value === null || value === void 0) return "";
+  if (typeof value === "object") return JSON.stringify(value).slice(0, MAX_CELL_CHARS);
+  return String(value);
+}
+function relevanceOf(path, columnNames, concepts) {
+  if (concepts.length === 0) return { level: "low", terms: [] };
+  const haystack = /* @__PURE__ */ new Set();
+  for (const token of [...termsOf(path), ...columnNames.flatMap(termsOf)]) {
+    haystack.add(token);
+    haystack.add(stem(token));
+  }
+  const matched = /* @__PURE__ */ new Set();
+  let strong = 0;
+  for (const concept of concepts) {
+    for (const term of [...concept.domainTerms, ...concept.subjects, ...concept.actions]) {
+      if (haystack.has(term) || haystack.has(stem(term))) {
+        matched.add(term);
+        if (concept.subjects.includes(term) || concept.domainTerms.includes(term)) {
+          strong += 1;
+        }
+      }
+    }
+  }
+  if (matched.size === 0) return { level: "none", terms: [] };
+  if (strong >= 2 || matched.size >= 4) return { level: "high", terms: [...matched] };
+  if (strong === 1 || matched.size >= 2) return { level: "medium", terms: [...matched] };
+  return { level: "low", terms: [...matched] };
+}
+var PURPOSE_PATTERNS = [
+  { re: /sales|transaction|purchase|order|invoice|receipt/i, purpose: "transactional history" },
+  { re: /stock|inventory|onhand|balance|warehouse/i, purpose: "stock or inventory state" },
+  { re: /forecast|prediction|demand|projection/i, purpose: "precomputed forecast output" },
+  { re: /model|weights|result|metric|score|eval/i, purpose: "model artefact or evaluation result" },
+  { re: /medicine|product|item|sku|catalog|catalogue|master/i, purpose: "item or entity master data" },
+  { re: /supplier|vendor|distributor/i, purpose: "supplier reference data" },
+  { re: /customer|patient|user|client|member/i, purpose: "customer or user records" },
+  { re: /location|city|region|store|branch|pharmacy/i, purpose: "location reference data" },
+  { re: /log|event|audit|trace/i, purpose: "event or audit log" }
+];
+function purposeOf(path, columns) {
+  const haystack = `${path} ${columns.map((column) => column.name).join(" ")}`;
+  const parts = [];
+  for (const pattern of PURPOSE_PATTERNS) {
+    if (pattern.re.test(haystack)) parts.push(pattern.purpose);
+    if (parts.length === 2) break;
+  }
+  const roles = new Set(columns.map((column) => column.role));
+  if (roles.has("date")) parts.push("dated over time");
+  if (roles.has("entity")) parts.push("keyed by an item");
+  if (roles.has("quantity") || roles.has("stock")) parts.push("carrying measured amounts");
+  if (roles.has("price")) parts.push("carrying monetary values");
+  if (parts.length === 0) return "tabular data of unrecognised shape";
+  return [...new Set(parts)].slice(0, 3).join(", ");
+}
+function compactDatasetProfile(profile) {
+  return {
+    path: profile.path,
+    format: profile.format,
+    approx_row_count: profile.approx_row_count,
+    row_count_exact: profile.row_count_exact,
+    columns: profile.columns.map((column) => ({
+      name: column.name,
+      type: column.inferred_type,
+      role: column.role,
+      sample: column.sample.slice(0, 2)
+    })),
+    likely_purpose: profile.likely_purpose,
+    sample_rows: profile.sample_rows.slice(0, 2),
+    notes: profile.notes.slice(0, 2)
+  };
+}
+
+// _shared/semantics.ts
+var LANGUAGE_BY_EXT = {
+  ".py": "Python",
+  ".ts": "TypeScript",
+  ".tsx": "TypeScript",
+  ".js": "JavaScript",
+  ".jsx": "JavaScript",
+  ".mjs": "JavaScript",
+  ".cjs": "JavaScript",
+  ".go": "Go",
+  ".java": "Java",
+  ".kt": "Kotlin",
+  ".rb": "Ruby",
+  ".rs": "Rust",
+  ".php": "PHP",
+  ".cs": "C#",
+  ".c": "C",
+  ".h": "C",
+  ".cpp": "C++",
+  ".swift": "Swift",
+  ".dart": "Dart",
+  ".html": "HTML",
+  ".htm": "HTML",
+  ".vue": "Vue",
+  ".svelte": "Svelte",
+  ".sql": "SQL",
+  ".json": "JSON",
+  ".yaml": "YAML",
+  ".yml": "YAML",
+  ".toml": "TOML",
+  ".md": "Markdown",
+  ".sh": "Shell",
+  ".css": "CSS"
+};
+function languageOfPath(path) {
+  const lower = path.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot === -1) return null;
+  return LANGUAGE_BY_EXT[lower.slice(dot)] ?? null;
+}
+var MAX_PER_KIND = 14;
+var MAX_EXCERPT = 220;
+var CODE_LANGUAGES = /* @__PURE__ */ new Set([
+  "Python",
+  "TypeScript",
+  "JavaScript",
+  "Go",
+  "Java",
+  "Kotlin",
+  "Ruby",
+  "Rust",
+  "PHP",
+  "C",
+  "C++",
+  "C#",
+  "Swift",
+  "Dart",
+  "HTML",
+  "Vue",
+  "Svelte",
+  "SQL",
+  "Shell",
+  "PowerShell"
+]);
+function isCodeLanguage(language) {
+  return language !== null && CODE_LANGUAGES.has(language);
+}
+function isCode(line, language) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (language === "Python" && trimmed.startsWith("#")) return false;
+  if (language === "SQL" && trimmed.startsWith("--")) return false;
+  if (language === "Shell" && trimmed.startsWith("#")) return false;
+  if (language && ["JavaScript", "TypeScript", "Java", "Go", "Rust", "C", "C++", "C#", "PHP", "Swift", "Dart", "Kotlin", "CSS", "Vue", "Svelte"].includes(language)) {
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
+      return false;
+    }
+  }
+  return true;
+}
+function excerptOf(line) {
+  const text2 = line.trim().replace(/\s+/g, " ");
+  return text2.length > MAX_EXCERPT ? `${text2.slice(0, MAX_EXCERPT)}\u2026` : text2;
+}
+function identifiersIn(text2) {
+  const found = text2.match(/[A-Za-z_][A-Za-z0-9_]{2,}/g) ?? [];
+  const stop = /* @__PURE__ */ new Set([
+    "def",
+    "class",
+    "return",
+    "import",
+    "from",
+    "const",
+    "let",
+    "var",
+    "function",
+    "if",
+    "else",
+    "elif",
+    "for",
+    "while",
+    "try",
+    "except",
+    "catch",
+    "self",
+    "this",
+    "true",
+    "false",
+    "None",
+    "null",
+    "async",
+    "await",
+    "export",
+    "default",
+    "new",
+    "print",
+    "str",
+    "int",
+    "float",
+    "len",
+    "range",
+    "list",
+    "dict",
+    "set",
+    "type",
+    "public",
+    "private",
+    "static",
+    "void",
+    "string",
+    "number",
+    "boolean",
+    "value",
+    "data",
+    "result",
+    "results",
+    "item",
+    "items",
+    "self",
+    "super"
+  ]);
+  const unique = /* @__PURE__ */ new Set();
+  for (const name of found) {
+    if (stop.has(name.toLowerCase())) continue;
+    if (name.length < 3) continue;
+    unique.add(name);
+    if (unique.size >= 6) break;
+  }
+  return [...unique];
+}
+function operandList(identifiers) {
+  if (identifiers.length === 0) return "computed values";
+  if (identifiers.length === 1) return identifiers[0];
+  if (identifiers.length === 2) return `${identifiers[0]} and ${identifiers[1]}`;
+  return `${identifiers.slice(0, 3).join(", ")} and others`;
+}
+function enclosingSymbol(symbols, line) {
+  let best = null;
+  let bestLine = -1;
+  for (const symbol of symbols) {
+    if (symbol.line <= line && symbol.line > bestLine) {
+      best = symbol.name;
+      bestLine = symbol.line;
+    }
+  }
+  return best;
+}
+var CALCULATION_PATTERNS = [
+  {
+    operation: "aggregation",
+    re: /\b(sum|mean|median|avg|average|aggregate|count|total)\s*\(|\.(sum|mean|median|min|max)\s*\(|reduce\s*\(|groupby|group_by|rollup|pivot_table/i,
+    describe: (operands, symbol) => `aggregates ${operands} into a single value` + (symbol ? ` inside \`${symbol}\`` : "")
+  },
+  {
+    operation: "statistic",
+    re: /\b(std|stddev|variance|percentile|quantile|correlation|covariance|linregress|polyfit|zscore|normaliz|minmaxscaler|standardscaler)\s*\(|\bnp\.(mean|std|percentile|corr|polyfit|interp)|scipy\./i,
+    describe: (operands, symbol) => `computes a statistical measure over ${operands}` + (symbol ? ` inside \`${symbol}\`` : "")
+  },
+  {
+    operation: "date_math",
+    re: /\b(timedelta|date_add|date_sub|addDays|addMonths|add_years|strftime|strptime|toDate|getTime|getDate|setDate|Date\.now|new Date)\b|\bdate\s*[+\-]|\+\s*timedelta/i,
+    describe: (operands, symbol) => `performs date arithmetic on ${operands}` + (symbol ? ` inside \`${symbol}\`` : "")
+  },
+  {
+    operation: "formula",
+    re: /[A-Za-z0-9_)\]]\s*[*\/]\s*[A-Za-z0-9_(]|Math\.(round|floor|ceil|min|max|pow|sqrt|abs)|\b(round|floor|ceil|abs|sqrt|pow)\s*\(/,
+    describe: (operands, symbol) => `multiplies, divides or scales ${operands}` + (symbol ? ` inside \`${symbol}\`` : "")
+  },
+  {
+    operation: "arithmetic",
+    re: /[A-Za-z0-9_)\]]\s*[+\-]\s*[A-Za-z0-9_(]|\b(int|float)\s*\(|\*\s*\d|\+\s*\d/,
+    describe: (operands, symbol) => `adds to or subtracts from ${operands}` + (symbol ? ` inside \`${symbol}\`` : "")
+  }
+];
+function extractCalculations(path, content, symbols) {
+  const language = languageOfPath(path);
+  if (!isCodeLanguage(language)) return [];
+  const lines = content.split("\n");
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  lines.forEach((line, index) => {
+    if (out.length >= MAX_PER_KIND) return;
+    if (!isCode(line, language)) return;
+    for (const pattern of CALCULATION_PATTERNS) {
+      if (!pattern.re.test(line)) continue;
+      const lineNumber = index + 1;
+      const symbol = enclosingSymbol(symbols, lineNumber);
+      const identifiers = identifiersIn(line);
+      const key = `${pattern.operation}:${symbol ?? lineNumber}:${identifiers[0] ?? ""}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push({
+        kind: "calculation",
+        claim: `\`${path}\` ${pattern.describe(operandList(identifiers), symbol)}.`,
+        symbol,
+        line: lineNumber,
+        lines: String(lineNumber),
+        excerpt: excerptOf(line),
+        operation: pattern.operation,
+        identifiers
+      });
+      break;
+    }
+  });
+  return out;
+}
+var RULE_PATTERNS = [
+  /\bif\b[^{]*[<>]=?|[<>]=?\s*\d/,
+  // if x < 10
+  /\bif\b\s*\(?\s*!|not\s+\w+/,
+  // if not x
+  /\?.*:/,
+  // ternary
+  /\bswitch\b|\bmatch\s+\w+\s*\{/,
+  /\belsif\b|\belif\b/,
+  /\bmatch\s*\(/
+];
+function extractRules(path, content, symbols) {
+  const language = languageOfPath(path);
+  if (!isCodeLanguage(language)) return [];
+  const lines = content.split("\n");
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  lines.forEach((line, index) => {
+    if (out.length >= MAX_PER_KIND) return;
+    if (!isCode(line, language)) return;
+    if (!RULE_PATTERNS.some((re) => re.test(line))) return;
+    if (!/[<>!=]|\bnot\b|\?|true|false/.test(line)) return;
+    const lineNumber = index + 1;
+    const symbol = enclosingSymbol(symbols, lineNumber);
+    const identifiers = identifiersIn(line);
+    const hasLiteral = /\d/.test(line);
+    const key = `${symbol ?? lineNumber}:${identifiers[0] ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      kind: "rule",
+      claim: `\`${path}\` branches on a condition involving ${operandList(identifiers)}` + (hasLiteral ? `, compared against a literal value` : ``) + (symbol ? ` inside \`${symbol}\`` : ``) + `.`,
+      symbol,
+      line: lineNumber,
+      lines: String(lineNumber),
+      excerpt: excerptOf(line),
+      operation: hasLiteral ? "threshold" : "branch",
+      identifiers
+    });
+  });
+  return out;
+}
+var MODEL_USAGE = [
+  {
+    re: /\.(fit|train|partial_fit)\s*\(/,
+    operation: "training",
+    describe: "trains a model in code"
+  },
+  {
+    re: /\.(predict|predict_proba|transform|decision_function|forward|generate)\s*\(/,
+    operation: "inference",
+    describe: "runs a model or transform to produce a result"
+  },
+  {
+    re: /\b(LinearRegression|LogisticRegression|RandomForest|GradientBoost|DecisionTree|SVC|KMeans|Ridge|Lasso|ARIMA|ETS|ExponentialSmoothing|Prophet|IsolationForest|GradientBoostingRegressor|RandomForestRegressor|torch|nn\.|tf\.|keras|xgboost|lightgbm)\b/,
+    operation: "model_type",
+    describe: "names a predictive or statistical model"
+  },
+  {
+    re: /\b(joblib|pickle|torch\.load|load_model|np\.load|model\.pt|model\.pkl|onnx|load_weights|from_pretrained)\b/,
+    operation: "model_artifact",
+    describe: "loads a trained model artefact"
+  },
+  {
+    re: /\b(moving_average|movingaverage|expanding\(|rolling\(|ewm\(|seasonal_decompose|adf\(|auto_arima|trend|forecast)\s*\(|\.forecast\s*\(/,
+    operation: "statistical_forecast",
+    describe: "computes a moving average, rolling window or time-series forecast"
+  },
+  {
+    re: /\b(StandardScaler|MinMaxScaler|normalize|tokenize|embed|embedding|cosine_similarity|similarity)\b/i,
+    operation: "representation",
+    describe: "transforms values into a normalised or vector representation"
+  }
+];
+function extractModels(path, content) {
+  const language = languageOfPath(path);
+  if (!isCodeLanguage(language)) return [];
+  const lines = content.split("\n");
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  lines.forEach((line, index) => {
+    if (out.length >= MAX_PER_KIND) return;
+    if (!isCode(line, language)) return;
+    for (const pattern of MODEL_USAGE) {
+      if (!pattern.re.test(line)) continue;
+      const lineNumber = index + 1;
+      const identifiers = identifiersIn(line);
+      const key = `${pattern.operation}:${identifiers[0] ?? lineNumber}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push({
+        kind: "model",
+        claim: `\`${path}\` ${pattern.describe} (line ${lineNumber}${identifiers[0] ? `, near \`${identifiers[0]}\`` : ""}).`,
+        symbol: null,
+        line: lineNumber,
+        lines: String(lineNumber),
+        excerpt: excerptOf(line),
+        operation: pattern.operation,
+        identifiers
+      });
+      break;
+    }
+  });
+  return out;
+}
+var DATA_ACCESS = [
+  {
+    re: /pd\.read_csv|pd\.read_json|pd\.read_excel|pd\.read_sql|csv\.(reader|DictReader|reader)|read_csv|load_csv|open\s*\(\s*['"`][^'"`]*\.(csv|json|jsonl|txt|parquet|xlsx|tsv)/i,
+    operation: "file_ingest",
+    describe: "reads a data file from disk"
+  },
+  {
+    re: /fetch\s*\(|axios\.|requests\.(get|post|put|patch|delete)|httpx\.|urlopen|XMLHttpRequest|supabase\.|firebase\./,
+    operation: "network_call",
+    describe: "calls an external service or API"
+  },
+  {
+    re: /\b(SELECT|INSERT INTO|UPDATE|DELETE FROM)\b[\s\S]{0,80}\b(FROM|INTO|SET|WHERE)\b/i,
+    operation: "sql",
+    describe: "executes a database query"
+  },
+  {
+    re: /\.(query|execute|executemany|find|findOne|find_many|insert|update|delete|upsert|save|create)\s*\(|\.collection\s*\(|\.table\s*\(/,
+    operation: "orm",
+    describe: "reads or writes records through a data-access layer"
+  },
+  {
+    re: /localStorage|sessionStorage|indexedDB|FileReader|readAsText|readAsDataURL|\.read\(\)/,
+    operation: "client_state",
+    describe: "reads data held in the client or uploaded by the user"
+  },
+  {
+    re: /glob\s*\(|listdir|walk\s*\(|readdir|fs\.|open\s*\(\s*['"`][^'"`]*\.(csv|json|jsonl|parquet)/i,
+    operation: "file_scan",
+    describe: "scans the filesystem for input data"
+  },
+  {
+    re: /write\s*\(|to_csv|to_json|writerow|json\.dump|FileWriter|createWriteStream/i,
+    operation: "file_write",
+    describe: "writes data out to a file"
+  }
+];
+function extractDataAccess(path, content, symbols) {
+  const language = languageOfPath(path);
+  if (!isCodeLanguage(language)) return [];
+  const lines = content.split("\n");
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  lines.forEach((line, index) => {
+    if (out.length >= MAX_PER_KIND) return;
+    if (!isCode(line, language)) return;
+    for (const pattern of DATA_ACCESS) {
+      if (!pattern.re.test(line)) continue;
+      const lineNumber = index + 1;
+      const symbol = enclosingSymbol(symbols, lineNumber);
+      const identifiers = identifiersIn(line);
+      const key = `${pattern.operation}:${identifiers[0] ?? lineNumber}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push({
+        kind: "data_access",
+        claim: `\`${path}\` ${pattern.describe}` + (symbol ? ` inside \`${symbol}\`` : "") + (identifiers[0] ? `, near \`${identifiers[0]}\`` : "") + `.`,
+        symbol,
+        line: lineNumber,
+        lines: String(lineNumber),
+        excerpt: excerptOf(line),
+        operation: pattern.operation,
+        identifiers
+      });
+      break;
+    }
+  });
+  return out;
+}
+var UI_PATTERNS = [
+  {
+    re: /<form[\s>]|onsubmit|addEventListener\s*\(\s*['"`]submit|onclick\s*=|addEventListener\s*\(\s*['"`]click/,
+    operation: "form_submit",
+    describe: "captures a user action through a form or click handler"
+  },
+  {
+    re: /<table|<thead|tbody|DataTable|\.map\s*\(\s*\(?\s*\w+\s*\)?\s*=>[\s\S]{0,40}<tr|createElement\s*\(\s*['"`]tr/,
+    operation: "data_table",
+    describe: "renders rows of data as a table or list"
+  },
+  {
+    re: /<canvas|chart|Chart\s*\(|plotly|d3\.|plot\s*\(|sparkline|svg/i,
+    operation: "chart",
+    describe: "renders a chart or visual plot of data"
+  },
+  {
+    re: /<input|<select|<textarea|useState|setState|v-model|ng-model/,
+    operation: "input_control",
+    describe: "provides an input control the user can change"
+  },
+  {
+    re: /<button|type=["']submit["']|onClick|@click|addEventListener/,
+    operation: "button",
+    describe: "offers a control the user can activate"
+  },
+  {
+    re: /<h1|<h2|<h3|class=["'][^"']*(card|panel|grid|table|stat|kpi|dashboard)|innerHTML|textContent\s*=|dangerouslySetInnerHTML/,
+    operation: "display",
+    describe: "displays content to the user"
+  }
+];
+function extractUi(path, content, symbols) {
+  const language = languageOfPath(path);
+  const lines = content.split("\n");
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  lines.forEach((line, index) => {
+    if (out.length >= MAX_PER_KIND) return;
+    for (const pattern of UI_PATTERNS) {
+      if (!pattern.re.test(line)) continue;
+      if (language !== "HTML" && !isCode(line, language)) continue;
+      const lineNumber = index + 1;
+      const symbol = enclosingSymbol(symbols, lineNumber);
+      const identifiers = identifiersIn(line);
+      const key = `${pattern.operation}:${identifiers[0] ?? lineNumber}`;
+      if (seen.has(key)) break;
+      seen.add(key);
+      out.push({
+        kind: "ui",
+        claim: `\`${path}\` ${pattern.describe}` + (identifiers[0] ? ` (near \`${identifiers[0]}\`)` : "") + `.`,
+        symbol,
+        line: lineNumber,
+        lines: String(lineNumber),
+        excerpt: excerptOf(line),
+        operation: pattern.operation,
+        identifiers
+      });
+      break;
+    }
+  });
+  return out;
+}
+var IMPORT_PATTERNS = [
+  /^\s*import\s+(?:[\w*{}\s,]+\s+from\s+)?['"]([^'"]+)['"]/gm,
+  /^\s*from\s+([\w.]+)\s+import\s+/gm,
+  /require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm,
+  /^\s*use\s+([\w:]+)\s*;/gm,
+  /^\s*#include\s*[<"]([^>"]+)[>"]/gm,
+  /^\s*import\s+([\w.]+)\s*$/gm
+];
+function extractImports(content) {
+  const found = /* @__PURE__ */ new Set();
+  for (const pattern of IMPORT_PATTERNS) {
+    pattern.lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      const value = match[1]?.trim();
+      if (value) found.add(value);
+      if (found.size > 60) break;
+    }
+  }
+  return [...found].slice(0, 60);
+}
+function analyseSemantics(path, content, symbols) {
+  return {
+    path,
+    language: languageOfPath(path),
+    calculations: extractCalculations(path, content, symbols),
+    rules: extractRules(path, content, symbols),
+    models: extractModels(path, content),
+    dataAccess: extractDataAccess(path, content, symbols),
+    ui: extractUi(path, content, symbols),
+    imports: extractImports(content)
+  };
+}
+function compactSemantics(result, limit = 10) {
+  const take = (items) => items.slice(0, limit).map((item) => ({
+    claim: item.claim,
+    operation: item.operation,
+    line: item.line,
+    excerpt: item.excerpt
+  }));
+  return {
+    path: result.path,
+    language: result.language,
+    calculations: take(result.calculations),
+    decision_rules: take(result.rules),
+    model_usage: take(result.models),
+    data_access: take(result.dataAccess),
+    interface: take(result.ui)
+  };
+}
+
 // _shared/scanner.ts
-var SCANNER_VERSION = "p5-1";
+var SCANNER_VERSION = "p5-3";
 var READ_CATEGORIES = /* @__PURE__ */ new Set([
   "source",
   "component",
@@ -2598,8 +4856,12 @@ var READ_CATEGORIES = /* @__PURE__ */ new Set([
   "database",
   "config",
   "documentation",
-  "test"
+  "test",
+  "dataset"
 ]);
+var MAX_DATASETS_READ = 25;
+var DATASET_HEAD_BYTES = 512e3;
+var MAX_DATASET_BYTES2 = 20 * 1024 * 1024;
 var ALWAYS_READ_NAMES = /* @__PURE__ */ new Set([
   "readme.md",
   "package.json",
@@ -2618,6 +4880,20 @@ var ALWAYS_READ_NAMES = /* @__PURE__ */ new Set([
   "manage.py",
   "schema.prisma"
 ]);
+function looksLikeDataPath(path, fileName) {
+  if (!path.toLowerCase().endsWith(".json")) return false;
+  const name = fileName.toLowerCase();
+  if (name === "package.json" || name === "composer.json" || name === "manifest.json") {
+    return false;
+  }
+  if (name.startsWith("tsconfig") || name.startsWith("jsconfig")) return false;
+  if (name.startsWith("babel") || name.startsWith("eslint")) return false;
+  if (name.startsWith("prettier") || name.startsWith("stylelint")) return false;
+  const parts = path.toLowerCase().split("/");
+  return parts.some(
+    (part) => ["data", "dataset", "datasets", "dump", "export", "records", "rows", "sample", "samples"].includes(part)
+  );
+}
 async function scanRepository(client, owner, repo) {
   const config = settings();
   const metadata = await client.repository(owner, repo);
@@ -2690,9 +4966,16 @@ async function scanRepository(client, owner, repo) {
       importance: importanceOf(path, category)
     });
   }
-  const readCandidates = inventory.filter(
-    (item) => !item.record.is_ignored && READ_CATEGORIES.has(item.record.file_category) && item.record.file_size <= config.analysisMaxFileBytes
-  );
+  const readCandidates = inventory.filter((item) => {
+    if (item.record.is_ignored) return false;
+    if (item.record.file_category === "dataset") {
+      return item.record.file_size <= MAX_DATASET_BYTES2;
+    }
+    if (looksLikeDataPath(item.record.path, item.record.file_name ?? "")) {
+      return item.record.file_size <= MAX_DATASET_BYTES2;
+    }
+    return READ_CATEGORIES.has(item.record.file_category) && item.record.file_size <= config.analysisMaxFileBytes;
+  });
   const priority = (item) => {
     const name = (item.record.file_name ?? "").toLowerCase();
     if (ALWAYS_READ_NAMES.has(name)) return 0;
@@ -2723,6 +5006,11 @@ async function scanRepository(client, owner, repo) {
   const testCommandContents = [];
   let readme = null;
   let blobBudgetExhausted = false;
+  const datasetProfiles = [];
+  const semantics = [];
+  let datasetsRead = 0;
+  let datasetsSkipped = 0;
+  const conceptSeeds = () => [];
   for (const item of inventory) {
     const { record, category } = item;
     if (record.is_ignored) {
@@ -2754,7 +5042,7 @@ async function scanRepository(client, owner, repo) {
       warnings.push(`Could not read \`${path}\`.`);
       continue;
     }
-    const binary = looksBinary(blob);
+    const binary = looksBinary(blob, path);
     record.is_binary = binary;
     record.file_size = blob.length;
     files.push(record);
@@ -2762,7 +5050,30 @@ async function scanRepository(client, owner, repo) {
       record.importance = "ignored";
       continue;
     }
-    const content = decodeText(blob);
+    const isDataFile = category === "dataset" || path.toLowerCase().endsWith(".json") && looksLikeDataPath(path, record.file_name ?? "");
+    if (isDataFile) {
+      if (datasetsRead >= MAX_DATASETS_READ) {
+        datasetsSkipped += 1;
+        files.push(record);
+        continue;
+      }
+      datasetsRead += 1;
+      const head = blob.length > DATASET_HEAD_BYTES ? blob.slice(0, DATASET_HEAD_BYTES) : blob;
+      const headText = decodeText(head, path);
+      if (headText !== null) {
+        const profile = profileDataset(
+          { path, content: headText, sizeBytes: blob.length },
+          conceptSeeds()
+        );
+        if (profile) {
+          datasetProfiles.push(profile);
+          record.importance = "high";
+        }
+      }
+      files.push(record);
+      continue;
+    }
+    const content = decodeText(blob, path);
     if (content === null) {
       record.is_binary = true;
       continue;
@@ -2803,10 +5114,29 @@ async function scanRepository(client, owner, repo) {
       if (parserStatus === "ok") {
         allSymbols.push(...symbols);
         chunks.push(...chunksFor(path, record, symbols, content, importance));
+      } else {
+        chunks.push(headChunk(path, record, content, importance));
       }
       routes.push(...extractRoutes(path, content));
       integrations.push(...extractIntegrations(content, path));
+      const found = analyseSemantics(
+        path,
+        content,
+        symbols.map((symbol) => ({
+          name: symbol.name,
+          line: symbol.line,
+          symbol_type: symbol.symbol_type
+        }))
+      );
+      if (found.calculations.length || found.rules.length || found.models.length || found.dataAccess.length || found.ui.length) {
+        semantics.push(found);
+      }
     }
+  }
+  if (datasetsSkipped) {
+    warnings.push(
+      `${datasetsSkipped} further data file(s) were not profiled to stay within the limit of ${MAX_DATASETS_READ} datasets per repository.`
+    );
   }
   const frameworks = detectFrameworks(dependencies, configFilenames);
   const databases = [
@@ -2833,7 +5163,9 @@ async function scanRepository(client, owner, repo) {
     tests,
     secrets,
     files,
-    analysisMode
+    analysisMode,
+    datasetProfiles,
+    semantics
   });
   const projectMap = buildProjectMap({
     repository: {
@@ -2859,7 +5191,9 @@ async function scanRepository(client, owner, repo) {
     readme,
     secrets,
     analysisMode,
-    warnings
+    warnings,
+    datasetProfiles,
+    semantics
   });
   if (blobBudgetExhausted && !projectMap.apis.length) {
     throw new GitHubError(
@@ -2882,6 +5216,9 @@ async function scanRepository(client, owner, repo) {
     chunks,
     evidence: registry.toList(),
     projectMap,
+    datasetProfiles,
+    semantics,
+    routes,
     secretCount: secrets.length,
     scannerVersion: SCANNER_VERSION
   };
@@ -2923,6 +5260,21 @@ function chunksFor(path, record, symbols, content, importance) {
     });
   });
   return chunks;
+}
+function headChunk(path, record, content, importance) {
+  const lines = content.split("\n");
+  const end = Math.min(lines.length, 200);
+  return {
+    file_path: path,
+    chunk_index: 0,
+    start_line: 1,
+    end_line: end,
+    content: lines.slice(0, end).join("\n").slice(0, 12e3),
+    symbol_name: null,
+    symbol_type: "file",
+    language: record.language,
+    importance
+  };
 }
 function recordStructuralEvidence(registry, input) {
   registry.add({
@@ -3012,6 +5364,82 @@ function recordStructuralEvidence(registry, input) {
       confidence: "medium"
     });
   }
+  for (const profile of input.datasetProfiles.slice(0, 25)) {
+    const shape = [
+      profile.date_columns.length ? `dated by ${profile.date_columns.join("/")}` : null,
+      profile.entity_columns.length ? `keyed by ${profile.entity_columns.join("/")}` : null,
+      profile.quantity_columns.length || profile.stock_columns.length ? `measuring ${[...profile.quantity_columns, ...profile.stock_columns].join("/")}` : null,
+      profile.price_columns.length ? `priced by ${profile.price_columns.join("/")}` : null,
+      profile.supplier_columns.length ? `with ${profile.supplier_columns.join("/")}` : null
+    ].filter(Boolean).join(", ");
+    registry.add({
+      type: "dataset_profile",
+      claim: `Dataset \`${profile.path}\` (${profile.format}, ~${profile.approx_row_count.toLocaleString("en-US")} rows, ${Math.round(profile.size_bytes / 1024)} KB) with columns ${profile.column_names.slice(0, 8).join(", ")}` + (shape ? ` \u2014 ${shape}` : "") + `. Profile: ${profile.likely_purpose}.`,
+      file: profile.path,
+      confidence: "high",
+      detail: {
+        columns: profile.column_names.slice(0, 20),
+        approx_row_count: profile.approx_row_count,
+        format: profile.format,
+        purpose: profile.likely_purpose
+      }
+    });
+  }
+  for (const file of input.semantics) {
+    for (const finding of file.calculations.slice(0, 6)) {
+      registry.add({
+        type: "calculation",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation }
+      });
+    }
+    for (const finding of file.rules.slice(0, 4)) {
+      registry.add({
+        type: "rule",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation }
+      });
+    }
+    for (const finding of file.models.slice(0, 4)) {
+      registry.add({
+        type: "model",
+        claim: finding.claim,
+        file: file.path,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation }
+      });
+    }
+    for (const finding of file.dataAccess.slice(0, 4)) {
+      registry.add({
+        type: "data_access",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation }
+      });
+    }
+    for (const finding of file.ui.slice(0, 3)) {
+      registry.add({
+        type: "ui",
+        claim: finding.claim,
+        file: file.path,
+        lines: finding.lines,
+        confidence: "medium",
+        detail: { operation: finding.operation }
+      });
+    }
+  }
   for (const record of input.files.filter((f) => ["schema", "database"].includes(f.file_category)).slice(0, 20)) {
     registry.add({
       type: "database_schema",
@@ -3028,6 +5456,42 @@ function recordStructuralEvidence(registry, input) {
       confidence: "medium"
     });
   }
+}
+function semanticsFrom(projectMap) {
+  const empty = [];
+  const byFile = /* @__PURE__ */ new Map();
+  const add = (kind, rows) => {
+    for (const row of rows ?? []) {
+      const file = String(row.file ?? "");
+      if (!file) continue;
+      const entry = byFile.get(file) ?? {
+        path: file,
+        language: null,
+        calculations: [],
+        rules: [],
+        models: [],
+        dataAccess: [],
+        ui: [],
+        imports: []
+      };
+      entry[kind].push({
+        claim: String(row.claim ?? ""),
+        symbol: row.symbol ?? null,
+        line: Number(row.line ?? 0),
+        lines: String(row.line ?? 0),
+        excerpt: "",
+        operation: String(row.operation ?? ""),
+        identifiers: (row.identifiers ?? []).map(String)
+      });
+      byFile.set(file, entry);
+    }
+  };
+  add("calculations", projectMap.calculations);
+  add("rules", projectMap.business_logic);
+  add("models", projectMap.models);
+  add("dataAccess", projectMap.data_access);
+  add("ui", projectMap.ui_flows);
+  return byFile.size ? [...byFile.values()] : empty;
 }
 var AnalysisStore = class {
   service = db();
@@ -3171,29 +5635,51 @@ var AnalysisStore = class {
     const { data: repositories } = await this.service.from("repositories").select("*").eq("submission_id", submissionId).limit(1);
     const repository = repositories?.[0];
     if (!repository) return null;
-    const [{ data: files }, { data: chunks }] = await Promise.all([
-      this.service.from("repository_files").select(
-        "id, path, file_name, language, file_category, importance, is_ignored, is_binary, line_count"
-      ).eq("repository_id", repository.id).eq("is_ignored", false),
-      this.service.from("code_chunks").select(
+    const { data: files } = await this.service.from("repository_files").select(
+      "id, path, file_name, language, file_category, importance, is_ignored, is_binary, line_count"
+    ).eq("repository_id", repository.id).eq("is_ignored", false);
+    const fileIds = (files ?? []).map((row) => row.id);
+    const chunks = [];
+    for (let start = 0; start < fileIds.length; start += 200) {
+      const { data } = await this.service.from("code_chunks").select(
         "file_id, chunk_index, start_line, end_line, content, symbol_name, symbol_type, language, importance"
-      ).eq("repository_id", repository.id).eq("importance", "high").limit(600)
-    ]);
+      ).in(
+        "file_id",
+        fileIds.slice(start, start + 200)
+      ).in("importance", ["high", "medium"]).order("importance", { ascending: true }).limit(1200);
+      chunks.push(...data ?? []);
+      if (chunks.length >= 1200) break;
+    }
     const pathById = new Map(
       (files ?? []).map((row) => [
         row.id,
         row.path
       ])
     );
+    const projectMap = repository.project_map ?? {};
+    const restored = chunks.map((chunk) => ({
+      ...chunk,
+      file_path: pathById.get(chunk.file_id)
+    })).filter((chunk) => chunk.file_path);
     return {
       repository,
       files: files ?? [],
-      chunks: (chunks ?? []).map((chunk) => ({
-        ...chunk,
-        file_path: pathById.get(chunk.file_id)
-      })).filter((chunk) => chunk.file_path),
+      chunks: restored,
       evidence: repository.evidence ?? [],
-      projectMap: repository.project_map ?? {}
+      projectMap,
+      datasetProfiles: projectMap.data_sources ?? [],
+      semantics: semanticsFrom(projectMap),
+      routes: projectMap.apis ?? [],
+      inspection: {
+        mode: repository.analysis_mode === "limited" ? "limited" : "full",
+        warnings: (projectMap.warnings ?? []).slice(0, 8),
+        filesSeen: Number(
+          projectMap.repository_stats?.total_files_seen ?? 0
+        ),
+        filesRead: (files ?? []).filter(
+          (row) => !row.is_ignored
+        ).length
+      }
     };
   }
 };
@@ -3239,369 +5725,28 @@ async function analyzeSubmission(submissionId, githubUrl) {
   };
 }
 
-// _shared/modules.ts
-var PROMPT_VERSIONS = {
-  alignment: "align-v1",
-  architecture: "arch-v1",
-  quality: "quality-v1",
-  contribution: "contrib-v1",
-  claims: "claims-v1",
-  requirements_fallback: "reqmap-v1"
-};
-var MODULE_A = "alignment";
-var MODULE_B = "architecture";
-var MODULE_C = "quality";
-var MODULE_D = "contribution";
-var SYSTEM_STABLE = `You are a technical reviewer assessing a hackathon submission against its
-brief. You are given FACTS extracted deterministically from a GitHub repository,
-and small targeted code snippets. The facts are the source of truth.
-
-Rules you must follow:
-1. Never invent files, functions, endpoints, tables, dependencies, features,
-metrics or vulnerabilities. If something is not in the evidence, say it is not
-evidenced.
-2. Every conclusion must cite evidence ids from the list you are given.
-3. "not_evidenced" means the analysed repository did not show sufficient evidence.
-It does NOT mean the feature does not exist.
-4. Never claim a real-world impact or benchmark number unless the evidence
-contains a measurement. Describe intent instead.
-5. Prefer "potential_issue" over "confirmed_issue". Use "confirmed_issue" only
-when the evidence unambiguously establishes the problem.
-6. Do not rank, score, or compare teams. This is a training analysis.
-7. Reply with a single JSON object matching the requested shape. No prose.`;
-function moduleResult(module, status, source, data, reason = "") {
-  return { module, status, source, data, reason };
-}
-function testingFromEvidence(projectMap) {
-  const testing = projectMap.testing ?? {};
-  const count = Number(testing.test_file_count ?? 0);
-  const frameworks = (testing.frameworks ?? []).map((name) => name);
-  let status;
-  let finding;
-  if (count === 0) {
-    status = "not_evidenced";
-    finding = "testing_gap";
-  } else if (count < 3) {
-    status = "partial_evidence";
-    finding = "testing_gap";
-  } else {
-    status = "evidence_found";
-    finding = null;
-  }
-  return {
-    status,
-    testFileCount: count,
-    frameworks,
-    commands: testing.commands ?? [],
-    finding,
-    explanation: count === 0 ? "No test files were detected in the analysed repository." : `${count} test files detected. File count is not a measure of test quality.`
-  };
-}
-function securityFromEvidence(projectMap) {
-  const secrets = projectMap.security?.hardcoded_secrets ?? [];
-  if (secrets.length === 0) return null;
-  return {
-    status: "evidence_found",
-    confirmed_issues: secrets.slice(0, 5).map((item) => {
-      const words = item.type.replace(/_/g, " ");
-      return {
-        type: "security_concern",
-        severity: "high",
-        title: `Hard-coded ${words} in ${item.file}`,
-        description: `A value matching a ${words} pattern was found at ${item.file} line ${item.line}. The value itself is redacted and was not transmitted.`,
-        why_it_matters: "A committed credential should be rotated, not just removed.",
-        suggested_improvement: "Rotate the credential and load it from the environment.",
-        confidence: "medium"
-      };
-    })
-  };
-}
-function formatItems(items) {
-  if (!items || items.length === 0) return "(none provided)";
-  return items.slice(0, 30).map((item) => `- [${item.id}] (${item.category}, ${item.importance}) ${item.text}`).join("\n");
-}
-function truncateJson(payload, limit) {
-  const text = JSON.stringify(payload ?? null);
-  return text.length <= limit ? text : `${text.slice(0, limit)} \u2026(truncated)`;
-}
-var NO_SNIPPETS = "(no relevant code could be retrieved)";
-function briefContext(requirementMap, submission, length) {
-  const submissionRow = submission ?? {};
-  const claims = [
-    `Project: ${submissionRow.project_name || "(none)"}`,
-    `Description: ${String(submissionRow.project_description ?? "").slice(0, length === "full" ? 900 : 320)}`,
-    `Key features: ${String(submissionRow.key_features ?? "").slice(0, length === "full" ? 900 : 320)}`,
-    `Tech stack claimed: ${String(submissionRow.tech_stack ?? "").slice(0, length === "full" ? 400 : 200)}`
-  ].join("\n");
-  if (length === "short") {
-    const top = (requirementMap.requirements ?? []).slice(0, 6);
-    return `THE CHALLENGE
-${(requirementMap.problem_summary || "").slice(0, 700)}
-
-KEY REQUIREMENTS
-${top.length ? formatItems(top) : "(none listed)"}
-
-WHAT THE TEAM CLAIMED
-${claims}`;
-  }
-  return `PROJECT PROBLEM
-${(requirementMap.problem_summary || "").slice(0, 1500)}
-
-REQUIREMENTS
-${formatItems(requirementMap.requirements)}
-
-CONSTRAINTS
-${formatItems(requirementMap.constraints)}
-
-EXPECTED OUTCOME
-${formatItems(requirementMap.expected_outcomes)}
-
-EVALUATION CRITERIA
-${formatItems(requirementMap.evaluation_criteria)}
-
-WHAT THE STUDENT CLAIMED
-${claims}`;
-}
-function buildAlignmentTask(input) {
-  const facts = compactEvidence(input.evidence, 120);
-  return `Assess whether this submission addresses THIS specific hackathon.
-
-Return JSON:
-{
-  "problem_alignment": {
-    "status": "strongly_aligned|partially_aligned|weakly_evidenced|unclear",
-    "confidence": "high|medium|low",
-    "evidence_ids": ["EV-001"],
-    "explanation": "How the implementation relates to the stated problem."
-  },
-  "requirements": [
-    {
-      "requirement_id": "REQ-001",
-      "status": "evidence_found|partial_evidence|not_evidenced|unable_to_determine",
-      "confidence": "high|medium|low|none",
-      "evidence_ids": ["EV-001"],
-      "explanation": "What in the repository shows this, or why it is not evidenced."
-    }
-  ],
-  "constraints": [
-    {
-      "constraint_id": "CON-001",
-      "status": "supported|potential_concern|not_evidenced|unable_to_determine",
-      "confidence": "high|medium|low|none",
-      "evidence_ids": ["EV-001"],
-      "explanation": "What shows this constraint is respected, or where it looks broken."
-    }
-  ],
-  "summary": {
-    "headline": "One sentence.",
-    "strengths": ["..."],
-    "areas_to_clarify": ["..."]
-  }
-}
-
-Only include a requirement entry for the requirement ids listed below, and a
-constraint entry only for the constraint ids listed below.
-
-Judge each one against the problem statement and the code in front of you \u2014 not
-against a checklist of technologies you expect to find. A repository that
-solves the problem with a different stack is aligned; one that carries the
-right stack but does not solve the problem is not. Where the code neither
-answers nor contradicts the item, say "unable_to_determine" rather than
-guessing.
-
-${briefContext(input.requirementMap, input.submission, "full")}
-
-PROJECT MAP (deterministic facts)
-${truncateJson(input.projectMap, 6e3)}
-
-REPOSITORY FACTS
-${truncateJson(facts, 6e3)}
-
-TARGETED CODE
-${input.snippets || NO_SNIPPETS}`;
-}
-function buildArchitectureTask(input) {
-  const facts = compactEvidence(input.evidence, 80);
-  return `Assess the technical architecture and implementation of this project.
-
-Return JSON:
-{
-  "architecture": {
-    "summary": "How the project is structured.",
-    "layers": ["..."],
-    "entry_points": ["..."],
-    "evidence_ids": ["EV-001"]
-  },
-  "technical_decisions": [
-    {"decision":"...","rationale":"... (only if the evidence supports it)","evidence_ids":["EV-001"]}
-  ],
-  "implementation": {
-    "summary": "...",
-    "strengths": ["..."],
-    "observations": ["..."]
-  },
-  "findings": [
-    {
-      "type": "strength|observation|potential_issue|architecture_concern|scalability_concern",
-      "severity": "critical|high|medium|low|informational",
-      "title": "...",
-      "description": "...",
-      "evidence_ids": ["EV-001"],
-      "files": ["path"],
-      "why_it_matters": "...",
-      "suggested_improvement": "...",
-      "confidence": "high|medium|low"
-    }
-  ]
-}
-
-Do not invent a technical decision rationale the repository does not show. If the
-reason for a choice is not in the evidence, omit the rationale.
-
-${briefContext(input.requirementMap, input.submission, "short")}
-
-PROJECT MAP
-${truncateJson(input.projectMap, 5e3)}
-
-REPOSITORY FACTS
-${truncateJson(facts, 5e3)}
-
-TARGETED CODE
-${input.snippets || NO_SNIPPETS}`;
-}
-function buildQualityTask(input) {
-  const facts = compactEvidence(input.evidence, 80);
-  return `Assess security, data handling, testing and scalability of this project.
-
-Return JSON:
-{
-  "security": {
-    "summary": "...",
-    "authentication_present": true,
-    "authorization_checks_present": true,
-    "concerns": ["..."],
-    "evidence_ids": ["EV-001"]
-  },
-  "database": {
-    "summary": "...",
-    "technologies": ["..."],
-    "schema_present": true,
-    "evidence_ids": ["EV-001"]
-  },
-  "testing": {
-    "summary": "...",
-    "evidence_ids": ["EV-001"]
-  },
-  "scalability": {
-    "summary": "...",
-    "concerns": ["..."],
-    "evidence_ids": ["EV-001"]
-  },
-  "findings": [
-    {
-      "type": "security_concern|testing_gap|scalability_concern|potential_issue|observation",
-      "severity": "critical|high|medium|low|informational",
-      "title": "...",
-      "description": "...",
-      "evidence_ids": ["EV-001"],
-      "files": ["path"],
-      "why_it_matters": "...",
-      "suggested_improvement": "...",
-      "confidence": "high|medium|low"
-    }
-  ]
-}
-
-Report only what the evidence supports. A concern you cannot evidence must be
-omitted, not softened.
-
-${briefContext(input.requirementMap, input.submission, "short")}
-
-PROJECT MAP
-${truncateJson(input.projectMap, 5e3)}
-
-REPOSITORY FACTS
-${truncateJson(facts, 5e3)}
-
-TARGETED CODE
-${input.snippets || NO_SNIPPETS}`;
-}
-function buildContributionTask(input) {
-  const facts = compactEvidence(input.evidence, 60);
-  const member = input.member;
-  return `Assess one team member's claimed contribution against the repository.
-
-Return JSON:
-{
-  "status": "supported_by_repository|partially_supported|not_yet_verified",
-  "confidence": "high|medium|low",
-  "evidence_ids": ["EV-001"],
-  "matched_files": ["path"],
-  "matched_symbols": ["name"],
-  "explanation": "What the repository shows about this contribution, or why it cannot be determined."
-}
-
-Absence of evidence is not evidence of absence. If the claim is broad or the
-repository cannot speak to it, use "not_yet_verified" and say so plainly.
-
-CLAIMED CONTRIBUTION (${member.full_name || member.email || "member"})
-Description: ${String(member.contribution_description ?? "(none)").slice(0, 700)}
-Areas: ${(member.contribution_areas ?? []).join(", ") || "(none)"}
-Planned responsibilities: ${String(member.planned_responsibilities ?? "(none)").slice(0, 500)}
-AI tools disclosed: ${String(member.ai_tools_used ?? "(none)").slice(0, 300)}
-
-OTHER TEAM MEMBERS (so you do not attribute their work to this person)
-${input.otherMembers.join(", ") || "(none)"}
-
-${briefContext(input.requirementMap, input.submission, "short")}
-
-PROJECT MAP
-${truncateJson(input.projectMap, 3500)}
-
-REPOSITORY FACTS
-${truncateJson(facts, 3500)}
-
-TARGETED CODE
-${input.snippets || NO_SNIPPETS}`;
-}
-function buildClaimsTask(input) {
-  const facts = compactEvidence(input.evidence, 80);
-  return `Check each feature the student claimed against the repository.
-
-Return JSON:
-{
-  "claims": [
-    {
-      "claim": "...",
-      "status": "supported|partially_supported|not_evidenced",
-      "evidence_ids": ["EV-001"],
-      "files": ["path"],
-      "symbols": ["name"],
-      "explanation": "..."
-    }
-  ]
-}
-
-"not_evidenced" means the analysed repository did not show evidence. It is not a
-statement that the claim is false.
-
-CLAIMS
-${input.claims.map((claim) => `- ${claim}`).join("\n")}
-
-PROJECT MAP
-${truncateJson(input.projectMap, 4e3)}
-
-REPOSITORY FACTS
-${truncateJson(facts, 4e3)}
-
-TARGETED CODE
-${input.snippets || NO_SNIPPETS}`;
-}
-var ALIGNMENT_STATUSES = [
-  "strongly_aligned",
-  "partially_aligned",
-  "weakly_evidenced",
-  "unclear"
+// _shared/evidence.ts
+var FINDING_TYPES = [
+  "strength",
+  "observation",
+  "potential_issue",
+  "confirmed_issue",
+  "security_concern",
+  "testing_gap",
+  "architecture_concern",
+  "scalability_concern",
+  "claim_mismatch",
+  "clarification_needed",
+  "dead_feature",
+  "placeholder",
+  "hardcoding"
+];
+var SEVERITIES = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "informational"
 ];
 var REQUIREMENT_STATUSES = [
   "evidence_found",
@@ -3615,288 +5760,2290 @@ var CONSTRAINT_STATUSES = [
   "not_evidenced",
   "unable_to_determine"
 ];
-var OUTCOME_STATUSES = ["supported", "partially_supported", "not_evidenced", "unclear"];
-var CONTRIBUTION_STATUSES = [
-  "supported_by_repository",
+var OUTCOME_STATUSES = [
+  "supported",
   "partially_supported",
-  "not_yet_verified"
+  "not_evidenced",
+  "unclear"
+];
+var CLAIM_STATUSES = [
+  "supported",
+  "partially_supported",
+  "not_evidenced"
 ];
 var CONFIDENCES = ["high", "medium", "low", "none"];
-var FINDING_TYPES = [
-  "strength",
-  "observation",
-  "potential_issue",
-  "confirmed_issue",
-  "security_concern",
-  "testing_gap",
-  "architecture_concern",
-  "scalability_concern",
-  "claim_mismatch",
-  "clarification_needed"
-];
-var SEVERITIES = ["critical", "high", "medium", "low", "informational"];
-var MAX_FINDINGS_PER_MODULE = 8;
-function validateFindings(raw, evidenceIds) {
+function buildEvidenceSet(evidence) {
+  const byId = /* @__PURE__ */ new Map();
+  const byFile = /* @__PURE__ */ new Map();
+  const ids = /* @__PURE__ */ new Set();
+  for (const item of evidence ?? []) {
+    if (!item?.id || ids.has(item.id)) continue;
+    ids.add(item.id);
+    byId.set(item.id, item);
+    if (item.file) {
+      const list = byFile.get(item.file) ?? [];
+      list.push(item);
+      byFile.set(item.file, list);
+    }
+  }
+  return { ids, byId, byFile };
+}
+function filterCitations(raw, evidence, limit = 12) {
+  const list = Array.isArray(raw) ? raw : [];
+  const accepted = [];
+  const rejected = [];
+  for (const value of list) {
+    const id = String(value ?? "").trim();
+    if (!id) continue;
+    if (evidence.ids.has(id)) {
+      if (!accepted.includes(id) && accepted.length < limit) accepted.push(id);
+    } else if (!rejected.includes(id)) {
+      rejected.push(id);
+    }
+  }
+  return { accepted, rejected };
+}
+function compactEvidence(items, limit = 60, terms = [], evidence) {
+  const ranked = items.map((item) => {
+    const haystack = `${item.claim} ${item.file ?? ""} ${item.symbol ?? ""}`.toLowerCase();
+    let score = item.file ? 10 : 0;
+    for (const term of terms) {
+      if (term.length > 2 && haystack.includes(term)) score += 3;
+    }
+    if (item.type === "readme" || item.type === "repository") score += 6;
+    if (item.type === "analysis_mode") score += 8;
+    return { item, score };
+  }).sort((a, b) => b.score - a.score);
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const { item } of ranked) {
+    const key = `${item.type}|${item.file ?? ""}|${item.symbol ?? ""}|${item.claim}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: item.id,
+      type: item.type,
+      claim: item.claim.slice(0, 220),
+      file: item.file ?? null,
+      symbol: item.symbol ?? null,
+      lines: item.lines ?? null
+    });
+    if (out.length >= limit) break;
+  }
+  void evidence;
+  return out;
+}
+var MAX_FINDINGS = 10;
+function validateFindings(raw, evidence, expectationSource = "general") {
   if (!Array.isArray(raw)) return [];
-  const findings = [];
+  const out = [];
   for (const item of raw) {
     if (typeof item !== "object" || item === null) continue;
     const record = item;
-    if (!record.title) continue;
-    const cited = (record.evidence_ids ?? []).filter((id) => evidenceIds.has(id));
-    if (cited.length === 0 && record.type !== "observation") continue;
-    let findingType = FINDING_TYPES.includes(record.type) ? record.type : "observation";
-    const severity = SEVERITIES.includes(record.severity) ? record.severity : "low";
-    const confidence = ["high", "medium", "low"].includes(record.confidence) ? record.confidence : "low";
-    if (findingType === "confirmed_issue" && confidence === "low") {
-      findingType = "potential_issue";
+    const title = String(record.title ?? "").trim();
+    if (!title) continue;
+    const { accepted } = filterCitations(record.evidence_ids, evidence);
+    if (accepted.length === 0 && record.type !== "observation") continue;
+    let type = FINDING_TYPES.includes(String(record.type)) ? String(record.type) : "observation";
+    const severity = SEVERITIES.includes(String(record.severity)) ? String(record.severity) : "low";
+    const confidence = ["high", "medium", "low"].includes(String(record.confidence)) ? String(record.confidence) : "low";
+    if (type === "confirmed_issue" && confidence === "low") {
+      type = "potential_issue";
     }
-    findings.push({
-      finding_type: findingType,
+    if (type === "claim_mismatch" && accepted.length === 0) continue;
+    const files = (record.files ?? []).map(String).filter((file) => Boolean(file)).slice(0, 12);
+    out.push({
+      finding_type: type,
       severity,
-      title: String(record.title).slice(0, 200),
+      title: title.slice(0, 200),
       description: String(record.description ?? "").slice(0, 2e3),
-      evidence_ids: cited.slice(0, 12),
-      files: (record.files ?? []).map(String).slice(0, 12),
+      evidence_ids: accepted,
+      files,
       symbols: (record.symbols ?? []).map(String).slice(0, 12),
       why_it_matters: String(record.why_it_matters ?? "").slice(0, 1e3),
       suggested_improvement: String(record.suggested_improvement ?? "").slice(0, 1e3),
-      confidence
+      confidence,
+      expectation_source: expectationSource
     });
-    if (findings.length >= MAX_FINDINGS_PER_MODULE) break;
+    if (out.length >= MAX_FINDINGS) break;
   }
-  return findings;
+  return out;
+}
+function detectConflicts(input, evidence) {
+  if (input.status !== "not_evidenced") return [];
+  const claim = input.claim.trim().replace(/\s+/g, " ").slice(0, 200);
+  if (!claim) return [];
+  const observed = input.observed.filter((item) => Boolean(item?.trim())).slice(0, 3).map((item) => item.trim().replace(/\s+/g, " ").slice(0, 240));
+  if (observed.length === 0) return [];
+  const files = /* @__PURE__ */ new Set();
+  for (const id of input.evidenceIds) {
+    const item = evidence.byId.get(id);
+    if (item?.file) files.add(item.file);
+  }
+  return [
+    {
+      finding_type: "claim_mismatch",
+      severity: "medium",
+      title: `The submission describes "${claim}", which the inspected repository does not currently show`,
+      description: `The submission states: "${claim}". The inspected repository evidence at this commit shows: ${observed.join("; ")}. This is a difference between what is described and what is currently visible in the analysed code \u2014 it may be implemented in a form the scan did not reach, described imprecisely, or in another branch.`,
+      evidence_ids: input.evidenceIds.filter((id) => evidence.ids.has(id)).slice(0, 8),
+      files: [...files].slice(0, 8),
+      symbols: [],
+      why_it_matters: "A claim that the repository does not support is the first thing a reviewer will test, so it is worth aligning the description, the code, or both.",
+      suggested_improvement: "Point the description at the code that implements the claim, or implement the behaviour the description promises.",
+      confidence: "medium",
+      expectation_source: "claim"
+    }
+  ];
+}
+function testingFromEvidence(projectMap) {
+  const testing = projectMap?.testing ?? {};
+  const count = Number(testing.test_file_count ?? 0);
+  const frameworks = (testing.frameworks ?? []).map((name) => String(name));
+  let status;
+  let finding;
+  if (count === 0) {
+    status = "not_evidenced";
+    finding = "testing_gap";
+  } else if (count < 3) {
+    status = "partial_evidence";
+    finding = null;
+  } else {
+    status = "evidence_found";
+    finding = null;
+  }
+  return {
+    status,
+    testFileCount: count,
+    frameworks,
+    commands: (testing.commands ?? []).map(String),
+    finding,
+    explanation: count === 0 ? "No test files were detected in the analysed repository." : `${count} test files detected. File count is not a measure of test quality.`
+  };
+}
+function securityFromEvidence(projectMap) {
+  const security = projectMap?.security ?? {};
+  const secrets = (security.hardcoded_secrets ?? []).filter((item) => item && typeof item.file === "string");
+  if (!secrets.length) return null;
+  return {
+    status: "evidence_found",
+    confirmed_issues: secrets.slice(0, 5).map((item) => {
+      const words = String(item.type).replace(/_/g, " ");
+      return {
+        type: "security_concern",
+        severity: "high",
+        title: `Hard-coded ${words} in ${item.file}`,
+        description: `A value matching a ${words} pattern was found at ${item.file} line ${item.line}. The value itself is redacted and was not transmitted.`,
+        why_it_matters: "A committed credential should be rotated, not just removed.",
+        suggested_improvement: "Rotate the credential and load it from the environment.",
+        confidence: "medium"
+      };
+    })
+  };
+}
+
+// _shared/modules.ts
+var PROMPT_VERSIONS = {
+  alignment: "align-v2",
+  requirements: "req-v2",
+  constraints: "con-v2",
+  outcomes: "out-v2",
+  criteria: "eval-v2",
+  claims: "claim-v2",
+  implementation: "impl-v2",
+  engineering: "eng-v2",
+  properness: "proper-v2",
+  requirements_fallback: "reqmap-v1"
+};
+var SYSTEM_STABLE = `You are a technical reviewer assessing a hackathon submission against its brief.
+You are given FACTS extracted deterministically from a GitHub repository, small
+targeted code snippets, and dataset profiles. The facts are the source of truth.
+
+How to reason:
+1. Read the implementation you are given and describe what it actually does.
+   Behaviour lives in code, data, configuration and interface \u2014 judge those.
+2. NEVER treat a library as proof. An imported framework does not mean the
+   feature exists, and an absent library does not mean the feature is missing.
+   Forecasting can be three lines of arithmetic; a project can install a
+   machine-learning library and never call it. Both are common.
+3. A route, endpoint, component or class existing does NOT prove the behaviour
+   behind it is implemented. Open it in the evidence and describe what the code
+   in it does.
+4. Judge each item against the stated problem and the code in front of you, not
+   against a checklist of technologies you expect to find. A different valid
+   approach is still a valid approach.
+5. Never invent files, functions, endpoints, tables, dependencies, features,
+   metrics or vulnerabilities. If something is not in the evidence, say it is
+   not evidenced.
+6. Every conclusion must cite evidence ids from the list you are given, taken
+   exactly from that list. An id that is not in the list is rejected.
+7. A positive status with no evidence id is rejected. If you cannot support a
+   conclusion from the evidence given, use "not_evidenced" and explain what you
+   looked at.
+8. "not_evidenced" means this repository, at this commit, did not show sufficient
+   evidence. It does NOT mean the feature does not exist.
+9. "unable_to_determine" is a statement about the inspection, not the project.
+   Use it only when the evidence given could not possibly settle the question.
+10. Never claim a real-world impact or benchmark number unless the evidence
+    contains a measurement. Describe intent instead.
+11. Prefer "potential_issue" over "confirmed_issue". Use "confirmed_issue" only
+    when the evidence unambiguously establishes the problem.
+12. Do not rank, score, compare or rank teams, and do not declare a winner. No
+    numbers that imply a grade. This is a training analysis.
+13. Do not penalise an architecture for differing from another architecture. Say
+    what it is and whether it fits this problem.
+14. Describe what a simple solution does well. Simplicity is not a weakness and
+    complexity is not a strength.
+15. Reply with a single JSON object matching the requested shape. No prose.`;
+var NO_SNIPPETS = "(no code was retrieved for this question)";
+function truncateJson(payload, limit) {
+  const text2 = JSON.stringify(payload ?? null);
+  return text2.length <= limit ? text2 : `${text2.slice(0, limit)} \u2026(truncated)`;
+}
+function evidenceList(context, limit) {
+  const compact = compactEvidence(
+    context.evidence,
+    limit,
+    context.terms
+  );
+  if (!compact.length) return "(no evidence items matched this question)";
+  return compact.map((item) => {
+    const where = item.file ? ` ${item.file}${item.lines ? `:${item.lines}` : ""}` : "";
+    return `${item.id} [${item.type}]${where} \u2014 ${item.claim}`;
+  }).join("\n");
+}
+function datasetBlock(context) {
+  if (!context.datasetProfiles.length) return "";
+  const compact = context.datasetProfiles.slice(0, 6).map(compactDatasetProfile);
+  return `
+
+DATASET PROFILES (structure and samples, not the full data)
+${truncateJson(compact, 3e3)}`;
+}
+function logicBlock(context) {
+  if (!context.semantics.length) return "";
+  const compact = context.semantics.slice(0, 6).map((item) => compactSemantics(item, 5));
+  return `
+
+WHAT THE CODE DOES (extracted from the code, not from library names)
+${truncateJson(compact, 3e3)}`;
+}
+function briefBlock(context, withClaims = true) {
+  const { context: hackathon } = context;
+  const parts = [];
+  parts.push(`HACKATHON: ${hackathon.name} (type: ${hackathon.type.replace(/_/g, " ")})`);
+  if (hackathon.theme) parts.push(`THEME
+${hackathon.theme.slice(0, 600)}`);
+  if (hackathon.hasProblem) {
+    parts.push(`THE PROBLEM THE HACKATHON SET
+${hackathon.problem.slice(0, 2e3)}`);
+  } else {
+    parts.push(
+      "THE HACKATHON\nThis is an open-innovation challenge: it sets no problem and no requirements. The participant chose their own problem, and the only correct reference is the problem they describe below."
+    );
+  }
+  for (const note of hackathon.freeformNotes.slice(0, 4)) {
+    parts.push(`ORGANISER NOTE
+${note.slice(0, 500)}`);
+  }
+  if (hackathon.customInstructions) {
+    parts.push(`ORGANISER INSTRUCTIONS
+${hackathon.customInstructions.slice(0, 800)}`);
+  }
+  if (hackathon.technologyRestrictions) {
+    parts.push(`TECHNOLOGY RESTRICTIONS
+${hackathon.technologyRestrictions.slice(0, 500)}`);
+  }
+  if (hackathon.datasetRequirements) {
+    parts.push(`DATASET REQUIREMENT
+${hackathon.datasetRequirements.slice(0, 500)}`);
+  }
+  if (hackathon.deploymentRequirements) {
+    parts.push(`DEPLOYMENT REQUIREMENT
+${hackathon.deploymentRequirements.slice(0, 500)}`);
+  }
+  if (withClaims) {
+    const claims = [
+      hackathon.claims.description ? `Description: ${hackathon.claims.description}` : "",
+      hackathon.claims.features ? `Claimed features:
+${hackathon.claims.features}` : "",
+      hackathon.claims.techStack ? `Self-described stack: ${hackathon.claims.techStack}` : ""
+    ].filter(Boolean);
+    if (claims.length) parts.push(`WHAT THE TEAM SAYS THEY BUILT
+${claims.join("\n")}`);
+  }
+  return parts.join("\n\n");
+}
+function factsBlock(context, evidenceLimit) {
+  const { projectMap } = context;
+  const map = projectMap;
+  const trimmed = {
+    analysis_mode: map.analysis_mode,
+    stack: map.stack,
+    architecture: map.architecture,
+    apis: map.apis,
+    database: map.database,
+    authentication: map.authentication,
+    features: map.features,
+    data_sources: map.data_sources,
+    business_logic: map.business_logic,
+    calculations: map.calculations,
+    models: map.models,
+    ui_flows: map.ui_flows,
+    testing: map.testing,
+    deployment: map.deployment,
+    repository_stats: map.repository_stats,
+    important_files: map.important_files,
+    warnings: map.warnings
+  };
+  return `
+
+EVIDENCE (cite these ids exactly)
+${evidenceList(context, evidenceLimit)}` + datasetBlock(context) + logicBlock(context) + `
+
+PROJECT MAP (deterministic facts about the repository)
+${truncateJson(trimmed, 4e3)}
+
+RELEVANT CODE
+${context.code || NO_SNIPPETS}` + (context.inspectionNote ? `
+
+COVERAGE NOTE
+${context.inspectionNote}` : "");
+}
+var FINDINGS_SCHEMA = `"findings": [
+    {
+      "type": "strength|observation|potential_issue|confirmed_issue|security_concern|testing_gap|architecture_concern|scalability_concern|claim_mismatch|clarification_needed|dead_feature|placeholder|hardcoding",
+      "severity": "critical|high|medium|low|informational",
+      "title": "short factual title",
+      "description": "what the code does or does not do, citing the evidence",
+      "evidence_ids": ["EV-001"],
+      "files": ["path/in/repo"],
+      "symbols": ["name"],
+      "why_it_matters": "consequence for this project",
+      "suggested_improvement": "concrete next step, or empty string",
+      "confidence": "high|medium|low"
+    }
+  ]`;
+function buildAlignmentTask(context) {
+  const { context: hackathon, concepts } = context;
+  const vocabulary = concepts.flatMap((concept) => [...concept.phrases, ...concept.subjects, ...concept.actions]).slice(0, 24).join(", ");
+  return `Determine whether this submission addresses ${hackathon.hasProblem ? "the problem the hackathon set" : "the problem the team says it chose"}.
+
+Read the evidence and the code, and describe what this project actually does about
+that problem. Judge the problem, not the stack: a rule-based solution, a
+statistical one and a model-based one are all acceptable if the problem is
+genuinely addressed by what the code does.
+
+Words this problem is likely expressed in: ${vocabulary || "(none extracted)"}
+
+Return JSON:
+{
+  "problem_alignment": {
+    "status": "strongly_aligned|partially_aligned|weakly_evidenced|unclear",
+    "confidence": "high|medium|low",
+    "evidence_ids": ["EV-001"],
+    "explanation": "What the implementation does about the stated problem, and how that relates to it.",
+    "approach": "One or two sentences naming the actual approach taken, in the code's own terms."
+  },
+  "approach_notes": [
+    "A distinct, separately evidenced observation about the approach."
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+If the repository genuinely addresses the problem but the evidence given here is
+thin, say so in the explanation and use "partially_aligned" with the evidence
+you do have. Do not withhold a positive status because a particular library is
+absent.
+
+${briefBlock(context)}
+${factsBlock(context, 60)}`;
+}
+function buildRequirementsTask(context, subjects, groupLabel) {
+  const listed = subjects.map(
+    (subject) => `- ${subject.id} (${subject.importance}) ${subject.text}`
+  ).join("\n");
+  const focusLines = context.concepts.map(
+    (concept) => `- ${concept.intent.slice(0, 200)}
+  look for: ${[...concept.phrases, ...concept.actions, ...concept.subjects].slice(0, 10).join(", ") || "(general)"}`
+  ).join("\n");
+  return `Assess each requirement below against what this repository actually implements.
+
+These requirements are about ${groupLabel}. The code, evidence and dataset
+profiles you were given were retrieved using the requirement wording itself, so
+they are the most relevant material in the repository for this question. If the
+implementation is elsewhere, say so in the explanation and use the most
+conservative status the evidence supports.
+
+REQUIREMENTS
+${listed}
+
+WHAT WAS RETRIEVED FOR THEM
+${focusLines || "(general retrieval)"}
+
+For each requirement decide what the repository shows:
+- evidence_found      the implementation required is visible in the evidence
+- partial_evidence    part of it is visible; name the missing part
+- not_evidenced       the retrieved evidence does not show it
+- unable_to_determine only when the evidence given could not settle it
+
+Do not treat the absence of a library, framework or database as evidence about
+any requirement. Judge the behaviour.
+
+Return JSON:
+{
+  "conclusions": [
+    {
+      "subject_id": "REQ-001",
+      "status": "evidence_found|partial_evidence|not_evidenced|unable_to_determine",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What the code does, and how that satisfies or fails this requirement.",
+      "missing_or_unclear": ["the specific part that is not evidenced, if any"]
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+Answer every requirement id exactly once.
+
+${briefBlock(context)}
+${factsBlock(context, 50)}`;
+}
+function buildConstraintsTask(context, subjects) {
+  const listed = subjects.map((subject) => `- ${subject.id} ${subject.text}`).join("\n");
+  const technology = context.context.technologyRestrictions;
+  return `Check each constraint the hackathon set against this repository.
+
+A constraint is about what the project does, not what it is built with. For a
+technology restriction, look at the imports, dependencies, configuration,
+environment variables and outbound URLs that the evidence shows. For a data
+restriction, look at what the code reads, sends and stores.
+
+CONSTRAINTS
+${listed}
+${technology ? `
+TECHNOLOGY RESTRICTIONS (also stated, check them)
+${technology.slice(0, 500)}` : ""}
+
+Return JSON:
+{
+  "conclusions": [
+    {
+      "subject_id": "CON-001",
+      "status": "supported|potential_concern|not_evidenced|unable_to_determine",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What in the repository shows this constraint is respected, or where it looks broken.",
+      "missing_or_unclear": ["..."]
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+Use "not_evidenced" only after actually looking. If the evidence you were given
+cannot settle a constraint, say "unable_to_determine" and say why.
+
+${briefBlock(context)}
+${factsBlock(context, 40)}`;
+}
+function buildOutcomesTask(context, subjects) {
+  const listed = subjects.map((subject) => `- ${subject.id} ${subject.text}`).join("\n");
+  return `Check whether this repository provides evidence of the expected outcome.
+
+The expected outcome describes a result, not a feature list. Trace what the code
+actually produces \u2014 what a user would see, what the API returns, what is
+written or displayed \u2014 and compare that with the outcome.
+
+EXPECTED OUTCOMES
+${listed}
+
+Return JSON:
+{
+  "conclusions": [
+    {
+      "subject_id": "OUT-001",
+      "status": "supported|partially_supported|not_evidenced|unclear",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What the repository produces, and how that matches the expected outcome.",
+      "missing_or_unclear": ["..."]
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+${briefBlock(context)}
+${factsBlock(context, 40)}`;
+}
+function buildCriteriaTask(context, subjects) {
+  const listed = subjects.map((subject) => `- ${subject.id} ${subject.text}`).join("\n");
+  return `Describe each evaluation criterion against the evidence.
+
+There is no score here and no comparison with any other team. For each criterion
+write a short factual observation about what this repository does, and say what
+would need to be demonstrated to evaluate it properly.
+
+EVALUATION CRITERIA
+${listed}
+
+Return JSON:
+{
+  "conclusions": [
+    {
+      "subject_id": "EVAL-001",
+      "status": "supported|partially_supported|not_evidenced|unclear",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What the repository shows for this criterion, descriptively.",
+      "missing_or_unclear": ["what could not be assessed and why"]
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+Never produce a number, a grade, or a rank.
+
+${briefBlock(context)}
+${factsBlock(context, 35)}`;
+}
+function buildClaimsTask(context, claims) {
+  const listed = claims.map((claim) => `- ${claim}`).join("\n");
+  return `Check each feature the team claims against the repository.
+
+For each claim, trace it: is the behaviour implemented, is data actually passed
+into it, is a result produced, and is that result used or shown anywhere? A claim
+is only "supported" when that chain is visible in the evidence.
+
+CLAIMS (exactly these, do not add or reword any)
+${listed}
+
+Return JSON:
+{
+  "claims": [
+    {
+      "claim": "the claim exactly as listed above",
+      "status": "supported|partially_supported|not_evidenced",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What the repository shows about this claim. Name the part that is missing if it is partial."
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+"not_evidenced" means this repository at this commit does not show it. It is not
+a statement that the team did not build it.
+
+${briefBlock(context)}
+${factsBlock(context, 45)}`;
+}
+function buildImplementationTask(context) {
+  const { projectMap } = context;
+  const map = projectMap;
+  const stack = map.stack ?? {};
+  const declared = stack.dependencies_by_category ?? {};
+  const declaredText = Object.entries(declared).map(([category, packages]) => `${category}: ${(packages ?? []).slice(0, 12).join(", ")}`).join("\n");
+  return `Describe how this project is built and whether the implementation is
+coherent: problem -> implementation -> output.
+
+Describe what exists. Do not judge the architecture against a template: a single
+Python file, a Streamlit app, a static site with a CSV, a serverless backend and
+a full-stack application are all valid answers to different problems. Report
+what the code does, whether the parts connect, and what looks unfinished.
+
+Declared dependencies (descriptive only \u2014 a dependency is not a feature):
+${declaredText || "(none declared)"}
+
+Return JSON:
+{
+  "architecture": {
+    "summary": "How the project is structured, as observed.",
+    "layers": ["..."],
+    "entry_points": ["file or route a user or caller starts from"],
+    "evidence_ids": ["EV-001"]
+  },
+  "technical_decisions": [
+    {"decision":"...","rationale":"only if the code shows the reason, else omit","evidence_ids":["EV-001"]}
+  ],
+  "implementation": {
+    "summary": "What is actually implemented end to end.",
+    "strengths": ["..."],
+    "observations": ["..."],
+    "incomplete_or_dead": ["a feature that exists but does nothing, if any"]
+  },
+  ${FINDINGS_SCHEMA}
+}
+
+${briefBlock(context)}
+${factsBlock(context, 50)}`;
+}
+function buildEngineeringTask(context, dimensions) {
+  return `Make general engineering observations about this repository.
+
+These are observations, not requirement failures. The hackathon did not ask for
+${dimensions.length > 1 ? "these specific characteristics" : "this characteristic"},
+so a missing one is a fact about the project, not a mark against it. Only raise a
+concern when the evidence shows one.
+
+OBSERVING: ${dimensions.join(", ")}
+
+Return JSON:
+{
+  "observations": [
+    {
+      "topic": "security|testing|data_handling|database|api|deployment|usability|maintainability",
+      "status": "observed|not_applicable|concern",
+      "summary": "What the repository does here, factually.",
+      "evidence_ids": ["EV-001"],
+      "concern": "the specific problem, only when status is concern",
+      "improvement": "concrete next step, or empty string"
+    }
+  ],
+  ${FINDINGS_SCHEMA}
+}
+
+"not_applicable" is a correct and welcome answer: a project that needs no
+database, no auth and no deployment config should not be told it is missing
+them.
+
+${briefBlock(context, false)}
+${factsBlock(context, 40)}`;
+}
+function buildPropernessTask(context, priorConclusions) {
+  const prior = priorConclusions.map(
+    (item) => `- ${item.label}: ${item.status} \u2014 ${String(item.summary).slice(0, 220)}`
+  ).join("\n");
+  return `Give the final factual assessment of this project.
+
+You are not scoring it. You are describing what was found, so a participant can
+understand what works, what is uncertain and what deserves attention. A project
+can be simple, incomplete, or unusual and still be a legitimate implementation \u2014
+say which, with evidence.
+
+WHAT THE EARLIER ANALYSIS FOUND
+${prior || "(no earlier conclusions)"}
+
+A technical failure elsewhere in the pipeline is not a defect in the project. If
+coverage was limited, that belongs under uncertainty, not under gaps.
+
+Return JSON:
+{
+  "assessment": {
+    "headline": "One sentence a participant would understand.",
+    "understanding": "What this project is, from the evidence.",
+    "problem_relevance": "How it relates to the problem stated or chosen.",
+    "solution_coherence": "Whether problem, implementation and output form a working chain.",
+    "implementation_evidence": "How much of the claimed functionality is visible in code.",
+    "functional_completeness": "What is complete, what is partial, what is absent.",
+    "technical_quality": "Only what the code shows: structure, error handling, data flow.",
+    "claim_accuracy": "How well the description matches the implementation.",
+    "hackathon_alignment": "Against what THIS hackathon asked, and only that.",
+    "evidence_ids": ["EV-001"]
+  },
+  "strengths": ["what is genuinely good about it, evidenced"],
+  "gaps": ["what is missing or incomplete, evidenced, or honestly uncertain"],
+  "uncertainties": ["what could not be determined and why"],
+  "engineering_concerns": ["..."],
+  ${FINDINGS_SCHEMA}
+}
+
+No score. No grade. No ranking. No claim that the feature does not exist \u2014
+only that the evidence does not show it.
+
+${briefBlock(context)}
+${factsBlock(context, 30)}`;
+}
+
+// _shared/validate.ts
+var STATUSES = {
+  requirement: REQUIREMENT_STATUSES,
+  constraint: CONSTRAINT_STATUSES,
+  outcome: OUTCOME_STATUSES,
+  criterion: OUTCOME_STATUSES,
+  claim: CLAIM_STATUSES
+};
+var POSITIVE = /* @__PURE__ */ new Set([
+  "evidence_found",
+  "supported",
+  "partially_supported",
+  "partial_evidence"
+]);
+function clampStatus(kind, raw) {
+  const allowed = STATUSES[kind];
+  const value = String(raw ?? "");
+  return allowed.includes(value) ? value : allowed[allowed.length - 1];
+}
+function clampConfidence(raw) {
+  const value = String(raw ?? "");
+  return CONFIDENCES.includes(value) ? value : "low";
+}
+function stringList(raw, limit = 8, itemLimit = 300) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => String(item ?? "").trim().slice(0, itemLimit)).filter((item) => item.length > 2).slice(0, limit);
+}
+function validateConclusions(payload, options) {
+  const { kind, allowedSubjects, evidence } = options;
+  const errors = [];
+  const rejectedSubjects = [];
+  const rejectedEvidenceIds = /* @__PURE__ */ new Set();
+  const items = [];
+  const seen = /* @__PURE__ */ new Set();
+  const record = payload ?? {};
+  const raw = Array.isArray(payload) ? payload : Array.isArray(record.conclusions) ? record.conclusions : Array.isArray(record.items) ? record.items : [];
+  const list = raw;
+  if (!Array.isArray(list)) {
+    errors.push("the reply did not contain a list of conclusions");
+  }
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) {
+      errors.push("a conclusion was not an object");
+      continue;
+    }
+    const record2 = entry;
+    const subjectId = String(
+      record2.subject_id ?? record2.requirement_id ?? record2.constraint_id ?? record2.outcome_id ?? record2.criterion_id ?? record2.id ?? ""
+    ).trim();
+    if (!subjectId) {
+      errors.push("a conclusion had no subject id");
+      continue;
+    }
+    if (!allowedSubjects.includes(subjectId)) {
+      rejectedSubjects.push(subjectId);
+      continue;
+    }
+    if (seen.has(subjectId)) {
+      errors.push(`${subjectId} was answered more than once`);
+      continue;
+    }
+    const explanation = String(record2.explanation ?? "").trim().slice(0, 2e3);
+    if (explanation.length < 12) {
+      errors.push(`${subjectId} had no usable explanation`);
+      continue;
+    }
+    const citations = filterCitations(record2.evidence_ids, evidence);
+    for (const id of citations.rejected) rejectedEvidenceIds.add(id);
+    let status = clampStatus(kind, record2.status);
+    let downgraded = false;
+    if (POSITIVE.has(status) && citations.accepted.length === 0) {
+      status = kind === "claim" ? "partially_supported" : "partial_evidence";
+      downgraded = true;
+      errors.push(
+        `${subjectId} claimed a positive status with no valid evidence id and was downgraded`
+      );
+    }
+    const files = citations.accepted.map((id) => evidence.byId.get(id)?.file).filter((file) => Boolean(file));
+    seen.add(subjectId);
+    items.push({
+      subject_id: subjectId,
+      kind,
+      status,
+      confidence: clampConfidence(record2.confidence),
+      evidence_ids: citations.accepted,
+      explanation,
+      missing_or_unclear: stringList(record2.missing_or_unclear),
+      downgraded,
+      files: [...new Set(files)].slice(0, 10)
+    });
+  }
+  const missing = allowedSubjects.filter((id) => !seen.has(id));
+  if (missing.length) {
+    errors.push(`no conclusion was returned for: ${missing.join(", ")}`);
+  }
+  return {
+    items,
+    rejectedSubjects,
+    rejectedEvidenceIds: [...rejectedEvidenceIds],
+    errors: errors.slice(0, 12)
+  };
+}
+var ALIGNMENT_STATUSES = [
+  "strongly_aligned",
+  "partially_aligned",
+  "weakly_evidenced",
+  "unclear"
+];
+function validateAlignment(payload, evidence) {
+  const errors = [];
+  const rejectedEvidenceIds = [];
+  const record = payload ?? {};
+  const raw = record.problem_alignment ?? record;
+  const citations = filterCitations(raw.evidence_ids, evidence);
+  rejectedEvidenceIds.push(...citations.rejected);
+  const explanation = String(raw.explanation ?? "").trim().slice(0, 2e3);
+  const approach = String(raw.approach ?? "").trim().slice(0, 1500);
+  if (explanation.length < 12) errors.push("the alignment explanation was empty");
+  if (approach.length < 8) errors.push("no approach was described");
+  const declared = String(raw.status ?? "");
+  let status = ALIGNMENT_STATUSES.includes(declared) ? declared : "unclear";
+  let downgraded = false;
+  if (status === "strongly_aligned" && citations.accepted.length === 0) {
+    status = "unclear";
+    downgraded = true;
+    errors.push("strong alignment was claimed with no valid evidence id");
+  }
+  return {
+    items: [
+      {
+        status,
+        confidence: clampConfidence(raw.confidence),
+        evidence_ids: citations.accepted,
+        explanation,
+        approach,
+        approach_notes: stringList(raw.approach_notes),
+        downgraded
+      }
+    ],
+    rejectedSubjects: [],
+    rejectedEvidenceIds,
+    errors
+  };
+}
+function validateAssessment(payload, evidence) {
+  const errors = [];
+  const record = payload ?? {};
+  const raw = record.assessment ?? record;
+  const citations = filterCitations(raw.evidence_ids, evidence);
+  const text2 = (key) => String(raw[key] ?? "").trim().slice(0, 2e3);
+  const headline = text2("headline");
+  if (headline.length < 8) errors.push("no headline was produced");
+  return {
+    items: [
+      {
+        headline,
+        understanding: text2("understanding"),
+        problem_relevance: text2("problem_relevance"),
+        solution_coherence: text2("solution_coherence"),
+        implementation_evidence: text2("implementation_evidence"),
+        functional_completeness: text2("functional_completeness"),
+        technical_quality: text2("technical_quality"),
+        claim_accuracy: text2("claim_accuracy"),
+        hackathon_alignment: text2("hackathon_alignment"),
+        engineering_concerns: stringList(raw.engineering_concerns),
+        uncertainties: stringList(raw.uncertainties, 10),
+        gaps: stringList(raw.gaps, 10),
+        strengths: stringList(raw.strengths, 10),
+        evidence_ids: citations.accepted,
+        downgraded: citations.rejected.length > 0
+      }
+    ],
+    rejectedSubjects: [],
+    rejectedEvidenceIds: citations.rejected,
+    errors
+  };
+}
+function validateClaims(payload, evidence, expectedClaims) {
+  const errors = [];
+  const rejectedSubjects = [];
+  const items = [];
+  const list = Array.isArray(payload?.claims) ? payload.claims : [];
+  for (const entry of list) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry;
+    const claim = String(record.claim ?? "").trim().slice(0, 300);
+    if (!claim) continue;
+    if (expectedClaims.length && !expectedClaims.some((item) => item === claim)) {
+      rejectedSubjects.push(claim);
+      continue;
+    }
+    const citations = filterCitations(record.evidence_ids, evidence);
+    const explanation = String(record.explanation ?? "").trim().slice(0, 1500);
+    if (explanation.length < 10) {
+      errors.push(`claim "${claim.slice(0, 40)}" had no explanation`);
+      continue;
+    }
+    let status = String(record.status ?? "");
+    if (!CLAIM_STATUSES.includes(status)) {
+      status = "not_evidenced";
+    }
+    let downgraded = false;
+    if (status !== "not_evidenced" && citations.accepted.length === 0) {
+      status = "partially_supported";
+      downgraded = true;
+      errors.push(`claim "${claim.slice(0, 40)}" asserted support with no citation`);
+    }
+    items.push({
+      claim,
+      status,
+      confidence: clampConfidence(record.confidence),
+      evidence_ids: citations.accepted,
+      files: [...new Set(
+        citations.accepted.map((id) => evidence.byId.get(id)?.file).filter((file) => Boolean(file))
+      )].slice(0, 8),
+      explanation,
+      downgraded
+    });
+  }
+  return { items, rejectedSubjects, rejectedEvidenceIds: [], errors: errors.slice(0, 10) };
+}
+function repairPrompt(task, errors) {
+  return task + "\n\nYour previous reply could not be accepted:\n" + errors.slice(0, 8).map((error) => `- ${error}`).join("\n") + '\n\nReply again with a single JSON object that fixes exactly these problems. Use only evidence ids that appear in the evidence list you were given. If a conclusion genuinely has no supporting evidence, say so with status "not_evidenced" and cite nothing rather than inventing an id. No prose, no code fence.';
+}
+function asRawEvidence(items) {
+  return items.map((item) => ({
+    id: String(item.id),
+    type: String(item.type ?? "file"),
+    claim: String(item.claim ?? ""),
+    file: item.file,
+    symbol: item.symbol,
+    lines: item.lines,
+    confidence: String(item.confidence ?? "medium")
+  }));
+}
+
+// _shared/planner.ts
+var DIMENSION_LABEL = {
+  problem_alignment: "Problem alignment",
+  theme_alignment: "Theme alignment",
+  solution_coherence: "Solution coherence",
+  functional_implementation: "Functional implementation",
+  feature_evidence: "Feature evidence",
+  claim_verification: "Claim verification",
+  technical_implementation: "Technical implementation",
+  architecture: "Architecture",
+  data_handling: "Data handling",
+  ml_ai: "ML / AI implementation",
+  api_implementation: "API implementation",
+  database_usage: "Database usage",
+  security: "Security",
+  testing: "Testing",
+  performance: "Performance",
+  scalability: "Scalability",
+  deployment: "Deployment",
+  usability: "Usability",
+  engineering_quality: "Engineering quality",
+  evaluation_criteria: "Evaluation criteria",
+  constraints: "Constraints",
+  expected_outcome: "Expected outcome",
+  project_properness: "Project properness"
+};
+function dimension(key, relevance, reason, method = "ai", expectationSource = "hackathon") {
+  return {
+    key,
+    label: DIMENSION_LABEL[key],
+    relevance,
+    reason,
+    method: relevance === "not_applicable" ? "skipped" : method,
+    expectationSource: relevance === "not_applicable" ? "none" : expectationSource
+  };
+}
+function planAnalysis(context, facts, groups, outcomeIds, constraintIds, criteriaIds, conceptQuestions) {
+  const dimensions = [];
+  const tasks = [];
+  let order = 0;
+  const next = () => order++;
+  if (context.hasProblem) {
+    dimensions.push(
+      dimension(
+        "problem_alignment",
+        "required",
+        "The hackathon states a problem, so the project is compared against it.",
+        "ai",
+        "hackathon"
+      )
+    );
+    tasks.push({
+      key: "alignment",
+      kind: "alignment",
+      scope: "problem alignment",
+      question: conceptQuestions[0] ?? context.problem.slice(0, 400),
+      reason: "Judging whether a solution addresses a problem is interpretation, not counting.",
+      subjectIds: [],
+      focus: null,
+      order: next()
+    });
+  } else {
+    dimensions.push(
+      dimension(
+        "problem_alignment",
+        "not_applicable",
+        "The hackathon states no problem; the team's own chosen problem is the reference point."
+      )
+    );
+  }
+  if (context.theme) {
+    dimensions.push(
+      dimension(
+        "theme_alignment",
+        "required",
+        "The hackathon is theme-based, so the theme is the expected frame.",
+        "ai",
+        "hackathon"
+      )
+    );
+  }
+  const requirementsEnabled = context.hasRequirements;
+  const requirementsReason = context.hasRequirements ? `The hackathon lists ${context.requirements.length} requirement(s).` : "The hackathon lists no requirements, so none are invented and none are checked. The project is assessed against its own stated problem instead.";
+  if (requirementsEnabled) {
+    for (const group of groups) {
+      dimensions.push(
+        dimension(
+          dimensionForFocus(group.focus),
+          "required",
+          `The brief includes requirements about ${group.label}.`,
+          "ai",
+          "hackathon"
+        )
+      );
+      tasks.push({
+        key: `requirements:${group.focus}`,
+        kind: "requirements",
+        scope: group.label,
+        question: group.questions.join(" ") || group.label,
+        reason: "Each requirement needs the relevant implementation compared with the requirement text; no deterministic rule can decide that.",
+        subjectIds: group.ids,
+        focus: group.focus,
+        order: next()
+      });
+    }
+  } else {
+    for (const key of [
+      "functional_implementation",
+      "feature_evidence",
+      "data_handling",
+      "ml_ai",
+      "usability"
+    ]) {
+      dimensions.push(
+        dimension(
+          key,
+          "not_applicable",
+          "No requirements are configured, so this is not assessed as a requirement. It is still observed as a general engineering characteristic if the repository shows it.",
+          "skipped",
+          "none"
+        )
+      );
+    }
+  }
+  if (context.hasConstraints || context.technologyRestrictions) {
+    dimensions.push(
+      dimension(
+        "constraints",
+        "required",
+        context.technologyRestrictions ? "The hackathon states technology restrictions." : `The hackathon lists ${context.constraints.length} constraint(s).`,
+        "ai",
+        "hackathon"
+      )
+    );
+    tasks.push({
+      key: "constraints",
+      kind: "constraints",
+      scope: "constraints",
+      question: buildConstraintQuestion(context),
+      reason: "Whether a constraint is respected is a judgement over dependencies, configuration and external calls.",
+      subjectIds: constraintIds,
+      focus: null,
+      order: next()
+    });
+  } else {
+    dimensions.push(
+      dimension(
+        "constraints",
+        "not_applicable",
+        "The hackathon states no constraints, so none are checked."
+      )
+    );
+  }
+  if (context.hasOutcomes) {
+    dimensions.push(
+      dimension(
+        "expected_outcome",
+        "required",
+        `The hackathon states ${context.expectedOutcomes.length} expected outcome(s).`,
+        "ai",
+        "hackathon"
+      )
+    );
+    tasks.push({
+      key: "outcomes",
+      kind: "outcomes",
+      scope: "expected outcome",
+      question: outcomeIds.map((id) => outcomeText(context, id)).join(" ").slice(0, 800),
+      reason: "Whether the delivered result matches the expected outcome requires reading the implementation against the stated outcome.",
+      subjectIds: outcomeIds,
+      focus: null,
+      order: next()
+    });
+  } else {
+    dimensions.push(
+      dimension(
+        "expected_outcome",
+        "not_applicable",
+        "The hackathon states no expected outcome."
+      )
+    );
+  }
+  if (context.hasCriteria) {
+    dimensions.push(
+      dimension(
+        "evaluation_criteria",
+        "required",
+        `The hackathon defines ${context.evaluationCriteria.length} evaluation criteria.`,
+        "ai",
+        "hackathon"
+      )
+    );
+    tasks.push({
+      key: "criteria",
+      kind: "criteria",
+      scope: "evaluation criteria",
+      question: context.evaluationCriteria.slice(0, 8).map((criterion) => criterion.text).join(" ").slice(0, 800),
+      reason: "Each criterion is described descriptively against evidence; no score is computed and no team is compared to another.",
+      subjectIds: criteriaIds,
+      focus: null,
+      order: next()
+    });
+  } else {
+    dimensions.push(
+      dimension(
+        "evaluation_criteria",
+        "not_applicable",
+        "The hackathon defines no evaluation criteria, so none are applied."
+      )
+    );
+  }
+  const hasClaims = Boolean(
+    context.claims.description || context.claims.features
+  );
+  if (hasClaims) {
+    dimensions.push(
+      dimension(
+        "claim_verification",
+        "required",
+        "The team describes what it built, so each claim is checked against evidence.",
+        "ai",
+        "claim"
+      )
+    );
+    tasks.push({
+      key: "claims",
+      kind: "claims",
+      scope: "claimed features",
+      question: [
+        context.claims.description,
+        context.claims.features,
+        context.claims.techStack
+      ].join(" ").slice(0, 900),
+      reason: "A claim is only supported when the implementation behind it is visible; that is a comparison, not a lookup.",
+      subjectIds: [],
+      focus: null,
+      order: next()
+    });
+  } else {
+    dimensions.push(
+      dimension(
+        "claim_verification",
+        "not_applicable",
+        "The submission contains no description or feature list to verify."
+      )
+    );
+  }
+  const hasSource = facts.sourceFileCount > 0;
+  if (hasSource) {
+    dimensions.push(
+      dimension(
+        "solution_coherence",
+        "required",
+        "The repository contains source code, so the chain from problem to output can be traced.",
+        "ai",
+        "general"
+      )
+    );
+    tasks.push({
+      key: "implementation",
+      kind: "implementation",
+      scope: "implementation and solution coherence",
+      question: buildImplementationQuestion(context, facts),
+      reason: "Coherence between problem, implementation and output is interpretation over the whole call graph the scanner found.",
+      subjectIds: [],
+      focus: null,
+      order: next()
+    });
+    dimensions.push(
+      dimension(
+        "technical_implementation",
+        "required",
+        "Source files are present and carry functions, classes and logic.",
+        "ai",
+        "general"
+      )
+    );
+    dimensions.push(
+      dimension(
+        "architecture",
+        "required",
+        "Source files are present; structure is described as observed, not judged against a template.",
+        "ai",
+        "general"
+      )
+    );
+  } else {
+    for (const key of ["solution_coherence", "technical_implementation", "architecture"]) {
+      dimensions.push(
+        dimension(
+          key,
+          "not_applicable",
+          "No readable source file was found in the repository, so implementation cannot be described."
+        )
+      );
+    }
+  }
+  const engineering = planEngineering(facts, context);
+  dimensions.push(...engineering.dimensions);
+  if (engineering.dimensions.some((item) => item.relevance !== "not_applicable")) {
+    tasks.push({
+      key: "engineering",
+      kind: "engineering",
+      scope: "engineering observations",
+      question: engineering.question,
+      reason: "Observations about security, tests, data handling and deployment are only useful when the repository actually contains those things.",
+      subjectIds: [],
+      focus: null,
+      order: next()
+    });
+  }
+  dimensions.push(
+    dimension(
+      "project_properness",
+      "required",
+      "The product's purpose is a contextual judgement on whether this is a legitimate, coherent implementation for this problem.",
+      "ai",
+      "general"
+    )
+  );
+  tasks.push({
+    key: "properness",
+    kind: "properness",
+    scope: "project properness",
+    // Deliberately the cheapest question in the plan: this call reads the
+    // conclusions the other calls already produced, not the code again.
+    question: "is the project coherent, implemented and consistent with its own claims",
+    reason: "The final assessment is a judgement over everything the earlier calls established, and is made once.",
+    subjectIds: [],
+    focus: null,
+    order: next()
+  });
+  return {
+    dimensions,
+    tasks: tasks.sort((a, b) => a.order - b.order).map((task, index) => ({ ...task, order: index })),
+    requirementsEnabled,
+    requirementsReason,
+    summary: summarise(context, facts, requirementsEnabled, tasks)
+  };
+}
+function planEngineering(facts, context) {
+  const dimensions = [];
+  const terms = [];
+  const briefText = [
+    context.problem,
+    context.claims.description,
+    context.claims.features,
+    ...context.constraints.map((item) => item.text),
+    ...context.evaluationCriteria.map((item) => item.text),
+    context.customInstructions ?? ""
+  ].join(" ");
+  const asks = (...needles) => needles.some((needle) => briefText.toLowerCase().includes(needle));
+  if (asks("security", "secure", "privacy", "gdpr", "encrypt", "auth")) {
+    dimensions.push(
+      dimension("security", "required", "The brief asks about security or privacy.", "ai", "hackathon")
+    );
+    terms.push("authentication authorization security secret credential encryption");
+  } else if (facts.secretCount > 0 || facts.authDetected) {
+    dimensions.push(
+      dimension(
+        "security",
+        "relevant",
+        "The repository contains authentication or credential material, so a security observation is useful even though the brief did not ask for one.",
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("authentication authorization security secret credential");
+  } else {
+    dimensions.push(
+      dimension(
+        "security",
+        "not_applicable",
+        "The brief does not ask about security and the repository has no credentials or authentication to comment on."
+      )
+    );
+  }
+  if (asks("test", "testing", "tested", "coverage", "unit test")) {
+    dimensions.push(
+      dimension("testing", "required", "The brief asks about testing.", "ai", "hackathon")
+    );
+    terms.push("test tests testing spec fixture mock assert coverage");
+  } else if (facts.testFileCount > 0) {
+    dimensions.push(
+      dimension(
+        "testing",
+        "relevant",
+        `The repository contains ${facts.testFileCount} test file(s) worth describing.`,
+        "deterministic",
+        "repository"
+      )
+    );
+  } else {
+    dimensions.push(
+      dimension(
+        "testing",
+        "not_applicable",
+        "The brief does not ask about testing and the repository has no tests. Absence of tests is not a finding here \u2014 it is recorded as a general observation only.",
+        "deterministic",
+        "none"
+      )
+    );
+  }
+  if (asks("data", "dataset", "ingest", "history", "upload", "csv", "database")) {
+    dimensions.push(
+      dimension("data_handling", "required", "The brief asks about data.", "ai", "hackathon")
+    );
+    terms.push("data dataset csv json ingest read load schema");
+  } else if (facts.datasetCount > 0 || facts.dataAccessCount > 0) {
+    dimensions.push(
+      dimension(
+        "data_handling",
+        "relevant",
+        `The repository ships ${facts.datasetCount} dataset file(s) and performs ${facts.dataAccessCount} data access operation(s).`,
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("data dataset csv json read load schema query");
+  } else {
+    dimensions.push(
+      dimension(
+        "data_handling",
+        "not_applicable",
+        "The brief does not ask about data and the repository contains no datasets or data access operations."
+      )
+    );
+  }
+  if (facts.databaseDetected) {
+    dimensions.push(
+      dimension(
+        "database_usage",
+        "relevant",
+        "The repository contains a database or schema, so its use can be described.",
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("database schema table query sql migration model repository");
+  } else {
+    dimensions.push(
+      dimension(
+        "database_usage",
+        "not_applicable",
+        "The repository has no database, and the brief did not require one. A project that needs no database is not penalised for it."
+      )
+    );
+  }
+  if (facts.routeCount > 0) {
+    dimensions.push(
+      dimension(
+        "api_implementation",
+        "relevant",
+        `The repository exposes ${facts.routeCount} route(s); what sits behind them is described, but a route's existence alone is not treated as a feature.`,
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("route endpoint api handler request response");
+  } else {
+    dimensions.push(
+      dimension(
+        "api_implementation",
+        "not_applicable",
+        "The repository exposes no routes and the brief did not require an API."
+      )
+    );
+  }
+  if (facts.modelFindingCount > 0) {
+    dimensions.push(
+      dimension(
+        "ml_ai",
+        "relevant",
+        `The code performs ${facts.modelFindingCount} model or statistical operation(s). What they compute is described from the code, not from the imports.`,
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("model predict fit train inference forecast statistics");
+  } else {
+    dimensions.push(
+      dimension(
+        "ml_ai",
+        "not_applicable",
+        "The code contains no model training, inference or statistical computation, and the brief did not ask for one. Hand-written rules are a valid answer."
+      )
+    );
+  }
+  if (facts.deploymentFileCount > 0) {
+    dimensions.push(
+      dimension(
+        "deployment",
+        "relevant",
+        "The repository contains deployment configuration.",
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("docker deploy workflow pipeline hosting build");
+  } else {
+    dimensions.push(
+      dimension(
+        "deployment",
+        "not_applicable",
+        "The repository has no deployment configuration and the brief did not ask for a deployed service."
+      )
+    );
+  }
+  if (facts.uiFindingCount > 0) {
+    dimensions.push(
+      dimension(
+        "usability",
+        "relevant",
+        `The repository contains interface code (${facts.uiFindingCount} interaction or display site(s)).`,
+        "ai",
+        "repository"
+      )
+    );
+    terms.push("dashboard screen form table button chart display workflow");
+  } else {
+    dimensions.push(
+      dimension(
+        "usability",
+        "not_applicable",
+        "The repository contains no interface code, and the brief did not ask for one."
+      )
+    );
+  }
+  dimensions.push(
+    dimension(
+      "engineering_quality",
+      "relevant",
+      "Source code exists, so general engineering observations can be made.",
+      "ai",
+      "general"
+    )
+  );
+  return { dimensions, question: terms.join(" ") || "implementation quality" };
+}
+function dimensionForFocus(focus) {
+  switch (focus) {
+    case "data":
+      return "data_handling";
+    case "analytics":
+      return "ml_ai";
+    case "decision":
+      return "functional_implementation";
+    case "trust":
+      return "engineering_quality";
+    case "interface":
+      return "usability";
+    case "platform":
+      return "api_implementation";
+    default:
+      return "functional_implementation";
+  }
+}
+function outcomeText(context, id) {
+  return context.expectedOutcomes.find((outcome) => outcome.id === id)?.text ?? "";
+}
+function buildConstraintQuestion(context) {
+  const parts = [
+    ...context.constraints.map((constraint) => constraint.text),
+    context.technologyRestrictions ?? ""
+  ].filter(Boolean);
+  const concepts = [];
+  const lower = parts.join(" ").toLowerCase();
+  const probes = {
+    paid: ["api", "service", "key", "token", "endpoint", "subscription"],
+    data: ["patient", "personal", "data", "privacy", "consent", "pii", "storage"],
+    manual: ["form", "input", "manual", "entry", "upload", "csv"],
+    hardware: ["sensor", "device", "gpio", "serial", "camera", "arduino", "esp"],
+    offline: ["offline", "cache", "local", "service_worker", "indexeddb", "sync"],
+    open: ["open", "source", "license", "repository", "public"],
+    stack: ["framework", "language", "runtime", "library", "stack"]
+  };
+  for (const [needle, terms] of Object.entries(probes)) {
+    if (lower.includes(needle)) concepts.push(...terms);
+  }
+  return `${parts.join(" ").slice(0, 600)} ${concepts.join(" ")}`.trim();
+}
+function buildImplementationQuestion(context, facts) {
+  const problem = context.problem.split(/[.\n]/)[0]?.slice(0, 300) ?? "";
+  const claim = context.claims.description.split(/[.\n]/)[0]?.slice(0, 300) ?? "";
+  return [
+    problem,
+    claim,
+    context.claims.features.split("\n").slice(0, 4).join(" "),
+    facts.stackSummary
+  ].filter(Boolean).join(" ").slice(0, 900);
+}
+function summarise(context, facts, requirementsEnabled, tasks) {
+  const parts = [
+    `${context.name} (${context.type.replace(/_/g, " ")})`,
+    requirementsEnabled ? `${context.requirements.length} requirements` : "no requirements configured",
+    `${facts.sourceFileCount} source file(s), ${facts.routeCount} route(s), ${facts.datasetCount} dataset(s)`,
+    `${tasks.length} reasoning call(s) planned`
+  ];
+  return parts.join(" \xB7 ");
+}
+function questionsForGroup(concepts, limit = 6) {
+  return concepts.flatMap((concept) => [
+    ...concept.phrases.slice(0, 4),
+    ...concept.actions.slice(0, 3),
+    ...concept.subjects.slice(0, 3)
+  ]).filter((term) => term.length > 2).slice(0, limit * 3);
 }
 
 // _shared/retrieval.ts
-var QUESTION_SIGNALS = {
-  security: [
-    "auth",
-    "login",
-    "password",
-    "token",
-    "jwt",
-    "session",
-    "cookie",
-    "permission",
-    "role",
-    "secret",
-    "key",
-    "credential",
-    "encrypt",
-    "hash"
-  ],
-  database: [
-    "database",
-    "db",
-    "schema",
-    "migration",
-    "table",
-    "query",
-    "sql",
-    "model",
-    "orm",
-    "index",
-    "postgres",
-    "supabase",
-    "storage",
-    "data"
-  ],
-  api: [
-    "api",
-    "endpoint",
-    "route",
-    "request",
-    "response",
-    "controller",
-    "handler",
-    "rest",
-    "graphql",
-    "webhook",
-    "fetch",
-    "http"
-  ],
-  frontend: [
-    "ui",
-    "component",
-    "page",
-    "screen",
-    "form",
-    "render",
-    "view",
-    "react",
-    "vue",
-    "dashboard",
-    "interface",
-    "click",
-    "button"
-  ],
-  testing: ["test", "spec", "coverage", "assert", "mock", "fixture"],
-  prediction: [
-    "predict",
-    "forecast",
-    "model",
-    "train",
-    "inference",
-    "ml",
-    "machine learning",
-    "algorithm",
-    "score",
-    "accuracy",
-    "dataset"
-  ],
-  deployment: ["deploy", "docker", "build", "ci", "pipeline", "hosting", "vercel"],
-  configuration: ["config", "setting", "environment", "env", "variable", "option"]
+var IMPORTANCE_SCORE = {
+  high: 24,
+  medium: 12,
+  low: 4,
+  ignored: 0
 };
-var PATH_SIGNALS = {
-  security: ["auth", "login", "session", "permission", "middleware", "guard", "acl"],
-  database: ["schema", "migration", "model", "db", "database", "sql", "prisma", "repository"],
-  api: ["route", "router", "controller", "api", "endpoint", "handler", "view"],
-  frontend: ["component", "page", "view", "screen", "ui", "app/", "layout"],
-  testing: ["test", "spec", "__tests__", "fixtures"],
-  deployment: ["docker", "workflow", "deploy", "ci", "vercel", "netlify"],
-  configuration: ["config", "settings", ".env", "settings.py", "constants"]
-};
-var CATEGORY_PREFERENCE = {
-  security: ["source", "api", "config", "model"],
-  database: ["database", "schema", "model", "source"],
-  api: ["api", "source", "component"],
-  frontend: ["component", "source"],
-  testing: ["test"],
-  deployment: ["deployment", "config"],
-  configuration: ["config", "deployment", "source"]
-};
-var ContextPacket = class {
-  constructor(question, category) {
-    this.question = question;
-    this.category = category;
+var MAX_TOKENS_PER_FILE = 400;
+var STOP = /* @__PURE__ */ new Set([
+  "def",
+  "class",
+  "return",
+  "const",
+  "let",
+  "var",
+  "function",
+  "import",
+  "from",
+  "the",
+  "and",
+  "for",
+  "this",
+  "self",
+  "true",
+  "false",
+  "null",
+  "none"
+]);
+function tokenize(text2, limit = MAX_TOKENS_PER_FILE) {
+  const out = /* @__PURE__ */ new Set();
+  const raw = String(text2 ?? "").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_\-./\\]+/g, " ").toLowerCase();
+  for (const token of raw.split(/[^a-z0-9]+/)) {
+    if (token.length < 3 || token.length > 32) continue;
+    if (STOP.has(token)) continue;
+    out.add(token);
+    if (out.size >= limit) break;
   }
-  snippets = [];
-  filesConsidered = 0;
-  truncated = false;
-  get isEmpty() {
-    return this.snippets.length === 0;
-  }
-  /** A deliberately crude estimate — good enough to gate a budget. */
-  estimateTokens() {
-    return Math.floor(this.snippets.reduce((sum, s) => sum + s.content.length, 0) / 4);
-  }
-  render(maxSnippetLines = settings().retrievalMaxSnippetLines) {
-    if (this.snippets.length === 0) return "";
-    const blocks = this.snippets.map((snippet) => {
-      const all = snippet.content.split("\n");
-      const shown = all.slice(0, maxSnippetLines);
-      let body = shown.join("\n");
-      if (shown.length < all.length) body += "\n\u2026 (truncated)";
-      return `--- ${snippet.path} [${snippet.symbol ?? "file"}] lines ${snippet.startLine}-${snippet.endLine} ---
-${body}`;
-    });
-    return blocks.join("\n\n");
-  }
-};
-function classifyQuestion(question, categories) {
-  const lowered = (question ?? "").toLowerCase();
-  const wanted = categories ?? Object.keys(QUESTION_SIGNALS);
-  let bestCategory = "general";
-  let bestScore = 0;
-  for (const category of wanted) {
-    const score = (QUESTION_SIGNALS[category] ?? []).filter((term) => lowered.includes(term)).length;
-    if (score > bestScore) {
-      bestScore = score;
-      bestCategory = category;
+  return out;
+}
+function buildRepoIndex(input) {
+  const files = /* @__PURE__ */ new Map();
+  const termsByPath = /* @__PURE__ */ new Map();
+  const symbolsByPath = /* @__PURE__ */ new Map();
+  const chunksByPath = /* @__PURE__ */ new Map();
+  const evidenceByPath = /* @__PURE__ */ new Map();
+  const bodyTermsByPath = /* @__PURE__ */ new Map();
+  const datasetByPath = /* @__PURE__ */ new Map();
+  const routesByPath = /* @__PURE__ */ new Map();
+  const semanticsByPath = /* @__PURE__ */ new Map();
+  const globalEvidence = [];
+  const manifestPaths = /* @__PURE__ */ new Set();
+  for (const file of input.files) {
+    if (!file?.path) continue;
+    files.set(file.path, file);
+    const terms = tokenize(file.path);
+    termsByPath.set(file.path, terms);
+    if (/(package\.json|requirements\.txt|pyproject\.toml|go\.mod|cargo\.toml|pom\.xml|build\.gradle|composer\.json|pubspec\.yaml)$/i.test(file.path)) {
+      manifestPaths.add(file.path);
     }
   }
-  return bestCategory;
-}
-function buildPacket(input) {
-  const config = settings();
-  const limitFiles = input.maxFiles ?? config.retrievalMaxFiles;
-  const limitLines = input.maxLines ?? config.retrievalMaxSnippetLines;
-  const category = input.category ?? classifyQuestion(input.question);
-  const packet = new ContextPacket(input.question, category);
-  packet.filesConsidered = input.files.length;
-  if (input.files.length === 0) return packet;
-  const questionTerms = (input.question ?? "").toLowerCase().split(/\W+/).filter((term) => term.length > 3);
-  const pathTerms = PATH_SIGNALS[category] ?? [];
-  const preferredCategories = CATEGORY_PREFERENCE[category] ?? [];
-  const importanceWeight = {
-    high: 30,
-    medium: 15,
-    low: 5,
-    ignored: 0
-  };
-  const chunksByFile = /* @__PURE__ */ new Map();
   for (const chunk of input.chunks) {
     const path = chunk.file_path ?? chunk.path;
     if (!path) continue;
-    const list = chunksByFile.get(path) ?? [];
+    const list = chunksByPath.get(path) ?? [];
     list.push(chunk);
-    chunksByFile.set(path, list);
-  }
-  const ranked = [];
-  for (const record of input.files) {
-    const path = record.path ?? "";
-    if (!path || record.is_ignored || record.is_binary) continue;
-    if (record.importance === "ignored") continue;
-    const lowered = path.toLowerCase();
-    let score = importanceWeight[record.importance ?? "low"] ?? 5;
-    if (pathTerms.some((fragment) => lowered.includes(fragment))) score += 40;
-    if (preferredCategories.includes(record.file_category)) score += 20;
-    score += questionTerms.filter((term) => lowered.includes(term)).length * 6;
-    const candidateChunks = chunksByFile.get(path) ?? [];
-    if (candidateChunks.some((chunk) => {
-      const symbol = String(chunk.symbol_name ?? "").toLowerCase();
-      return Boolean(symbol) && questionTerms.some((term) => symbol.includes(term));
-    })) {
-      score += 18;
+    chunksByPath.set(path, list);
+    const symbol = String(chunk.symbol_name ?? "");
+    if (symbol) {
+      const symbols = symbolsByPath.get(path) ?? [];
+      symbols.push(symbol);
+      symbolsByPath.set(path, symbols);
+      for (const token of tokenize(symbol, 20)) {
+        termsByPath.get(path)?.add(token);
+      }
     }
-    if (score <= 5) continue;
-    ranked.push({ score, path, language: record.language ?? null, chunks: candidateChunks });
+    const body = bodyTermsByPath.get(path) ?? /* @__PURE__ */ new Set();
+    for (const token of tokenize(String(chunk.content ?? ""))) body.add(token);
+    bodyTermsByPath.set(path, body);
   }
-  ranked.sort((a, b) => b.score - a.score);
-  const selected = ranked.slice(0, limitFiles);
-  if (ranked.length > selected.length) packet.truncated = true;
-  for (const item of selected) {
-    if (item.chunks.length) {
-      const chosen = [...item.chunks].sort((a, b) => {
-        const highA = a.importance === "high" ? 1 : 0;
-        const highB = b.importance === "high" ? 1 : 0;
-        if (highA !== highB) return highB - highA;
-        const termsA = questionTerms.filter(
-          (term) => String(a.symbol_name ?? "").toLowerCase().includes(term)
-        ).length;
-        const termsB = questionTerms.filter(
-          (term) => String(b.symbol_name ?? "").toLowerCase().includes(term)
-        ).length;
-        return termsB - termsA;
-      })[0];
-      const start = Number(chosen.start_line ?? 1);
-      const end = Math.min(
-        start + limitLines - 1,
-        Number(chosen.end_line ?? start + limitLines)
-      );
-      packet.snippets.push({
-        path: item.path,
-        symbol: chosen.symbol_name ?? null,
-        startLine: start,
-        endLine: end,
-        content: chosen.content ?? "",
-        language: item.language,
-        score: item.score
-      });
+  for (const evidence of input.evidence ?? []) {
+    if (!evidence?.id) continue;
+    if (evidence.file) {
+      const list = evidenceByPath.get(evidence.file) ?? [];
+      list.push(evidence);
+      evidenceByPath.set(evidence.file, list);
+      for (const token of tokenize(`${evidence.claim} ${evidence.symbol ?? ""}`, 30)) {
+        termsByPath.get(evidence.file)?.add(token);
+      }
     } else {
-      packet.snippets.push({
-        path: item.path,
-        symbol: null,
-        startLine: 1,
-        endLine: limitLines,
-        content: "",
-        language: item.language,
-        score: item.score
-      });
+      globalEvidence.push(evidence);
     }
   }
-  return packet;
+  for (const route of input.routes ?? []) {
+    if (!route?.file) continue;
+    const list = routesByPath.get(route.file) ?? [];
+    list.push(route);
+    routesByPath.set(route.file, list);
+    for (const token of tokenize(route.path, 20)) {
+      termsByPath.get(route.file)?.add(token);
+    }
+  }
+  for (const profile of input.datasetProfiles ?? []) {
+    if (!profile?.path) continue;
+    datasetByPath.set(profile.path, profile);
+    const terms = termsByPath.get(profile.path) ?? /* @__PURE__ */ new Set();
+    for (const name of profile.column_names) {
+      for (const token of tokenize(name, 20)) terms.add(token);
+    }
+    termsByPath.set(profile.path, terms);
+  }
+  for (const semantics of input.semantics ?? []) {
+    if (!semantics?.path) continue;
+    semanticsByPath.set(semantics.path, semantics);
+  }
+  return {
+    files,
+    termsByPath,
+    bodyTermsByPath,
+    symbolsByPath,
+    chunksByPath,
+    evidenceByPath,
+    globalEvidence,
+    datasetByPath,
+    routesByPath,
+    semanticsByPath,
+    manifestPaths
+  };
+}
+var GENERIC_TERMS = /* @__PURE__ */ new Set([
+  "system",
+  "application",
+  "project",
+  "solution",
+  "user",
+  "users",
+  "data",
+  "value",
+  "values",
+  "item",
+  "items",
+  "result",
+  "results",
+  "name",
+  "names",
+  "id",
+  "ids",
+  "service",
+  "code",
+  "file",
+  "files",
+  "page",
+  "pages",
+  "app",
+  "use",
+  "using",
+  "provide",
+  "support",
+  "build",
+  "make",
+  "create",
+  "add",
+  "must",
+  "should",
+  "shall",
+  "able",
+  "ensure",
+  "allow",
+  "allow",
+  "need",
+  "require",
+  "functionality",
+  "feature",
+  "features",
+  "capability"
+]);
+function buildRetrievalPlan(subjectId, concept) {
+  const ranked = [];
+  const seen = /* @__PURE__ */ new Set();
+  const push = (term, weight) => {
+    const key = term.toLowerCase().trim();
+    if (key.length < 3 || GENERIC_TERMS.has(key) || seen.has(key)) return;
+    seen.add(key);
+    ranked.push({ term: key, weight });
+  };
+  for (const term of concept.domainTerms) push(term, 10);
+  for (const term of concept.actions) push(term, 9);
+  for (const term of concept.subjects) push(term, 8);
+  for (const term of concept.terms) push(term, 4);
+  for (const phrase of concept.phrases) {
+    for (const part of phrase.split(" ")) push(part, 5);
+  }
+  const phrases = concept.phrases.filter((phrase) => phrase.includes(" "));
+  const questions = [
+    concept.intent.slice(0, 300),
+    [...phrases, ...concept.actions, ...concept.subjects].join(" ").slice(0, 300)
+  ].filter(Boolean);
+  return {
+    subjectId,
+    focus: concept.focus,
+    // Thirty terms is the useful ceiling. A longer list does not add recall, it
+    // dilutes the weights so that every file looks equally relevant to every
+    // requirement.
+    terms: ranked.sort((a, b) => b.weight - a.weight).map((item) => item.term).slice(0, 30),
+    phrases,
+    artifacts: concept.artifacts,
+    questions
+  };
+}
+function retrieve(input) {
+  const { plan, index } = input;
+  const maxFiles = input.maxFiles ?? 6;
+  const maxLines = input.maxSnippetLines ?? 120;
+  const maxEvidence = input.maxEvidenceIds ?? 24;
+  const hits = [];
+  const datasetScores = /* @__PURE__ */ new Map();
+  const matchedAnywhere = /* @__PURE__ */ new Set();
+  let considered = 0;
+  for (const [path, file] of index.files) {
+    if (file.is_ignored || file.is_binary) continue;
+    considered += 1;
+    const pathTerms = index.termsByPath.get(path) ?? /* @__PURE__ */ new Set();
+    const bodyTerms = index.bodyTermsByPath.get(path) ?? /* @__PURE__ */ new Set();
+    const symbols = index.symbolsByPath.get(path) ?? [];
+    const routes = index.routesByPath.get(path) ?? [];
+    const dataset = index.datasetByPath.get(path);
+    const semantics = index.semanticsByPath.get(path);
+    const components = {
+      semantic: 0,
+      keyword: 0,
+      importance: 0,
+      symbol: 0,
+      route: 0,
+      dataset: 0,
+      dependency: 0,
+      logic: 0,
+      artifact: artifactAffinity(plan.artifacts, file)
+    };
+    const matched = [];
+    plan.terms.forEach((term, index_) => {
+      const weight = Math.max(1, 10 - Math.floor(index_ / 4));
+      if (pathTerms.has(term) || symbols.some((symbol) => symbol.toLowerCase().includes(term))) {
+        components.symbol += weight;
+        components.semantic += weight;
+        matched.push(term);
+        matchedAnywhere.add(term);
+      }
+      if (bodyTerms.has(term)) {
+        components.semantic += weight;
+        matchedAnywhere.add(term);
+      }
+    });
+    components.semantic = Math.min(40, components.semantic);
+    for (const phrase of plan.phrases) {
+      const needle = phrase.toLowerCase();
+      const inPath = path.toLowerCase().includes(needle);
+      const inSymbol = symbols.some((symbol) => symbol.toLowerCase().includes(needle));
+      if (inPath || inSymbol) {
+        components.keyword += 10;
+        matched.push(phrase);
+        matchedAnywhere.add(phrase);
+      }
+    }
+    components.keyword = Math.min(30, components.keyword);
+    components.importance = IMPORTANCE_SCORE[String(file.importance ?? "low")] ?? 4;
+    for (const route of routes) {
+      const routeText = `${route.path} ${route.symbol ?? ""}`.toLowerCase();
+      if (plan.terms.some((term) => routeText.includes(term))) {
+        components.route += 10;
+        matchedAnywhere.add(route.path);
+      }
+    }
+    if (dataset) {
+      if (dataset.relevance === "high") components.dataset += 14;
+      else if (dataset.relevance === "medium") components.dataset += 7;
+      const entityHit = [...dataset.entity_columns, ...dataset.identifier_columns].some(
+        (column) => plan.terms.some((term) => column.toLowerCase().includes(term))
+      );
+      if (entityHit) components.dataset += 10;
+      if (plan.terms.some(
+        (term) => [
+          "date",
+          "time",
+          "history",
+          "historical",
+          "trend",
+          "future",
+          "window",
+          "horizon",
+          "daily",
+          "weekly",
+          "monthly",
+          "forecast",
+          "demand",
+          "season",
+          "overdue",
+          "upcoming"
+        ].includes(term)
+      ) && dataset.date_columns.length) {
+        components.dataset += 8;
+      }
+      if (plan.terms.some(
+        (term) => [
+          "quantity",
+          "qty",
+          "amount",
+          "stock",
+          "level",
+          "sales",
+          "revenue",
+          "price",
+          "count",
+          "volume",
+          "units",
+          "balance",
+          "available"
+        ].includes(term)
+      ) && (dataset.quantity_columns.length || dataset.stock_columns.length || dataset.price_columns.length)) {
+        components.dataset += 8;
+      }
+    }
+    if (index.manifestPaths.has(path)) {
+      const fileTokens = pathTerms;
+      if (plan.terms.some((term) => fileTokens.has(term))) components.dependency += 6;
+    }
+    if (semantics) {
+      const groups = [
+        semantics.calculations,
+        semantics.rules,
+        semantics.models,
+        semantics.dataAccess
+      ];
+      for (const group of groups) {
+        const hit = group.find(
+          (item) => item.identifiers.some(
+            (identifier) => plan.terms.some((term) => identifier.toLowerCase().includes(term))
+          )
+        );
+        if (hit) {
+          components.logic += 12;
+          matched.push(...hit.identifiers.slice(0, 2));
+          matchedAnywhere.add(hit.operation);
+        }
+      }
+      if (plan.artifacts.includes("ui") && semantics.ui.length > 0) {
+        const hit = semantics.ui.find(
+          (item) => item.identifiers.some(
+            (identifier) => plan.terms.some((term) => identifier.toLowerCase().includes(term))
+          )
+        );
+        if (hit) components.logic += 6;
+      }
+    }
+    const score = components.semantic + components.keyword + components.importance + components.symbol + components.route + components.dataset + components.dependency + components.logic + components.artifact;
+    if (score <= 4) continue;
+    if (dataset) datasetScores.set(path, components.dataset + components.semantic);
+    const chunk = pickChunk(index, path, plan, maxLines);
+    hits.push({
+      path,
+      score,
+      components,
+      matchedTerms: [...new Set(matched)].slice(0, 8),
+      symbol: chunk?.symbol_name ?? null,
+      startLine: Number(chunk?.start_line ?? 1),
+      endLine: Number(chunk?.end_line ?? Math.max(1, Number(chunk?.end_line ?? 1))),
+      excerpt: chunk ? renderChunk(chunk, maxLines) : ""
+    });
+  }
+  hits.sort((a, b) => b.score - a.score);
+  const seenNames = /* @__PURE__ */ new Set();
+  const deduped = hits.filter((hit) => {
+    const name = hit.path.slice(hit.path.lastIndexOf("/") + 1).toLowerCase();
+    if (seenNames.has(name)) return false;
+    seenNames.add(name);
+    return true;
+  });
+  const selected = deduped.slice(0, maxFiles);
+  const selectedPaths = new Set(selected.map((hit) => hit.path));
+  const datasetPaths = [...datasetScores.entries()].filter(([path, score]) => score > 0 && !selectedPaths.has(path)).sort((a, b) => b[1] - a[1]).map(([path]) => path);
+  const seenDatasetNames = new Set(
+    [...selectedPaths].filter((path) => index.datasetByPath.has(path)).map((path) => path.slice(path.lastIndexOf("/") + 1).toLowerCase())
+  );
+  const topDatasets = datasetPaths.filter((path) => {
+    const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+    if (seenDatasetNames.has(name)) return false;
+    seenDatasetNames.add(name);
+    return true;
+  }).slice(0, 2);
+  const evidenceIds = [];
+  for (const path of [...selectedPaths, ...datasetPaths]) {
+    for (const evidence of index.evidenceByPath.get(path) ?? []) {
+      if (!evidenceIds.includes(evidence.id)) evidenceIds.push(evidence.id);
+    }
+  }
+  for (const evidence of index.globalEvidence) {
+    if (evidenceIds.length >= maxEvidence) break;
+    if (!evidenceIds.includes(evidence.id)) evidenceIds.push(evidence.id);
+  }
+  return {
+    plan,
+    files: selected,
+    evidenceIds: evidenceIds.slice(0, maxEvidence),
+    datasetPaths: [
+      ...[...selectedPaths].filter((path) => index.datasetByPath.has(path)),
+      ...topDatasets
+    ].slice(0, 3),
+    considered,
+    truncated: deduped.length > selected.length,
+    unmatchedTerms: plan.terms.filter((term) => !matchedAnywhere.has(term)).slice(0, 12)
+  };
+}
+function artifactAffinity(artifacts, file) {
+  if (!artifacts.length) return 0;
+  const path = String(file.path ?? "").toLowerCase();
+  const extension = path.slice(path.lastIndexOf("."));
+  const category = String(file.file_category ?? "");
+  const wants = (name) => artifacts.includes(name);
+  let score = 0;
+  if (wants("ui") && (category === "component" || [".html", ".css", ".scss", ".vue", ".svelte", ".jsx", ".tsx"].includes(extension))) {
+    score += 14;
+  }
+  if (wants("route") && (category === "api" || /route|controller|endpoint|view\//.test(path))) {
+    score += 10;
+  }
+  if (wants("calculation") && ["source", "api", "model"].includes(category) && [".py", ".js", ".ts", ".go", ".rb", ".java", ".php", ".cs"].includes(extension)) {
+    score += 8;
+  }
+  if (wants("model") && /(model|ml|train|predict)/.test(path)) score += 10;
+  if (wants("ingestion") && (/(data|load|ingest|etl|import|seed)/.test(path) || category === "dataset")) {
+    score += 10;
+  }
+  if (wants("schema") && (category === "schema" || category === "database")) score += 8;
+  if (wants("query") && [".sql", ".prisma", ".graphql"].includes(extension)) score += 8;
+  if (wants("test") && (category === "test" || /test|spec/.test(path))) score += 8;
+  if (wants("configuration") && category === "config") score += 4;
+  if (wants("readme") && category === "documentation") score += 6;
+  if (wants("data_loading") && /(read|load|ingest|etl|data)/.test(path)) score += 6;
+  if (wants("file_read") && category === "dataset") score += 6;
+  return Math.min(20, score);
+}
+function pickChunk(index, path, plan, _maxLines) {
+  const chunks = index.chunksByPath.get(path) ?? [];
+  if (!chunks.length) return null;
+  const scored = chunks.map((chunk) => {
+    const symbol = String(chunk.symbol_name ?? "").toLowerCase();
+    const content = String(chunk.content ?? "").toLowerCase();
+    const termHits = plan.terms.filter(
+      (term) => symbol.includes(term) || content.includes(term)
+    ).length;
+    const highImportance = chunk.importance === "high" ? 1 : 0;
+    return { chunk, score: termHits * 3 + highImportance };
+  }).sort((a, b) => b.score - a.score);
+  return scored[0]?.chunk ?? null;
+}
+function renderChunk(chunk, maxLines) {
+  const lines = String(chunk.content ?? "").split("\n");
+  const shown = lines.slice(0, maxLines);
+  let body = shown.join("\n");
+  if (shown.length < lines.length) body += "\n\u2026 (truncated)";
+  return body;
+}
+function renderPacket(result) {
+  if (!result.files.length) return "";
+  return result.files.map((hit) => {
+    const header = `--- ${hit.path}` + (hit.symbol ? ` [${hit.symbol}]` : "") + ` lines ${hit.startLine}-${hit.endLine}` + (hit.matchedTerms.length ? ` (matches: ${hit.matchedTerms.slice(0, 4).join(", ")})` : "") + " ---";
+    if (!hit.excerpt) {
+      return `${header}
+(no chunk was extracted for this file; the file's identifiers and evidence are listed instead)`;
+    }
+    return `${header}
+${hit.excerpt}`;
+  }).join("\n\n");
+}
+
+// _shared/deterministic.ts
+var NO_VERDICT = {
+  status: null,
+  explanation: "",
+  evidenceIds: [],
+  method: null
+};
+function countablesFrom(input) {
+  const map = input.projectMap;
+  const frontend = map.frontend ?? {};
+  const stats = map.repository_stats ?? {};
+  const stack = map.stack ?? {};
+  const languages = stack.languages ?? {};
+  const deps = stack.dependencies_by_category ?? {};
+  const depCount = Object.values(deps).reduce(
+    (sum, list) => sum + (Array.isArray(list) ? list.length : 0),
+    0
+  );
+  const facts = {
+    endpoint: { label: "HTTP endpoint", count: input.routeCount, source: "routes" },
+    route: { label: "HTTP endpoint", count: input.routeCount, source: "routes" },
+    api: { label: "HTTP endpoint", count: input.routeCount, source: "routes" },
+    page: {
+      label: "page or screen",
+      count: (frontend.pages ?? []).length,
+      source: "frontend"
+    },
+    screen: {
+      label: "page or screen",
+      count: (frontend.pages ?? []).length,
+      source: "frontend"
+    },
+    test: { label: "test file", count: input.testFileCount, source: "testing" },
+    dataset: { label: "dataset", count: input.datasetCount, source: "data" },
+    function: { label: "function or method", count: input.functionCount, source: "symbols" },
+    class: { label: "class", count: input.classCount, source: "symbols" },
+    model: { label: "model or statistical operation", count: input.modelCount, source: "logic" },
+    calculation: { label: "calculation", count: input.calculationCount, source: "logic" },
+    file: { label: "source file", count: input.fileCount, source: "inventory" },
+    language: { label: "language", count: Object.keys(languages).length, source: "stack" },
+    dependenc: {
+      label: "dependency",
+      count: depCount,
+      source: "manifests"
+    },
+    line: { label: "line of code", count: Number(stats.line_count ?? 0), source: "stats" }
+  };
+  return facts;
+}
+var COUNT_WORDS = [
+  [/\bendpoints?\b/i, "endpoint"],
+  [/\broutes?\b/i, "route"],
+  [/\bapis?\b/i, "api"],
+  [/\bpages?\b/i, "page"],
+  [/\bscreens?\b/i, "screen"],
+  [/\btests?\b/i, "test"],
+  [/\bdatasets?\b/i, "dataset"],
+  [/\bdata ?files?\b/i, "dataset"],
+  [/\bfunctions?\b/i, "function"],
+  [/\bclasses?\b/i, "class"],
+  [/\bmodels?\b/i, "model"],
+  [/\bcalculations?\b/i, "calculation"],
+  [/\b(languages|programming languages)\b/i, "language"],
+  [/\b(dependencies|packages|libraries)\b/i, "dependenc"]
+];
+function deterministicCount(text2, facts) {
+  if (!/\b(?:at least|minimum|atleast|minimum of|no fewer than|>=|or more)\b/i.test(text2)) {
+    return NO_VERDICT;
+  }
+  const minimum = text2.match(/\b(\d{1,4})\b/);
+  if (!minimum) return NO_VERDICT;
+  const required = Number(minimum[1]);
+  if (!Number.isFinite(required) || required <= 0) return NO_VERDICT;
+  for (const [pattern, key] of COUNT_WORDS) {
+    if (!pattern.test(text2)) continue;
+    const fact = facts[key];
+    if (!fact) continue;
+    if (fact.count >= required) {
+      return {
+        status: "evidence_found",
+        explanation: `The scan found ${fact.count} ${fact.label}${fact.count === 1 ? "" : "s"} in the repository; this requirement asks for at least ${required}.`,
+        evidenceIds: [],
+        method: "deterministic_count"
+      };
+    }
+    return {
+      status: "not_evidenced",
+      explanation: `The scan found ${fact.count} ${fact.label}${fact.count === 1 ? "" : "s"}; this requirement asks for at least ${required}. This is a count of what the scan read, not a judgement about the approach.`,
+      evidenceIds: [],
+      method: "deterministic_count"
+    };
+  }
+  return NO_VERDICT;
+}
+function literalsIn(text2) {
+  const out = /* @__PURE__ */ new Set();
+  for (const match of text2.matchAll(/`([^`]{3,80})`/g)) out.add(match[1].trim());
+  for (const match of text2.matchAll(/"([^"]{3,80})"/g)) out.add(match[1].trim());
+  for (const match of text2.matchAll(/'([^']{3,80})'/g)) out.add(match[1].trim());
+  for (const match of text2.matchAll(/\b[\w.-]+\/[\w./-]*\.[A-Za-z0-9]{1,6}\b/g)) {
+    out.add(match[0]);
+  }
+  for (const match of text2.matchAll(/\/(?:[A-Za-z0-9_{}<>-]+)(?:\/[A-Za-z0-9_{}<>-]+)+\b/g)) {
+    out.add(match[0]);
+  }
+  return [...out].map((value) => value.trim()).filter((value) => value.length > 2);
+}
+function deterministicLiteral(text2, index, evidence) {
+  if (/\b(?:must not|should not|do not|never|no|without|avoid|exclude)\b/i.test(text2)) {
+    return NO_VERDICT;
+  }
+  const literals = literalsIn(text2);
+  if (!literals.length) return NO_VERDICT;
+  for (const literal of literals) {
+    const needle = literal.toLowerCase();
+    for (const [path] of index.files) {
+      if (!path.toLowerCase().includes(needle)) continue;
+      const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
+      return {
+        status: "evidence_found",
+        explanation: `The requirement names \`${literal}\`, and the repository contains that file. The file is present; whether it implements the requirement is judged separately.`,
+        evidenceIds,
+        method: "deterministic_literal"
+      };
+    }
+    for (const [path, symbols] of index.symbolsByPath) {
+      for (const symbol of symbols) {
+        if (!symbol.toLowerCase().includes(needle)) continue;
+        const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
+        return {
+          status: "evidence_found",
+          explanation: `The requirement names \`${literal}\`, and \`${symbol}\` is defined in \`${path}\`. The symbol exists; what it does is judged separately.`,
+          evidenceIds,
+          method: "deterministic_literal"
+        };
+      }
+    }
+    for (const [path, routes] of index.routesByPath) {
+      for (const route of routes) {
+        if (!String(route.path ?? "").toLowerCase().includes(needle)) continue;
+        const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
+        return {
+          status: "partial_evidence",
+          explanation: `The requirement names \`${literal}\`, and \`${route.path}\` exists in \`${path}\`. The route is present; what its implementation does is judged separately, because a route alone does not prove the behaviour.`,
+          evidenceIds,
+          method: "deterministic_literal"
+        };
+      }
+    }
+  }
+  return NO_VERDICT;
+}
+function inspectionCovers(inspection) {
+  const problems = [];
+  if (inspection.mode === "limited") problems.push("the repository was too large to read fully");
+  if (inspection.filesRead < inspection.filesSeen) {
+    problems.push(
+      `${inspection.filesSeen - inspection.filesRead} of ${inspection.filesSeen} files were not read`
+    );
+  }
+  for (const warning of inspection.warnings) {
+    if (/rate limit|could not read|truncated/i.test(warning)) problems.push(warning);
+  }
+  if (!problems.length) return { covered: true, note: "" };
+  return {
+    covered: false,
+    note: "This repository was not fully inspected (" + problems.slice(0, 3).join("; ") + "), so absence of evidence here is not evidence of absence."
+  };
+}
+
+// _shared/context.ts
+var HACKATHON_TYPES = [
+  "problem_statement",
+  "open_innovation",
+  "theme_based",
+  "ai_ml",
+  "web",
+  "mobile",
+  "iot_hardware",
+  "data_science",
+  "security",
+  "blockchain",
+  "custom"
+];
+function normaliseType(value) {
+  const raw = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!raw) return "problem_statement";
+  return HACKATHON_TYPES.includes(raw) ? raw : raw;
+}
+function text(value, limit = 2e3) {
+  return String(value ?? "").trim().slice(0, limit);
+}
+async function buildHackathonContext(hackathon, requirementMap, submission) {
+  const problem = text(hackathon.problem_statement, 4e3);
+  const requirements = requirementMap.requirements ?? [];
+  const constraints = requirementMap.constraints ?? [];
+  const outcomes = requirementMap.expected_outcomes ?? [];
+  const criteria = requirementMap.evaluation_criteria ?? [];
+  const known = /* @__PURE__ */ new Set([
+    "id",
+    "name",
+    "problem_statement",
+    "requirements",
+    "constraints",
+    "expected_outcome",
+    "evaluation_criteria",
+    "hackathon_type",
+    "theme",
+    "custom_instructions",
+    "technology_restrictions",
+    "dataset_requirements",
+    "deployment_requirements",
+    "simulation_duration_minutes",
+    "status",
+    "practice_enabled",
+    "config_version",
+    "created_at",
+    "updated_at",
+    "description",
+    "submission_rules",
+    "hardware_requirements"
+  ]);
+  const freeformNotes = [];
+  for (const [key, value] of Object.entries(hackathon)) {
+    if (known.has(key)) continue;
+    const body = text(value, 600);
+    if (!body) continue;
+    freeformNotes.push(`${key.replace(/_/g, " ")}: ${body}`);
+  }
+  const snapshot = {
+    name: String(hackathon.name ?? ""),
+    type: normaliseType(hackathon.hackathon_type),
+    problem_statement: problem,
+    requirements: String(hackathon.requirements ?? ""),
+    constraints: String(hackathon.constraints ?? ""),
+    expected_outcome: String(hackathon.expected_outcome ?? ""),
+    evaluation_criteria: String(hackathon.evaluation_criteria ?? ""),
+    theme: hackathon.theme ?? null,
+    custom_instructions: hackathon.custom_instructions ?? null,
+    technology_restrictions: hackathon.technology_restrictions ?? null,
+    dataset_requirements: hackathon.dataset_requirements ?? null,
+    deployment_requirements: hackathon.deployment_requirements ?? null
+  };
+  return {
+    id: String(hackathon.id ?? ""),
+    name: String(hackathon.name ?? "Hackathon"),
+    type: normaliseType(hackathon.hackathon_type),
+    problem,
+    hasProblem: problem.length > 0,
+    theme: hackathon.theme ? String(hackathon.theme) : null,
+    claims: {
+      description: text(submission?.project_description, 1200),
+      features: text(submission?.key_features, 1200),
+      techStack: text(submission?.tech_stack, 600)
+    },
+    requirements,
+    constraints,
+    expectedOutcomes: outcomes,
+    evaluationCriteria: criteria,
+    hasRequirements: requirements.length > 0,
+    hasConstraints: constraints.length > 0,
+    hasOutcomes: outcomes.length > 0,
+    hasCriteria: criteria.length > 0,
+    customInstructions: hackathon.custom_instructions ? text(hackathon.custom_instructions, 1500) : null,
+    technologyRestrictions: hackathon.technology_restrictions ? text(hackathon.technology_restrictions, 800) : null,
+    datasetRequirements: hackathon.dataset_requirements ? text(hackathon.dataset_requirements, 800) : null,
+    deploymentRequirements: hackathon.deployment_requirements ? text(hackathon.deployment_requirements, 800) : null,
+    freeformNotes: freeformNotes.slice(0, 8),
+    version: await shortHash(JSON.stringify(snapshot)),
+    configVersion: Number(hackathon.config_version ?? 1) || 1,
+    snapshot
+  };
 }
 
 // _shared/requirements.ts
@@ -3912,8 +8059,8 @@ var NOISE = /^(?:[-*+]\s*)?(?:usage|contents|table of contents)\s*:?\s*$/i;
 function clean(line) {
   return line.replace(HEADING, "").replace(BULLET, "").replace(TASK, "").trim().replace(/^[*_`\s]+|[*_`\s]+$/g, "").trim();
 }
-function truncate(text, limit = 300) {
-  const collapsed = text.replace(/\s+/g, " ").trim();
+function truncate(text2, limit = 300) {
+  const collapsed = text2.replace(/\s+/g, " ").trim();
   return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit - 1).trimEnd()}\u2026`;
 }
 function dedupe(items) {
@@ -3927,9 +8074,9 @@ function dedupe(items) {
   }
   return result.slice(0, 40);
 }
-function splitItems(text) {
-  if (!text || !text.trim()) return [];
-  const lines = text.split("\n");
+function splitItems(text2) {
+  if (!text2 || !text2.trim()) return [];
+  const lines = text2.split("\n");
   const bullets = [];
   for (const line of lines) {
     if (!BULLET.test(line)) continue;
@@ -3939,18 +8086,18 @@ function splitItems(text) {
   if (bullets.length >= 2) {
     return dedupe(bullets.map((bullet) => truncate(bullet)));
   }
-  const paragraphs = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const paragraphs = text2.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   if (paragraphs.length >= 2) {
     return dedupe(paragraphs.map((p) => truncate(p)));
   }
-  const sentences = text.trim().split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s.length > 20);
+  const sentences = text2.trim().split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter((s) => s.length > 20);
   if (sentences.length) {
     return dedupe(sentences.map((s) => truncate(s)));
   }
-  return [truncate(text.trim())];
+  return [truncate(text2.trim())];
 }
-function importanceOf2(text) {
-  const lowered = text.toLowerCase();
+function importanceOf2(text2) {
+  const lowered = text2.toLowerCase();
   for (const [level, keywords] of IMPORTANCE_KEYWORDS) {
     if (keywords.some((keyword) => lowered.includes(keyword))) return level;
   }
@@ -4032,96 +8179,15 @@ async function getRequirementMap(hackathonId, hackathon) {
 }
 
 // _shared/review.ts
-var MAX_MEMBER_MODULES = 6;
-function oneOf(value, allowed, fallback) {
-  return allowed.includes(value) ? value : fallback;
-}
-function section(payload, evidenceIds) {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    return { summary: "No result returned.", source: "skipped" };
-  }
-  const record = payload;
-  const result = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (key !== "evidence_ids") result[key] = value;
-  }
-  const cited = (record.evidence_ids ?? []).filter((id) => evidenceIds.has(id));
-  result.evidence_ids = cited.slice(0, 12);
-  return result;
-}
-function validateConstraintRows(raw, requirementMap, evidenceIds) {
-  if (!Array.isArray(raw)) return [];
-  const known = new Set(
-    (requirementMap.constraints ?? []).map((c) => c.id)
-  );
-  const rows = [];
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry;
-    const id = String(record.constraint_id ?? "");
-    if (!known.has(id)) continue;
-    rows.push({
-      constraint_id: id,
-      status: oneOf(record.status, CONSTRAINT_STATUSES, "unable_to_determine"),
-      confidence: oneOf(record.confidence, CONFIDENCES, "low"),
-      evidence_ids: (record.evidence_ids ?? []).filter((eid) => evidenceIds.has(eid)).slice(0, 12),
-      explanation: String(record.explanation ?? "").slice(0, 1500)
-    });
-  }
-  return rows;
-}
-function validateRequirementRows(raw, requirements, evidenceIds) {
-  if (!Array.isArray(raw)) return [];
-  const known = new Set(requirements.map((r) => r.id));
-  const rows = [];
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry;
-    const id = String(record.requirement_id ?? "");
-    if (!known.has(id)) continue;
-    rows.push({
-      requirement_id: id,
-      status: oneOf(record.status, REQUIREMENT_STATUSES, "unable_to_determine"),
-      confidence: oneOf(record.confidence, CONFIDENCES, "low"),
-      evidence_ids: (record.evidence_ids ?? []).filter((e) => evidenceIds.has(e)).slice(0, 12),
-      explanation: String(record.explanation ?? "").slice(0, 1500)
-    });
-  }
-  return rows;
-}
-function claimsFrom(submission) {
-  const claims = [];
-  for (const line of String(submission.key_features ?? "").split("\n")) {
-    const cleaned = line.trim().replace(/^[-*•\s]+/, "").trim();
-    if (cleaned.length > 8) claims.push(cleaned.slice(0, 200));
-  }
-  const description = String(submission.project_description ?? "").trim();
-  if (description) claims.unshift(description.slice(0, 300));
-  return claims.slice(0, 10);
-}
-function deterministicClaims(claims) {
-  return {
-    claims: claims.map((claim) => ({
-      claim,
-      status: "not_evidenced",
-      evidence_ids: [],
-      explanation: "AI review unavailable; no deterministic evidence matched."
-    }))
-  };
-}
-function overallStatus(modules) {
-  if (modules.length === 0) return "pending";
-  if (modules.every((m) => m.status === "failed")) return "failed";
-  if (modules.some((m) => ["completed", "cached"].includes(m.status))) {
-    return modules.some((m) => m.status === "failed") ? "partial" : "completed";
-  }
-  return modules.some((m) => m.status === "skipped") ? "partial" : "pending";
-}
 async function call(input) {
   const { pricing } = input;
-  const ctxHash = await contextHash(input.contextParts, input.promptVersion, pricing.modelName);
+  const ctxHash = await contextHash(
+    [input.subjectIds, input.contextParts],
+    input.promptVersion,
+    pricing.modelName
+  );
   if (!aiConfigured()) {
-    console.info("[hacksim.review] AI not configured; skipping", input.operation);
+    console.info("[hacksim.analysis] AI not configured; skipping", input.operation);
     return null;
   }
   const cached2 = await findCachedAnalysis({
@@ -4132,7 +8198,8 @@ async function call(input) {
     ctxHash
   });
   if (cached2?.result) {
-    console.info("[hacksim.review] cache hit for", input.scopeKey);
+    input.spend.cacheHits += 1;
+    console.info("[hacksim.analysis] cache hit for", input.scopeKey, input.subjectIds);
     return {
       content: JSON.stringify(cached2.result),
       parsed: cached2.result,
@@ -4152,10 +8219,10 @@ async function call(input) {
     submissionId: input.submissionId,
     estimatedInputTokens: input.estimateTokens,
     estimatedOutputTokens: pricing.maxOutputTokens,
-    cacheRatio: ["alignment", "quality"].includes(input.scopeKey) ? 0.5 : 0
+    cacheRatio: input.scopeKey === "properness" ? 0.5 : 0
   });
   if (!decision.allowed) {
-    console.info("[hacksim.review] blocked", input.operation, decision.reason);
+    console.info("[hacksim.analysis] blocked", input.operation, decision.reason);
     await recordUsage({
       operation: input.operation,
       provider: pricing.provider,
@@ -4179,21 +8246,27 @@ async function call(input) {
   }
   const contextStable = JSON.stringify({
     context_hash: ctxHash,
-    modules: input.contextParts
+    hackathon: input.contextParts[0],
+    project_map: input.contextParts[1]
   }).slice(0, 12e3);
   let response;
   try {
-    response = await completeJson({
+    response = input.provider ? await input.provider({
+      task: input.task,
+      promptVersion: input.promptVersion,
+      maxOutputTokens: Math.min(pricing.maxOutputTokens, 3e3)
+    }) : await completeJson({
       systemStable: SYSTEM_STABLE,
       contextStable,
       task: input.task,
       promptVersion: input.promptVersion,
-      maxOutputTokens: Math.min(pricing.maxOutputTokens, 2500)
+      maxOutputTokens: Math.min(pricing.maxOutputTokens, 3e3)
     });
   } catch (error) {
     const code = error instanceof AIError ? error.code : "unknown";
     const message = error.message;
-    console.warn("[hacksim.review]", input.operation, "failed:", message);
+    console.warn("[hacksim.analysis]", input.operation, "failed:", message);
+    input.spend.failures += 1;
     await recordUsage({
       operation: input.operation,
       provider: pricing.provider,
@@ -4242,11 +8315,13 @@ async function call(input) {
     outputTokens: response.outputTokens
   });
   const valid = response.parsed !== null;
-  const status = valid ? "success" : "failed";
-  const errorCode = valid ? null : "invalid_json";
-  const errorMessage = valid ? null : "Provider did not return valid JSON.";
+  input.spend.calls += 1;
   input.spend.costUsd += cost;
   input.spend.tokens += response.inputTokens + response.outputTokens;
+  input.spend.inputTokens += response.inputTokens;
+  input.spend.outputTokens += response.outputTokens;
+  input.spend.cachedTokens += response.cachedTokens;
+  if (!valid) input.spend.failures += 1;
   await recordUsage({
     operation: input.operation,
     provider: pricing.provider,
@@ -4258,14 +8333,14 @@ async function call(input) {
     cacheMissTokens: response.cacheMissTokens,
     costUsd: cost,
     requestId: response.requestId,
-    status,
+    status: valid ? "success" : "failed",
     durationMs: response.durationMs,
     userId: input.actorId,
     submissionId: input.submissionId,
     repositoryId: input.repositoryId,
     sessionId: input.sessionId,
-    errorCode,
-    errorMessage
+    errorCode: valid ? null : "invalid_json",
+    errorMessage: valid ? null : "Provider did not return valid JSON."
   });
   await saveAnalysis({
     analysisType: input.scopeKey,
@@ -4273,7 +8348,7 @@ async function call(input) {
     model: response.model,
     promptVersion: input.promptVersion,
     ctxHash,
-    status,
+    status: valid ? "success" : "failed",
     resultPayload: response.parsed,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
@@ -4284,603 +8359,1350 @@ async function call(input) {
     repositoryId: input.repositoryId,
     submissionId: input.submissionId,
     scopeKey: input.scopeKey,
-    errorCode,
-    errorMessage,
+    errorCode: valid ? null : "invalid_json",
+    errorMessage: valid ? null : "Provider did not return valid JSON.",
     completedAt: valid ? (/* @__PURE__ */ new Date()).toISOString() : null
   });
   return response;
 }
-async function runReview(input) {
-  const repositoryId = input.repository.repository_id ?? input.repository.id;
-  const repositoryIdValue = repositoryId ?? null;
+async function runAnalysis(input) {
   const submissionId = input.submission.id ?? null;
-  const evidenceIds = new Set(
-    input.evidence.map((item) => item.id).filter((id) => Boolean(id))
+  const repositoryId = input.repository.repository_id ?? input.repository.id ?? null;
+  const commitSha = input.repository.analyzed_commit_sha ?? null;
+  const hackathonId = String(input.hackathon.id ?? "");
+  const requirementMap = await getRequirementMap(hackathonId, input.hackathon);
+  const context = await buildHackathonContext(
+    input.hackathon,
+    requirementMap,
+    input.submission
   );
-  const outcome = {
-    reviewId: null,
-    status: "pending",
-    modules: [],
-    totalCostUsd: 0,
-    totalTokens: 0
-  };
-  const review = await loadReview(submissionId, repositoryIdValue);
-  const requirementMap = await getRequirementMap(
-    String(input.hackathon.id),
-    input.hackathon
+  const evidenceSet = buildEvidenceSet(
+    asRawEvidence(input.evidence ?? [])
   );
-  const pricing = await loadPricing();
-  if (!pricing) {
-    outcome.status = "failed";
-    outcome.error = "No AI model is configured.";
-    await upsertReview(submissionId, repositoryIdValue, {}, outcome, null);
-    return outcome;
-  }
-  const results = { ...review?.data ?? {} };
-  const spend = { costUsd: 0, tokens: 0 };
-  const wants = (module) => !input.onlyModules || input.onlyModules.includes(module);
-  if (wants(MODULE_A)) {
-    try {
-      const result = await moduleAlignment({
-        input,
-        requirementMap,
-        evidenceIds,
-        submissionId,
-        repositoryIdValue,
-        pricing,
-        spend
-      });
-      outcome.modules.push(result);
-      Object.assign(results, result.data);
-    } catch (error) {
-      console.error("[hacksim.review] module A failed", error);
-      outcome.modules.push({
-        ...moduleResult(MODULE_A, "failed", "ai", {}),
-        errorMessage: error.message
-      });
-    }
-  }
-  if (wants(MODULE_B)) {
-    try {
-      const result = await moduleGeneric({
-        module: MODULE_B,
-        promptVersion: PROMPT_VERSIONS.architecture,
-        taskBuilder: (snippets) => buildArchitectureTask({
-          requirementMap,
-          submission: input.submission,
-          projectMap: input.projectMap,
-          evidence: input.evidence,
-          snippets
-        }),
-        question: "How is this project architected, and what technical decisions does it make?",
-        input,
-        evidenceIds,
-        submissionId,
-        repositoryIdValue,
-        pricing,
-        spend,
-        scope: "architecture"
-      });
-      outcome.modules.push(result);
-      if (result.data.architecture) results.architecture = result.data.architecture;
-      if (result.data.technical_decisions) results.technical_decisions = result.data.technical_decisions;
-      if (result.data.implementation) results.implementation = result.data.implementation;
-    } catch (error) {
-      console.error("[hacksim.review] module B failed", error);
-      outcome.modules.push({
-        ...moduleResult(MODULE_B, "failed", "ai", {}),
-        errorMessage: error.message
-      });
-    }
-  }
-  if (wants(MODULE_C)) {
-    try {
-      const result = await moduleQuality({
-        input,
-        requirementMap,
-        evidenceIds,
-        submissionId,
-        repositoryIdValue,
-        pricing,
-        spend
-      });
-      outcome.modules.push(result);
-      if (result.data.security) results.security = result.data.security;
-      if (result.data.database) results.database_review = result.data.database;
-      if (result.data.testing) results.testing = result.data.testing;
-      if (result.data.scalability) results.scalability = result.data.scalability;
-    } catch (error) {
-      console.error("[hacksim.review] module C failed", error);
-      outcome.modules.push({
-        ...moduleResult(MODULE_C, "failed", "ai", {}),
-        errorMessage: error.message
-      });
-    }
-  }
-  if (wants(MODULE_D)) {
-    try {
-      const contributionResults = await moduleContributions({
-        input,
-        requirementMap,
-        evidenceIds,
-        submissionId,
-        repositoryIdValue,
-        pricing,
-        spend
-      });
-      outcome.modules.push(...contributionResults);
-      if (contributionResults.length) {
-        results.contributions = Object.fromEntries(
-          contributionResults.filter((item) => item.data.user_id).map((item) => [item.data.user_id, item.data])
-        );
-      }
-    } catch (error) {
-      console.error("[hacksim.review] module D failed", error);
-      outcome.modules.push({
-        ...moduleResult(MODULE_D, "failed", "ai", {}),
-        errorMessage: error.message
-      });
-    }
-  }
-  outcome.status = overallStatus(outcome.modules);
-  outcome.totalCostUsd = spend.costUsd;
-  outcome.totalTokens = spend.tokens;
-  outcome.reviewId = await upsertReview(submissionId, repositoryIdValue, results, outcome, pricing);
-  await replaceRequirementEvaluations(submissionId, outcome.modules, evidenceIds);
-  await replaceFindings(outcome.reviewId, outcome.modules, evidenceIds);
-  await replaceDefenseTargets(submissionId, input.members, outcome.modules, requirementMap, evidenceIds);
-  return outcome;
-}
-async function moduleAlignment(args) {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-  const requirements = requirementMap.requirements ?? [];
-  const out = {};
-  {
-    const searchBrief = [
-      requirementMap.problem_summary ?? "",
-      ...(requirementMap.requirements ?? []).slice(0, 8).map((r) => r.text)
-    ].join(" ").slice(0, 1500);
-    const packet = buildPacket({
-      question: `Does this repository implement the hackathon requirements? ${searchBrief}`,
-      files: input.files,
-      chunks: input.chunks,
-      category: "api"
-    });
-    const response = await call({
-      operation: `${MODULE_A}.alignment`,
-      task: buildAlignmentTask({
-        requirementMap,
-        projectMap: input.projectMap,
-        evidence: input.evidence,
-        snippets: packet.render(),
-        submission: input.submission
-      }),
-      promptVersion: PROMPT_VERSIONS.alignment,
-      contextParts: [requirementMap, input.projectMap],
-      scopeKey: "alignment",
-      repositoryId: repositoryIdValue,
-      submissionId,
-      pricing,
-      actorId: input.actorId ?? null,
-      sessionId: input.sessionId ?? null,
-      estimateTokens: packet.estimateTokens() + 3500,
-      spend
-    });
-    if (response === null) {
-      return moduleResult(MODULE_A, "skipped", "ai", {}, "no_call");
-    }
-    const payload = response.parsed ?? {};
-    const alignment = payload.problem_alignment ?? {};
-    out.problem_alignment = {
-      status: oneOf(alignment.status, ALIGNMENT_STATUSES, "unclear"),
-      confidence: oneOf(alignment.confidence, ["high", "medium", "low"], "low"),
-      evidence_ids: (alignment.evidence_ids ?? []).filter((id) => evidenceIds.has(id)).slice(0, 12),
-      explanation: String(alignment.explanation ?? "").slice(0, 1500),
-      source: "ai"
-    };
-    out.requirements = validateRequirementRows(payload.requirements, requirements, evidenceIds);
-    out.constraints = validateConstraintRows(payload.constraints, requirementMap, evidenceIds);
-    const summary = payload.summary ?? {};
-    out.summary = {
-      headline: String(summary.headline ?? "").slice(0, 300),
-      strengths: (summary.strengths ?? []).map((s) => String(s).slice(0, 200)).slice(0, 6),
-      areas_to_clarify: (summary.areas_to_clarify ?? []).map((s) => String(s).slice(0, 200)).slice(0, 6),
-      source: "ai"
-    };
-  }
-  const claims = claimsFrom(input.submission);
-  if (claims.length) {
-    const claimResult = await moduleGeneric({
-      module: "claims",
-      promptVersion: PROMPT_VERSIONS.claims,
-      taskBuilder: (snippets) => buildClaimsTask({
-        claims,
-        projectMap: input.projectMap,
-        evidence: input.evidence,
-        snippets
-      }),
-      question: "Which claimed features are supported by the code?",
-      input,
-      evidenceIds,
-      submissionId,
-      repositoryIdValue,
-      pricing,
-      spend,
-      scope: "claims",
-      preComputed: deterministicClaims(claims)
-    });
-    if (claimResult.data.claims) out.claims = claimResult.data.claims;
-    const mismatches = (claimResult.data.findings ?? []).filter(
-      (finding) => finding.finding_type === "claim_mismatch"
-    );
-    if (mismatches.length) {
-      out.findings = [...out.findings ?? [], ...mismatches];
-    }
-  }
-  return moduleResult(MODULE_A, "completed", "ai", out);
-}
-async function moduleQuality(args) {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-  const securityFacts = securityFromEvidence(input.projectMap);
-  const testingFacts = testingFromEvidence(input.projectMap);
-  const packet = buildPacket({
-    question: "authentication authorization middleware database schema and tests",
+  const datasetProfiles = input.datasetProfiles ?? [];
+  const semantics = input.semantics ?? [];
+  const projectMap = input.projectMap ?? {};
+  const index = buildRepoIndex({
     files: input.files,
     chunks: input.chunks,
-    category: "security"
+    evidence: evidenceSet.byId ? [...evidenceSet.byId.values()] : [],
+    routes: input.routes ?? [],
+    datasetProfiles,
+    semantics
   });
-  const response = await call({
-    operation: `${MODULE_C}.quality`,
-    task: buildQualityTask({
-      requirementMap,
-      submission: input.submission,
-      projectMap: input.projectMap,
-      evidence: input.evidence,
-      snippets: packet.render()
-    }),
-    promptVersion: PROMPT_VERSIONS.quality,
-    contextParts: [input.projectMap, testingFacts, securityFacts],
-    scopeKey: "quality",
-    repositoryId: repositoryIdValue,
-    submissionId,
-    pricing,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    estimateTokens: packet.estimateTokens() + 3500,
-    spend
-  });
-  const out = {};
-  const findings = [];
-  if (response?.parsed) {
-    const payload = response.parsed;
-    out.security = section(payload.security, evidenceIds);
-    out.database = section(payload.database, evidenceIds);
-    out.scalability = section(payload.scalability, evidenceIds);
-    out.testing = { ...testingFacts, source: "deterministic" };
-    findings.push(
-      ...validateFindings(payload.findings, evidenceIds)
-    );
-  } else {
-    out.security = securityFacts ?? { summary: "AI review unavailable.", source: "skipped" };
-    out.database = { summary: "AI review unavailable.", source: "skipped" };
-    out.scalability = { summary: "AI review unavailable.", source: "skipped" };
-    out.testing = { ...testingFacts, source: "deterministic" };
-  }
-  if (securityFacts) {
-    findings.push(
-      ...securityFacts.confirmed_issues
+  const vocabulary = briefVocabulary(requirementMap);
+  const requirementConcepts = /* @__PURE__ */ new Map();
+  for (const entry of requirementMap.requirements ?? []) {
+    requirementConcepts.set(
+      entry.id,
+      analyseRequirement(entry.text, vocabulary, requirementMap)
     );
   }
-  if (testingFacts.finding && testingFacts.testFileCount === 0) {
-    findings.push({
-      finding_type: "testing_gap",
-      severity: "medium",
-      title: "No automated tests detected",
-      description: testingFacts.explanation,
-      evidence_ids: [],
-      files: [],
-      symbols: [],
-      why_it_matters: "Behaviour that is not covered by tests is unverified when it changes.",
-      suggested_improvement: "Add tests for the main user path, starting with failure cases.",
-      confidence: "medium"
-    });
-  }
-  if (findings.length) out.findings = findings;
-  return moduleResult(MODULE_C, "completed", "ai", out);
-}
-async function moduleGeneric(args) {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend, scope } = args;
-  const packet = buildPacket({
-    question: args.question,
-    files: input.files,
-    chunks: input.chunks
-  });
-  const response = await call({
-    operation: `${args.module}.${scope}`,
-    task: args.taskBuilder(packet.render()),
-    promptVersion: args.promptVersion,
-    contextParts: [input.projectMap],
-    scopeKey: scope,
-    repositoryId: repositoryIdValue,
-    submissionId,
-    pricing,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    estimateTokens: packet.estimateTokens() + 3e3,
-    spend
-  });
-  if (response === null || !response.parsed) {
-    return moduleResult(
-      args.module,
-      "skipped",
-      "deterministic",
-      {
-        ...args.preComputed ?? {},
-        status: "skipped",
-        reason: "AI unavailable or budget exhausted; deterministic facts only."
-      }
-    );
-  }
-  const data = { ...response.parsed };
-  data.findings = validateFindings(response.parsed.findings, evidenceIds);
-  return moduleResult(args.module, "completed", "ai", data);
-}
-async function moduleContributions(args) {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-  const checkable = input.members.filter((member) => (member.contribution_description ?? "").trim()).slice(0, MAX_MEMBER_MODULES);
-  const results = [];
-  const otherNames = input.members.map(
-    (member) => member.full_name || member.email || "member"
+  const groups = groupRequirements(requirementMap);
+  const constraintConcepts = analyseBriefItems(requirementMap.constraints ?? [], requirementMap);
+  const outcomeConcepts = analyseBriefItems(requirementMap.expected_outcomes ?? [], requirementMap);
+  const criteriaConcepts = analyseBriefItems(requirementMap.evaluation_criteria ?? [], requirementMap);
+  const facts = countFacts(input, projectMap, index);
+  const inspection = input.inspection ?? {
+    mode: projectMap.analysis_mode ?? "full",
+    warnings: (projectMap.warnings ?? []).slice(0, 5),
+    filesSeen: facts.fileCount,
+    filesRead: facts.fileCount
+  };
+  const coverage = inspectionCovers(inspection);
+  const inspectionNote = coverage.covered ? "" : coverage.note + " Prefer 'unable_to_determine' over a negative status for anything not found.";
+  const plan = planAnalysis(
+    context,
+    facts,
+    groups.map((group) => ({
+      focus: group.focus,
+      label: group.label,
+      ids: group.entries.map((entry) => entry.id),
+      questions: questionsForGroup(group.concepts)
+    })),
+    (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+    (requirementMap.constraints ?? []).map((entry) => entry.id),
+    (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+    alignmentQuestions(context)
   );
-  for (const member of checkable) {
-    const question = (member.contribution_description ?? "").slice(0, 400);
-    const packet = buildPacket({
-      question,
-      files: input.files,
-      chunks: input.chunks,
-      maxFiles: 4
+  const pricing = await loadPricing();
+  const spend = {
+    costUsd: 0,
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    calls: 0,
+    cacheHits: 0,
+    failures: 0,
+    validationFailures: 0,
+    repairs: 0
+  };
+  const conclusions = [];
+  const findings = [];
+  const tasks = [];
+  let claims = [];
+  let alignment = null;
+  let architecture = null;
+  let implementation = null;
+  let engineering = [];
+  let assessment = null;
+  const wants = (key) => !input.onlyTasks?.length || input.onlyTasks.includes(key);
+  if (!pricing) {
+    return failure(context, plan, {
+      reviewId: null,
+      status: "failed",
+      conclusions: [],
+      findings: [],
+      tasks: [],
+      diagnostics: {},
+      totalCostUsd: 0,
+      totalTokens: 0,
+      error: "No AI model is configured."
     });
-    const response = await call({
-      operation: `${MODULE_D}.contribution`,
-      task: buildContributionTask({
-        member,
-        requirementMap,
-        submission: input.submission,
-        projectMap: input.projectMap,
-        evidence: input.evidence,
-        snippets: packet.render(),
-        otherMembers: otherNames
-      }),
-      promptVersion: PROMPT_VERSIONS.contribution,
-      contextParts: [input.projectMap, member.id],
-      scopeKey: `contribution:${member.id}`,
-      repositoryId: repositoryIdValue,
-      submissionId,
-      pricing,
-      actorId: input.actorId ?? null,
-      sessionId: input.sessionId ?? null,
-      estimateTokens: packet.estimateTokens() + 2e3,
-      spend
-    });
-    if (response === null || !response.parsed) {
-      results.push(
-        moduleResult(MODULE_D, "skipped", "deterministic", {
-          user_id: member.user_id,
-          member_id: member.id,
-          status: "not_yet_verified",
-          confidence: "none",
-          explanation: "Contribution analysis was unavailable."
-        })
+  }
+  const deterministicRows = /* @__PURE__ */ new Map();
+  for (const entry of requirementMap.requirements ?? []) {
+    if (!wants("requirements")) break;
+    const concept = requirementConcepts.get(entry.id);
+    if (!concept) continue;
+    const planForRequirement = buildRetrievalPlan(entry.id, concept);
+    const retrieval = retrieve({ plan: planForRequirement, index });
+    const counted = deterministicCount(entry.text, facts.countables);
+    const literal = deterministicLiteral(entry.text, index, evidenceSet);
+    const verdict = counted.status ? counted : literal;
+    if (verdict.status) {
+      deterministicRows.set(entry.id, {
+        subject_id: entry.id,
+        kind: "requirement",
+        status: verdict.status,
+        confidence: verdict.status === "evidence_found" ? "high" : "medium",
+        evidence_ids: verdict.evidenceIds,
+        explanation: verdict.explanation,
+        missing_or_unclear: [],
+        method: verdict.method ?? "deterministic_count",
+        files: retrieval.files.map((hit) => hit.path).slice(0, 6),
+        retrieval_queries: planForRequirement.questions.slice(0, 2),
+        relevant_files: retrieval.files.map((hit) => hit.path).slice(0, 6),
+        evidence_count: verdict.evidenceIds.length,
+        ai_used: false,
+        ai_reason: "A count or a named artefact settled this; the deterministic pass is authoritative and no model call was made."
+      });
+    }
+  }
+  for (const planned of plan.tasks) {
+    if (!wants(planned.key)) continue;
+    if (planned.kind === "alignment") {
+      const retrieval = retrieveFor(conceptFromTask(planned, requirementConcepts, context, index), index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildAlignmentTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, [])
+        ),
+        promptVersion: PROMPT_VERSIONS.alignment,
+        scopeKey: "alignment",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateAlignment(payload, evidenceSet),
+        pick: (items) => items[0],
+        evidenceIdsFrom: (item) => item.evidence_ids
+      });
+      if (outcome.item) {
+        alignment = outcome.item;
+        findings.push(
+          ...validateFindings(outcome.payload?.findations ?? null, evidenceSet, "hackathon")
+        );
+        if (alignment.downgraded) spend.validationFailures += 1;
+      }
+      continue;
+    }
+    if (planned.kind === "requirements") {
+      const group = groups.find((item) => item.focus === planned.focus);
+      if (!group) continue;
+      const pending = [];
+      for (const entry of group.entries) {
+        if (deterministicRows.has(entry.id)) continue;
+        pending.push(entry);
+      }
+      if (!pending.length) {
+        tasks.push({
+          key: planned.key,
+          kind: planned.kind,
+          scope: planned.scope,
+          status: "avoided",
+          reason: "The deterministic pass settled every requirement in this group.",
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          costUsd: 0,
+          validationErrors: [],
+          rejectedEvidenceIds: [],
+          repairs: 0,
+          evidenceIds: []
+        });
+        continue;
+      }
+      const retrievals = /* @__PURE__ */ new Map();
+      for (const entry of pending) {
+        const concept = requirementConcepts.get(entry.id);
+        if (!concept) continue;
+        retrievals.set(entry.id, retrieve({ plan: buildRetrievalPlan(entry.id, concept), index }));
+      }
+      const merged = mergeRetrievals([...retrievals.values()]);
+      const outcome = await runAi({
+        planned,
+        prompt: buildRequirementsTask(
+          promptContext(context, input, index, evidenceSet, merged, projectMap, datasetProfiles, semantics, inspectionNote, group.concepts),
+          pending.map((entry) => ({
+            id: entry.id,
+            text: entry.text,
+            importance: entry.importance
+          })),
+          group.label
+        ),
+        promptVersion: PROMPT_VERSIONS.requirements,
+        scopeKey: "requirements",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateConclusions(payload, {
+          kind: "requirement",
+          allowedSubjects: pending.map((entry) => entry.id),
+          evidence: evidenceSet
+        }),
+        evidenceIdsFrom: () => []
+      });
+      for (const item of outcome.items) {
+        const retrieval = retrievals.get(item.subject_id);
+        const coverageNote = coverage.covered ? "" : " The repository was not fully inspected, so absence of evidence here is inconclusive.";
+        const finalStatus = item.status === "not_evidenced" && !coverage.covered ? "unable_to_determine" : item.status;
+        conclusions.push({
+          subject_id: item.subject_id,
+          kind: "requirement",
+          status: finalStatus,
+          confidence: finalStatus === "unable_to_determine" ? "none" : item.confidence,
+          evidence_ids: item.evidence_ids,
+          explanation: item.explanation + coverageNote,
+          missing_or_unclear: item.missing_or_unclear,
+          method: "ai_evidence",
+          files: item.files,
+          retrieval_queries: (retrieval?.plan.questions ?? []).slice(0, 2),
+          relevant_files: (retrieval?.files ?? []).map((hit) => hit.path).slice(0, 6),
+          evidence_count: item.evidence_ids.length,
+          ai_used: true,
+          ai_reason: outcome.reason
+        });
+      }
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon")
       );
       continue;
     }
-    const payload = response.parsed;
-    results.push(
-      moduleResult(MODULE_D, "completed", "ai", {
-        user_id: member.user_id,
-        member_id: member.id,
-        status: oneOf(payload.status, CONTRIBUTION_STATUSES, "not_yet_verified"),
-        confidence: oneOf(payload.confidence, ["high", "medium", "low"], "low"),
-        evidence_ids: (payload.evidence_ids ?? []).filter((id) => evidenceIds.has(id)).slice(0, 10),
-        matched_files: (payload.matched_files ?? []).map((f) => String(f).slice(0, 200)).slice(0, 10),
-        matched_symbols: (payload.matched_symbols ?? []).map((s) => String(s).slice(0, 120)).slice(0, 10),
-        explanation: String(payload.explanation ?? "").slice(0, 1200)
-      })
+    if (planned.kind === "constraints") {
+      const subjects = requirementMap.constraints ?? [];
+      const retrieval = retrieveForBrief(constraintConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildConstraintsTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, constraintConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text, importance: entry.importance }))
+        ),
+        promptVersion: PROMPT_VERSIONS.constraints,
+        scopeKey: "constraints",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateConclusions(payload, {
+          kind: "constraint",
+          allowedSubjects: subjects.map((entry) => entry.id),
+          evidence: evidenceSet
+        }),
+        evidenceIdsFrom: () => []
+      });
+      pushConclusions(conclusions, outcome.items, "constraint", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon")
+      );
+      continue;
+    }
+    if (planned.kind === "outcomes") {
+      const subjects = requirementMap.expected_outcomes ?? [];
+      const retrieval = retrieveForBrief(outcomeConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildOutcomesTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, outcomeConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text }))
+        ),
+        promptVersion: PROMPT_VERSIONS.outcomes,
+        scopeKey: "outcomes",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateConclusions(payload, {
+          kind: "outcome",
+          allowedSubjects: subjects.map((entry) => entry.id),
+          evidence: evidenceSet
+        }),
+        evidenceIdsFrom: () => []
+      });
+      pushConclusions(conclusions, outcome.items, "outcome", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon")
+      );
+      continue;
+    }
+    if (planned.kind === "criteria") {
+      const subjects = requirementMap.evaluation_criteria ?? [];
+      const retrieval = retrieveForBrief(criteriaConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildCriteriaTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, criteriaConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text }))
+        ),
+        promptVersion: PROMPT_VERSIONS.criteria,
+        scopeKey: "criteria",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateConclusions(payload, {
+          kind: "criterion",
+          allowedSubjects: subjects.map((entry) => entry.id),
+          evidence: evidenceSet
+        }),
+        evidenceIdsFrom: () => []
+      });
+      pushConclusions(conclusions, outcome.items, "criterion", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon")
+      );
+      continue;
+    }
+    if (planned.kind === "claims") {
+      const claimList = claimsFrom(input.submission);
+      if (!claimList.length) continue;
+      const retrieval = retrieveForText(planned.question, index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildClaimsTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+          claimList
+        ),
+        promptVersion: PROMPT_VERSIONS.claims,
+        scopeKey: "claims",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateClaims(payload, evidenceSet, claimList),
+        evidenceIdsFrom: () => []
+      });
+      claims = outcome.items;
+      for (const claim of claims) {
+        const observed = observationFor(claim, evidenceSet);
+        findings.push(...detectConflicts(
+          {
+            claim: claim.claim,
+            status: claim.status,
+            evidenceIds: claim.evidence_ids,
+            explanation: claim.explanation,
+            observed
+          },
+          evidenceSet
+        ));
+      }
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "claim")
+      );
+      continue;
+    }
+    if (planned.kind === "implementation") {
+      const retrieval = retrieveForText(planned.question, index);
+      const outcome = await runAi({
+        planned,
+        prompt: buildImplementationTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, [])
+        ),
+        promptVersion: PROMPT_VERSIONS.implementation,
+        scopeKey: "implementation",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: () => ({ items: [], rejectedSubjects: [], rejectedEvidenceIds: [], errors: [] }),
+        pick: () => null,
+        evidenceIdsFrom: () => []
+      });
+      const payload = outcome.payload ?? {};
+      architecture = payload.architecture ?? null;
+      implementation = payload.implementation ?? null;
+      findings.push(
+        ...validateFindings(payload.findings ?? null, evidenceSet, "general")
+      );
+      const dead = implementation?.incomplete_or_dead ?? [];
+      for (const item of dead.slice(0, 5)) {
+        findings.push({
+          finding_type: "dead_feature",
+          severity: "low",
+          title: `Present but not doing anything: ${item.slice(0, 120)}`,
+          description: String(item).slice(0, 600),
+          evidence_ids: [],
+          files: [],
+          symbols: [],
+          why_it_matters: "A feature that exists but has no effect is misleading in a write-up and in a demo.",
+          suggested_improvement: "Complete it or remove the claim that it is part of the solution.",
+          confidence: "low",
+          expectation_source: "general"
+        });
+      }
+      continue;
+    }
+    if (planned.kind === "engineering") {
+      const retrieval = retrieveForText(planned.question, index);
+      const topics = plan.dimensions.filter((item) => item.relevance !== "not_applicable" && item.method === "ai" && item.key !== "problem_alignment").map((item) => item.label);
+      const outcome = await runAi({
+        planned,
+        prompt: buildEngineeringTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+          topics.slice(0, 6)
+        ),
+        promptVersion: PROMPT_VERSIONS.engineering,
+        scopeKey: "engineering",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: () => ({ items: [], rejectedSubjects: [], rejectedEvidenceIds: [], errors: [] }),
+        pick: () => null,
+        evidenceIdsFrom: () => []
+      });
+      const list = Array.isArray(outcome.payload?.observations) ? outcome.payload.observations : [];
+      engineering = list.filter((item) => item && typeof item === "object").slice(0, 8).map((item) => {
+        const citations = filterCitations(item.evidence_ids, evidenceSet);
+        return {
+          topic: String(item.topic ?? "general").slice(0, 60),
+          status: ["observed", "not_applicable", "concern"].includes(String(item.status)) ? String(item.status) : "observed",
+          summary: String(item.summary ?? "").slice(0, 900),
+          evidence_ids: citations.accepted,
+          concern: String(item.concern ?? "").slice(0, 600),
+          improvement: String(item.improvement ?? "").slice(0, 600),
+          expectation_source: "general"
+        };
+      });
+      findings.push(
+        ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "general")
+      );
+      continue;
+    }
+    if (planned.kind === "properness") {
+      const prior = [
+        ...alignment ? [{ label: "problem alignment", status: alignment.status, summary: alignment.explanation }] : [],
+        ...conclusions.map((row) => ({
+          label: row.subject_id,
+          status: row.status,
+          summary: row.explanation
+        })),
+        ...claims.map((claim) => ({
+          label: `claim: ${claim.claim.slice(0, 60)}`,
+          status: claim.status,
+          summary: claim.explanation
+        }))
+      ];
+      const outcome = await runAi({
+        planned,
+        prompt: buildPropernessTask(
+          promptContext(context, input, index, evidenceSet, emptyRetrieval(), projectMap, datasetProfiles, semantics, inspectionNote, []),
+          prior.slice(0, 24)
+        ),
+        promptVersion: PROMPT_VERSIONS.properness,
+        scopeKey: "properness",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => validateAssessment(payload, evidenceSet),
+        pick: (items) => items[0],
+        evidenceIdsFrom: (item) => item.evidence_ids
+      });
+      if (outcome.item) {
+        assessment = outcome.item;
+        findings.push(
+          ...validateFindings(outcome.payload?.findings ?? null, evidenceSet, "general")
+        );
+      }
+      continue;
+    }
+  }
+  const allConclusions = [
+    ...deterministicOrdered(requirementMap, deterministicRows, conclusions)
+  ];
+  const testing = testingFromEvidence(projectMap);
+  const secrets = securityFromEvidence(projectMap);
+  if (secrets) {
+    for (const issue of secrets.confirmed_issues) {
+      findings.push({
+        finding_type: "security_concern",
+        severity: issue.severity,
+        title: issue.title,
+        description: issue.description,
+        evidence_ids: [],
+        files: [],
+        symbols: [],
+        why_it_matters: issue.why_it_matters,
+        suggested_improvement: issue.suggested_improvement,
+        confidence: "medium",
+        expectation_source: "general"
+      });
+    }
+  }
+  if (testing.finding === "testing_gap" && testing.testFileCount === 0) {
+    const testingRequired = plan.dimensions.some(
+      (item) => item.key === "testing" && item.relevance === "required"
     );
+    findings.push({
+      finding_type: "testing_gap",
+      severity: testingRequired ? "medium" : "informational",
+      title: "No automated tests were detected",
+      description: testing.explanation,
+      evidence_ids: [],
+      files: [],
+      symbols: [],
+      why_it_matters: testingRequired ? "This hackathon asks about testing, and no test file was found in the analysed repository." : "Behaviour that is not covered by tests is unverified when it changes. This was not a requirement here.",
+      suggested_improvement: "Add a test for the main user path, starting with failure cases.",
+      confidence: "medium",
+      expectation_source: testingRequired ? "hackathon" : "general"
+    });
   }
-  return results;
-}
-async function loadReview(submissionId, repositoryId) {
-  if (!submissionId || !repositoryId) return null;
-  const { data } = await db().from("project_reviews").select("*").eq("submission_id", submissionId).eq("repository_id", repositoryId).limit(1);
-  return (data ?? [])[0] ?? null;
-}
-async function upsertReview(submissionId, repositoryId, results, outcome, pricing) {
-  if (!submissionId || !repositoryId) return null;
-  const service = db();
-  const existing = await loadReview(submissionId, repositoryId);
-  const payload = {
-    submission_id: submissionId,
-    repository_id: repositoryId,
-    status: outcome.status,
-    model: pricing?.modelName ?? null,
-    prompt_version: PROMPT_VERSIONS.alignment,
-    estimated_cost_usd: outcome.totalCostUsd,
-    total_tokens: outcome.totalTokens
+  const defenseTargets = buildDefenseTargets(allConclusions, findings, claimListOf(claims));
+  const reviewId = await upsertReview({
+    submissionId,
+    repositoryId,
+    context,
+    plan,
+    alignment,
+    allConclusions,
+    assessment,
+    architecture,
+    implementation,
+    engineering,
+    testing,
+    spend,
+    commitSha
+  });
+  await replaceRequirementEvaluations(submissionId, allConclusions);
+  await replaceFindings(reviewId, findings);
+  await replaceDefenseTargets(submissionId, defenseTargets);
+  await saveSnapshot({
+    submissionId,
+    repositoryId,
+    commitSha,
+    context,
+    plan,
+    evidence: evidenceSet.byId.size,
+    allConclusions,
+    spend
+  });
+  const previous = await previousEvaluations(submissionId);
+  const diff = diffAgainst(previous, allConclusions, commitSha);
+  const diagnostics = buildDiagnostics({
+    context,
+    plan,
+    facts,
+    allConclusions,
+    tasks,
+    spend,
+    inspection,
+    coverage: coverage.covered,
+    datasetProfiles,
+    evidenceCount: evidenceSet.byId.size,
+    diff
+  });
+  return {
+    reviewId,
+    status: statusFor(allConclusions, tasks, findings),
+    context,
+    plan,
+    conclusions: allConclusions,
+    findings: dedupeFindings(findings),
+    claims,
+    assessment,
+    alignment,
+    architecture,
+    implementation,
+    engineering,
+    testing,
+    tasks,
+    diagnostics,
+    diff,
+    totalCostUsd: spend.costUsd,
+    totalTokens: spend.tokens
   };
-  for (const key of [
-    "summary",
-    "problem_alignment",
-    "requirements",
-    "constraints",
-    "expected_outcomes",
-    "evaluation_criteria",
-    "architecture",
-    "implementation",
-    "security",
-    "database_review",
-    "testing",
-    "scalability",
-    "technical_decisions",
-    "contributions"
-  ]) {
-    if (results[key] !== void 0 && results[key] !== null) payload[key] = results[key];
+}
+async function runAi(args) {
+  const { planned, spend, tasks } = args;
+  const record = {
+    key: planned.key,
+    kind: planned.kind,
+    scope: planned.scope,
+    status: "executed",
+    reason: planned.reason,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    costUsd: 0,
+    validationErrors: [],
+    rejectedEvidenceIds: [],
+    repairs: 0,
+    evidenceIds: []
+  };
+  const before = { cost: spend.costUsd, calls: spend.calls };
+  const response = await call({
+    operation: `analysis.${planned.key}`,
+    task: args.prompt,
+    promptVersion: args.promptVersion,
+    scopeKey: args.scopeKey,
+    subjectIds: planned.subjectIds,
+    contextParts: args.promptContextItems,
+    repositoryId: args.repositoryId,
+    commitSha: args.commitSha,
+    submissionId: args.submissionId,
+    pricing: args.pricing,
+    actorId: args.input.actorId ?? null,
+    sessionId: args.input.sessionId ?? null,
+    estimateTokens: Math.ceil(args.prompt.length / 4) + 1200,
+    spend,
+    provider: args.input.provider ?? null
+  });
+  record.inputTokens = Math.max(0, spend.inputTokens);
+  record.outputTokens = Math.max(0, spend.outputTokens);
+  record.cachedTokens = spend.cachedTokens;
+  record.costUsd = Math.max(0, spend.costUsd - before.cost);
+  record.status = spend.calls === before.calls ? "cached" : "executed";
+  if (!response || !response.parsed) {
+    record.status = response ? "failed" : "skipped";
+    record.reason = response ? "The model did not return valid JSON; the call is recorded as failed." : "The call was not made (no key, or the budget for this submission is exhausted).";
+    tasks.push(record);
+    return { payload: null, items: [], item: null, reason: record.reason };
   }
+  let payload = response.parsed;
+  let validation = args.validate(payload);
+  record.validationErrors = validation.errors;
+  record.rejectedEvidenceIds = validation.rejectedEvidenceIds;
+  if (validation.errors.length) {
+    spend.validationFailures += 1;
+    const repairTask = repairPrompt(args.prompt, validation.errors);
+    const repaired = await call({
+      operation: `analysis.${planned.key}.repair`,
+      task: repairTask,
+      promptVersion: `${args.promptVersion}-r1`,
+      scopeKey: `${args.scopeKey}:repair`,
+      subjectIds: planned.subjectIds,
+      contextParts: args.promptContextItems,
+      repositoryId: args.repositoryId,
+      commitSha: args.commitSha,
+      submissionId: args.submissionId,
+      pricing: args.pricing,
+      actorId: args.input.actorId ?? null,
+      sessionId: args.input.sessionId ?? null,
+      estimateTokens: Math.ceil(repairTask.length / 4) + 800,
+      spend,
+      provider: args.input.provider ?? null
+    });
+    record.repairs = 1;
+    spend.repairs += 1;
+    if (repaired?.parsed) {
+      payload = repaired.parsed;
+      validation = args.validate(payload);
+      record.validationErrors = validation.errors;
+      record.rejectedEvidenceIds = validation.rejectedEvidenceIds;
+    }
+  }
+  const items = validation.items;
+  const item = args.pick ? args.pick(items) : null;
+  record.evidenceIds = [...new Set(items.flatMap((entry) => args.evidenceIdsFrom(entry)))].slice(0, 20);
+  record.reason = items.length ? planned.reason : `${planned.reason} No usable conclusion survived validation.`;
+  tasks.push(record);
+  return { payload, items, item, reason: record.reason };
+}
+function claimsFrom(submission) {
+  const claims = [];
+  const description = String(submission.project_description ?? "").trim();
+  if (description) claims.push(description.slice(0, 300));
+  for (const line of String(submission.key_features ?? "").split("\n")) {
+    const cleaned = line.trim().replace(/^[-*•\s]+/, "").trim();
+    if (cleaned.length > 8) claims.push(cleaned.slice(0, 200));
+  }
+  return claims.slice(0, 10);
+}
+function claimListOf(claims) {
+  return claims.map((claim) => claim.claim);
+}
+function observationFor(claim, evidence) {
+  const out = [];
+  for (const id of claim.evidence_ids) {
+    const item = evidence.byId.get(id);
+    if (item) out.push(`${item.file ?? "repository"}: ${item.claim.slice(0, 160)}`);
+  }
+  if (out.length) return out;
+  return [
+    "no file, symbol or dataset in the analysed repository was found that demonstrates this behaviour"
+  ];
+}
+function pushConclusions(target, items, kind, method, reason, queries) {
+  for (const item of items) {
+    target.push({
+      subject_id: item.subject_id,
+      kind,
+      status: item.status,
+      confidence: item.confidence,
+      evidence_ids: item.evidence_ids,
+      explanation: item.explanation,
+      missing_or_unclear: item.missing_or_unclear,
+      method,
+      files: item.files,
+      retrieval_queries: queries,
+      relevant_files: [],
+      evidence_count: item.evidence_ids.length,
+      ai_used: true,
+      ai_reason: reason
+    });
+  }
+}
+function deterministicOrdered(requirementMap, deterministicRows, aiRows) {
+  const out = [];
+  const used = /* @__PURE__ */ new Set();
+  for (const entry of requirementMap.requirements ?? []) {
+    const row = deterministicRows.get(entry.id) ?? aiRows.find((item) => item.subject_id === entry.id);
+    if (row) {
+      out.push(row);
+      used.add(entry.id);
+    }
+  }
+  for (const row of aiRows) {
+    if (used.has(row.subject_id)) continue;
+    out.push(row);
+  }
+  return out;
+}
+function retrieveFor(concepts, index) {
+  if (!concepts.length) return emptyRetrieval();
+  const results = concepts.map(
+    (concept, position) => retrieve({ plan: buildRetrievalPlan(`c${position}`, concept), index })
+  );
+  return mergeRetrievals(results);
+}
+function retrieveForBrief(concepts, index) {
+  return retrieveFor(concepts, index);
+}
+function retrieveForText(question, index) {
+  const concept = {
+    text: question.slice(0, 600),
+    intent: question.slice(0, 300),
+    focus: "general",
+    phrases: nounPhrases(question).slice(0, 8),
+    actions: [],
+    subjects: termsOf(question).slice(0, 10),
+    qualifiers: [],
+    terms: termsOf(question),
+    domainTerms: [],
+    facets: [],
+    artifacts: []
+  };
+  return retrieve({ plan: buildRetrievalPlan("context", concept), index });
+}
+function conceptFromTask(planned, requirementConcepts, context, index) {
+  void context;
+  void index;
+  const concepts = [];
+  for (const id of planned.subjectIds) {
+    const concept = requirementConcepts.get(id);
+    if (concept) concepts.push(concept);
+  }
+  return concepts;
+}
+function mergeRetrievals(results) {
+  const byPath = /* @__PURE__ */ new Map();
+  const evidenceIds = [];
+  const datasetPaths = [];
+  const questions = [];
+  const unmatched = [];
+  let considered = 0;
+  for (const result of results) {
+    considered = Math.max(considered, result.considered);
+    for (const question of result.plan.questions) {
+      if (questions.length < 6 && !questions.includes(question)) questions.push(question);
+    }
+    for (const id of result.evidenceIds) {
+      if (evidenceIds.length < 40 && !evidenceIds.includes(id)) evidenceIds.push(id);
+    }
+    for (const path of result.datasetPaths) {
+      if (!datasetPaths.includes(path)) datasetPaths.push(path);
+    }
+    for (const term of result.unmatchedTerms) {
+      if (unmatched.length < 10 && !unmatched.includes(term)) unmatched.push(term);
+    }
+    for (const hit of result.files) {
+      const existing = byPath.get(hit.path);
+      if (!existing) {
+        byPath.set(hit.path, hit);
+        continue;
+      }
+      existing.score += Math.min(hit.score, 20);
+      existing.matchedTerms = [.../* @__PURE__ */ new Set([...existing.matchedTerms, ...hit.matchedTerms])].slice(0, 8);
+    }
+  }
+  const files = [...byPath.values()].sort((a, b) => b.score - a.score).slice(0, 6);
+  return {
+    plan: {
+      subjectId: results[0]?.plan.subjectId ?? "",
+      focus: results[0]?.plan.focus ?? "general",
+      terms: [...new Set(results.flatMap((result) => result.plan.terms))].slice(0, 40),
+      phrases: [...new Set(results.flatMap((result) => result.plan.phrases))].slice(0, 12),
+      artifacts: results[0]?.plan.artifacts ?? [],
+      questions
+    },
+    files,
+    evidenceIds: evidenceIds.slice(0, 24),
+    datasetPaths: datasetPaths.slice(0, 6),
+    considered,
+    truncated: byPath.size > files.length,
+    unmatchedTerms: unmatched
+  };
+}
+function emptyRetrieval() {
+  return {
+    plan: {
+      subjectId: "",
+      focus: "general",
+      terms: [],
+      phrases: [],
+      artifacts: [],
+      questions: []
+    },
+    files: [],
+    evidenceIds: [],
+    datasetPaths: [],
+    considered: 0,
+    truncated: false,
+    unmatchedTerms: []
+  };
+}
+function promptContext(context, input, index, evidence, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, concepts) {
+  const paths = new Set(retrieval.files.map((hit) => hit.path));
+  const scoped = [];
+  for (const path of paths) {
+    for (const item of evidence.byFile.get(path) ?? []) {
+      scoped.push(item);
+    }
+  }
+  for (const item of evidenceSetGlobal(evidence)) {
+    if (scoped.length < 40) scoped.push(item);
+  }
+  void input;
+  void index;
+  return {
+    context,
+    projectMap,
+    evidence: scoped,
+    terms: retrieval.plan.terms,
+    code: renderPacket(retrieval),
+    datasetProfiles: datasetProfiles.filter(
+      (profile) => retrieval.datasetPaths.includes(profile.path)
+    ),
+    semantics: semantics.filter((item) => paths.has(item.path)),
+    concepts,
+    inspectionNote
+  };
+}
+function evidenceSetGlobal(evidence) {
+  const out = [];
+  for (const item of evidence.byId.values()) {
+    if (!item.file) out.push(item);
+  }
+  return out;
+}
+function countFacts(input, projectMap, index) {
+  const symbols = projectMap.important_files ?? [];
+  void symbols;
+  const semantics = input.semantics ?? [];
+  const routes = input.routes ?? [];
+  const files = input.files ?? [];
+  const functionCount = countBy(input.chunks, "symbol_type", [
+    "function",
+    "method"
+  ]);
+  const classCount = countBy(input.chunks, "symbol_type", ["class", "type"]);
+  const datasets = input.datasetProfiles ?? [];
+  const fileCount = files.filter((file) => !file.is_ignored).length;
+  const testFileCount = Number(
+    projectMap.testing?.test_file_count ?? 0
+  );
+  return {
+    fileCount,
+    sourceFileCount: files.filter(
+      (file) => !file.is_ignored && ["source", "component", "api", "model", "schema", "database"].includes(
+        String(file.file_category)
+      )
+    ).length,
+    datasetCount: datasets.length,
+    datasetProfileCount: datasets.length,
+    functionCount,
+    classCount,
+    routeCount: routes.length,
+    modelFindingCount: semantics.reduce((sum, item) => sum + item.models.length, 0),
+    calculationCount: semantics.reduce((sum, item) => sum + item.calculations.length, 0),
+    ruleCount: semantics.reduce((sum, item) => sum + item.rules.length, 0),
+    dataAccessCount: semantics.reduce((sum, item) => sum + item.dataAccess.length, 0),
+    uiFindingCount: semantics.reduce((sum, item) => sum + item.ui.length, 0),
+    testFileCount,
+    deploymentFileCount: files.filter((file) => file.file_category === "deployment").length,
+    secretCount: Number(
+      projectMap.security?.hardcoded_secrets?.length ?? 0
+    ),
+    authDetected: Boolean(projectMap.authentication?.detected),
+    databaseDetected: Boolean(projectMap.database?.technologies),
+    hasReadme: Boolean(projectMap.readme?.present),
+    analysisMode: projectMap.analysis_mode ?? "full",
+    stackSummary: stackSummaryOf(projectMap),
+    countables: countablesFrom({
+      projectMap,
+      functionCount,
+      classCount,
+      routeCount: routes.length,
+      datasetCount: datasets.length,
+      modelCount: semantics.reduce((sum, item) => sum + item.models.length, 0),
+      fileCount,
+      calculationCount: semantics.reduce((sum, item) => sum + item.calculations.length, 0),
+      testFileCount
+    }),
+    index
+  };
+}
+function countBy(rows, field, values) {
+  return rows.filter((row) => values.includes(String(row[field]))).length;
+}
+function stackSummaryOf(projectMap) {
+  const stack = projectMap.stack ?? {};
+  const frameworks = stack.frameworks ?? [];
+  const languages = Object.keys(stack.languages ?? {});
+  return [...languages.slice(0, 4), ...frameworks.slice(0, 5)].join(" ");
+}
+function contextSnapshot(context) {
+  return {
+    name: context.name,
+    type: context.type,
+    version: context.version,
+    problem: context.problem.slice(0, 1200),
+    theme: context.theme,
+    claims: context.claims,
+    custom: context.customInstructions?.slice(0, 400) ?? null,
+    notes: context.freeformNotes.slice(0, 3)
+  };
+}
+function slimMap(projectMap) {
+  return {
+    analysis_mode: projectMap.analysis_mode,
+    stack: projectMap.stack,
+    database: projectMap.database,
+    authentication: projectMap.authentication,
+    testing: projectMap.testing,
+    deployment: projectMap.deployment,
+    repository_stats: projectMap.repository_stats,
+    features: projectMap.features,
+    warnings: projectMap.warnings
+  };
+}
+function alignmentQuestions(context) {
+  const source = [
+    context.problem,
+    context.theme ?? "",
+    context.claims.description,
+    context.claims.features
+  ].join(" ");
+  return nounPhrases(source).slice(0, 18);
+}
+function dedupeFindings(findings) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const finding of findings) {
+    const key = `${finding.finding_type}|${finding.title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(finding);
+  }
+  return out.slice(0, 30);
+}
+function statusFor(conclusions, tasks, findings) {
+  const executed = tasks.filter((task) => task.status === "executed" || task.status === "cached");
+  const failed = tasks.filter((task) => task.status === "failed");
+  if (executed.length === 0 && findings.length === 0) return "pending";
+  if (failed.length > 0 && executed.length === 0) return "failed";
+  if (failed.length > 0) return "partial";
+  if (conclusions.length > 0) return "completed";
+  return "partial";
+}
+function buildDefenseTargets(conclusions, findings, claims) {
+  const targets = [];
+  for (const row of conclusions) {
+    if (row.kind !== "requirement" && row.kind !== "constraint") continue;
+    if (row.status !== "not_evidenced" && row.status !== "partial_evidence") continue;
+    targets.push({
+      topic: `${row.subject_id}: ${row.explanation.slice(0, 240)}`.slice(0, 300),
+      reason: row.missing_or_unclear.length ? `Not established by the analysed repository: ${row.missing_or_unclear.join("; ").slice(0, 400)}` : row.explanation.slice(0, 600),
+      priority: row.status === "not_evidenced" ? "P1" : "P2",
+      evidence_ids: row.evidence_ids.slice(0, 10),
+      question_area: row.kind,
+      status: "open"
+    });
+  }
+  for (const finding of findings) {
+    if (finding.finding_type !== "claim_mismatch") continue;
+    targets.push({
+      topic: finding.title.slice(0, 300),
+      reason: (finding.description || finding.why_it_matters).slice(0, 600),
+      priority: "P0",
+      evidence_ids: finding.evidence_ids.slice(0, 10),
+      question_area: "claim_support",
+      status: "open"
+    });
+  }
+  for (const finding of findings) {
+    if (finding.finding_type !== "security_concern") continue;
+    targets.push({
+      topic: String(finding.title).slice(0, 300),
+      reason: (finding.why_it_matters || finding.description).slice(0, 600),
+      priority: "P5",
+      evidence_ids: finding.evidence_ids.slice(0, 10),
+      question_area: "security",
+      status: "open"
+    });
+  }
+  void claims;
+  return targets.slice(0, 20);
+}
+async function upsertReview(args) {
+  if (!args.submissionId || !args.repositoryId) return null;
+  const service = db();
+  const byKind = (kind) => args.allConclusions.filter((row) => row.kind === kind);
+  const payload = {
+    submission_id: args.submissionId,
+    repository_id: args.repositoryId,
+    status: "completed",
+    model: null,
+    prompt_version: PROMPT_VERSIONS.alignment,
+    estimated_cost_usd: args.spend.costUsd,
+    total_tokens: args.spend.tokens,
+    // New, versioned knowledge (§44, §27). Old columns are kept so the existing
+    // admin dashboards and the §80 payload keep working.
+    analysis_version: "a3",
+    hackathon_version: args.context.version,
+    scanner_version: null,
+    commit_sha: args.commitSha,
+    dimensions: args.plan.dimensions,
+    requirement_rows: byKind("requirement"),
+    constraint_rows: byKind("constraint"),
+    outcome_rows: byKind("outcome"),
+    criterion_rows: byKind("criterion"),
+    assessment: args.assessment,
+    engineering: args.engineering,
+    diagnostics_summary: {
+      calls_planned: args.plan.tasks.length,
+      calls_executed: args.spend.calls,
+      cache_hits: args.spend.cacheHits
+    }
+  };
+  if (args.alignment) payload.problem_alignment = args.alignment;
+  if (args.architecture) payload.architecture = args.architecture;
+  if (args.implementation) payload.implementation = args.implementation;
+  if (args.testing) payload.testing = args.testing;
   try {
-    if (existing?.id) {
-      const { error: error2 } = await service.from("project_reviews").update(payload).eq("id", existing.id);
+    const { data: existing } = await service.from("project_reviews").select("id").eq("submission_id", args.submissionId).eq("repository_id", args.repositoryId).limit(1);
+    const row = (existing ?? [])[0];
+    if (row) {
+      const { error: error2 } = await service.from("project_reviews").update(payload).eq("id", row.id);
       if (error2) throw error2;
-      return existing.id;
+      return row.id;
     }
     const { data, error } = await service.from("project_reviews").insert(payload).select("id").single();
     if (error || !data) throw error ?? new Error("no row");
     return data.id;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist review:", error);
+    console.warn("[hacksim.analysis] could not persist review:", error);
     return null;
   }
 }
-function rowsFromModule(module, evidenceIds) {
-  const rows = [];
-  const cite = (value) => (value ?? []).filter((id) => evidenceIds.has(id)).slice(0, 12);
-  for (const entry of module.data.requirements ?? []) {
-    if (!entry?.requirement_id) continue;
-    rows.push({
-      requirement_id: String(entry.requirement_id).slice(0, 32),
-      status: oneOf(entry.status, REQUIREMENT_STATUSES, "unable_to_determine"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: module.source === "deterministic" ? "deterministic" : "ai"
-    });
-  }
-  for (const entry of module.data.constraints ?? []) {
-    if (!entry?.constraint_id) continue;
-    rows.push({
-      requirement_id: String(entry.constraint_id).slice(0, 32),
-      status: oneOf(entry.status, CONSTRAINT_STATUSES, "unable_to_determine"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: "ai"
-    });
-  }
-  for (const entry of module.data.expected_outcomes ?? []) {
-    if (!entry?.outcome_id) continue;
-    rows.push({
-      requirement_id: String(entry.outcome_id).slice(0, 32),
-      status: oneOf(entry.status, OUTCOME_STATUSES, "unclear"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: "ai"
-    });
-  }
-  return rows;
-}
-async function replaceRequirementEvaluations(submissionId, modules, evidenceIds) {
+async function replaceRequirementEvaluations(submissionId, conclusions) {
   if (!submissionId) return;
-  const rows = modules.flatMap((module) => rowsFromModule(module, evidenceIds));
-  if (rows.length === 0) return;
+  const rows = conclusions.map((row) => ({
+    submission_id: submissionId,
+    requirement_id: row.subject_id,
+    status: row.kind === "constraint" || row.kind === "criterion" || row.kind === "outcome" ? row.status === "evidence_found" ? "supported" : row.status : row.status,
+    evidence_ids: row.evidence_ids,
+    confidence: row.confidence,
+    explanation: row.explanation.slice(0, 2e3),
+    source: row.ai_used ? "ai" : "deterministic",
+    // New columns; written defensively so an un-migrated database still works.
+    kind: row.kind,
+    method: row.method,
+    missing_or_unclear: row.missing_or_unclear,
+    retrieval_queries: row.retrieval_queries,
+    relevant_files: row.relevant_files,
+    evidence_count: row.evidence_count,
+    ai_used: row.ai_used,
+    ai_reason: row.ai_reason
+  }));
+  if (!rows.length) return;
   try {
-    const { data: existing } = await db().from("requirement_evaluations").select("id").eq("submission_id", submissionId);
+    const service = db();
+    const { data: existing } = await service.from("requirement_evaluations").select("id").eq("submission_id", submissionId);
     if ((existing ?? []).length) {
-      await db().from("requirement_evaluations").delete().eq("submission_id", submissionId);
+      await service.from("requirement_evaluations").delete().eq("submission_id", submissionId);
     }
-    const { error } = await db().from("requirement_evaluations").upsert(
-      rows.map((row) => ({ submission_id: submissionId, ...row })),
-      { onConflict: "submission_id,requirement_id" }
-    );
+    const { error } = await service.from("requirement_evaluations").upsert(rows, { onConflict: "submission_id,requirement_id" });
     if (error) throw error;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist requirement evaluations:", error);
+    console.warn("[hacksim.analysis] could not persist evaluations:", error);
   }
 }
-async function replaceFindings(reviewId, modules, evidenceIds) {
+async function replaceFindings(reviewId, findings) {
   if (!reviewId) return;
-  const rows = modules.flatMap((module) => module.data.findings ?? []).map((finding) => ({
+  const rows = findings.map((finding) => ({
     project_review_id: reviewId,
-    finding_type: finding.finding_type ?? "observation",
-    severity: finding.severity ?? "low",
-    title: String(finding.title ?? "Untitled finding").slice(0, 200),
-    description: String(finding.description ?? "").slice(0, 2e3),
-    evidence_ids: (finding.evidence_ids ?? []).filter((id) => evidenceIds.has(id)).slice(0, 12),
-    files: (finding.files ?? []).slice(0, 12),
-    symbols: (finding.symbols ?? []).slice(0, 12),
-    why_it_matters: String(finding.why_it_matters ?? "").slice(0, 1e3),
-    suggested_improvement: String(finding.suggested_improvement ?? "").slice(0, 1e3),
-    confidence: finding.confidence ?? "low"
-  })).filter((row) => row.evidence_ids.length > 0);
+    finding_type: finding.finding_type,
+    severity: finding.severity,
+    title: finding.title.slice(0, 200),
+    description: finding.description.slice(0, 2e3),
+    evidence_ids: finding.evidence_ids.slice(0, 12),
+    files: finding.files.slice(0, 12),
+    symbols: finding.symbols.slice(0, 12),
+    why_it_matters: finding.why_it_matters.slice(0, 1e3),
+    suggested_improvement: finding.suggested_improvement.slice(0, 1e3),
+    confidence: finding.confidence
+  }));
   try {
-    await db().from("project_review_findings").delete().eq("project_review_id", reviewId);
+    const service = db();
+    await service.from("project_review_findings").delete().eq("project_review_id", reviewId);
     if (rows.length) {
-      const { error } = await db().from("project_review_findings").insert(rows);
+      const { error } = await service.from("project_review_findings").insert(rows);
       if (error) throw error;
     }
   } catch (error) {
-    console.warn("[hacksim.review] could not persist findings:", error);
+    console.warn("[hacksim.analysis] could not persist findings:", error);
   }
 }
-async function replaceDefenseTargets(submissionId, members, modules, requirementMap, evidenceIds) {
+async function replaceDefenseTargets(submissionId, targets) {
   if (!submissionId) return;
-  const targets = [];
-  const requirementTexts = new Map(
-    requirementMap.requirements.map((r) => [r.id, r.text])
-  );
-  for (const module of modules) {
-    for (const entry of module.data.requirements ?? []) {
-      const status = entry.status;
-      if (status !== "not_evidenced" && status !== "partial_evidence") continue;
-      const id = String(entry.requirement_id ?? "");
-      targets.push({
-        submission_id: submissionId,
-        topic: (requirementTexts.get(id) ?? id).slice(0, 300),
-        reason: String(entry.explanation ?? "").slice(0, 600) || "The analysed repository did not provide sufficient evidence for this requirement.",
-        priority: status === "not_evidenced" ? "P1" : "P2",
-        evidence_ids: (entry.evidence_ids ?? []).filter((e) => evidenceIds.has(e)).slice(0, 10),
-        question_area: "requirement_coverage",
-        status: "open"
-      });
-    }
-  }
-  for (const module of modules.filter((m) => m.module === MODULE_D)) {
-    const data = module.data;
-    if (data.status !== "not_yet_verified" && data.status !== "partially_supported") continue;
-    const member = members.find((m) => m.id === data.member_id);
-    if (!member) continue;
-    targets.push({
-      submission_id: submissionId,
-      user_id: member.user_id,
-      topic: (member.contribution_description || "Your contribution").slice(0, 300),
-      reason: String(data.explanation ?? "").slice(0, 600),
-      priority: "P0",
-      evidence_ids: (data.evidence_ids ?? []).slice(0, 10),
-      question_area: "personal_contribution",
-      status: "open"
-    });
-  }
-  for (const module of modules) {
-    for (const finding of module.data.findings ?? []) {
-      if (finding.finding_type !== "security_concern") continue;
-      targets.push({
-        submission_id: submissionId,
-        topic: String(finding.title ?? "Security concern").slice(0, 300),
-        reason: String(finding.why_it_matters ?? finding.description ?? "").slice(0, 600),
-        priority: "P5",
-        evidence_ids: finding.evidence_ids ?? [],
-        question_area: "security",
-        status: "open"
-      });
-    }
-  }
-  if (targets.length === 0) return;
   try {
-    await db().from("defense_targets").delete().eq("submission_id", submissionId);
-    const { error } = await db().from("defense_targets").insert(targets.slice(0, 20));
+    const service = db();
+    await service.from("defense_targets").delete().eq("submission_id", submissionId);
+    if (targets.length) {
+      const { error } = await service.from("defense_targets").insert(targets.map((target) => ({ submission_id: submissionId, ...target })));
+      if (error) throw error;
+    }
+  } catch (error) {
+    console.warn("[hacksim.analysis] could not persist defence targets:", error);
+  }
+}
+async function saveSnapshot(args) {
+  if (!args.submissionId || !args.repositoryId) return;
+  try {
+    const { error } = await db().from("analysis_snapshots").insert({
+      submission_id: args.submissionId,
+      repository_id: args.repositoryId,
+      commit_sha: args.commitSha,
+      hackathon_version: args.context.version,
+      analysis_version: "a3",
+      scanner_version: null,
+      prompt_versions: PROMPT_VERSIONS,
+      plan: {
+        summary: args.plan.summary,
+        dimensions: args.plan.dimensions,
+        tasks: args.plan.tasks.map((task) => ({ key: task.key, scope: task.scope }))
+      },
+      hackathon_snapshot: args.context.snapshot,
+      conclusions: args.allConclusions,
+      evidence_count: args.evidence,
+      input_tokens: args.spend.inputTokens,
+      output_tokens: args.spend.outputTokens,
+      cached_tokens: args.spend.cachedTokens,
+      estimated_cost_usd: args.spend.costUsd
+    });
     if (error) throw error;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist defense targets:", error);
+    console.warn("[hacksim.analysis] could not save snapshot:", error);
   }
+}
+async function previousEvaluations(submissionId) {
+  if (!submissionId) return [];
+  try {
+    const { data } = await db().from("requirement_evaluations").select("requirement_id, status").eq("submission_id", submissionId);
+    void data;
+    const { data: snapshots } = await db().from("analysis_snapshots").select("commit_sha").eq("submission_id", submissionId).order("created_at", { ascending: false }).limit(1);
+    const commit = (snapshots ?? [])[0]?.commit_sha ?? null;
+    return (data ?? []).map((row) => ({
+      requirement_id: row.requirement_id,
+      status: row.status,
+      commit_sha: commit
+    }));
+  } catch {
+    return [];
+  }
+}
+function diffAgainst(previous, current, commitSha) {
+  if (!previous.length) return null;
+  const before = new Map(previous.map((row) => [row.requirement_id, row.status]));
+  const changed = [];
+  const added = [];
+  for (const row of current) {
+    const prior = before.get(row.subject_id);
+    if (prior === void 0) {
+      added.push(row.subject_id);
+      continue;
+    }
+    if (prior !== row.status) {
+      changed.push({ id: row.subject_id, from: prior, to: row.status });
+    }
+  }
+  const removed = [...before.keys()].filter(
+    (id) => !current.some((row) => row.subject_id === id)
+  );
+  if (!changed.length && !added.length && !removed.length) return null;
+  return {
+    previous_commit: previous[0]?.commit_sha ?? null,
+    commit: commitSha,
+    changed,
+    added,
+    removed
+  };
+}
+function buildDiagnostics(args) {
+  return {
+    hackathon: {
+      name: args.context.name,
+      type: args.context.type,
+      version: args.context.version,
+      config_version: args.context.configVersion,
+      requirements: args.context.requirements.length,
+      constraints: args.context.constraints.length,
+      outcomes: args.context.expectedOutcomes.length,
+      criteria: args.context.evaluationCriteria.length,
+      requirements_enabled: args.plan.requirementsEnabled,
+      requirements_reason: args.plan.requirementsReason
+    },
+    repository: {
+      files_seen: args.inspection.filesSeen,
+      files_read: args.inspection.filesRead,
+      source_files: args.facts.sourceFileCount,
+      dataset_files: args.facts.datasetCount,
+      dataset_profiles: args.datasetProfiles.length,
+      functions: args.facts.functionCount,
+      classes: args.facts.classCount,
+      routes: args.facts.routeCount,
+      models: args.facts.modelFindingCount,
+      calculations: args.facts.calculationCount,
+      rules: args.facts.ruleCount,
+      ui_sites: args.facts.uiFindingCount,
+      evidence_count: args.evidenceCount,
+      analysis_mode: args.inspection.mode,
+      fully_inspected: args.coverage,
+      warnings: args.inspection.warnings.slice(0, 8)
+    },
+    ai: {
+      calls_planned: args.plan.tasks.length,
+      calls_executed: args.spend.calls,
+      calls_avoided: args.tasks.filter((task) => task.status === "avoided").length,
+      cache_hits: args.spend.cacheHits,
+      cache_misses: Math.max(0, args.spend.calls - args.spend.cacheHits),
+      input_tokens: args.spend.inputTokens,
+      output_tokens: args.spend.outputTokens,
+      cached_tokens: args.spend.cachedTokens,
+      cost_usd: Number(args.spend.costUsd.toFixed(6)),
+      failures: args.spend.failures,
+      validation_failures: args.spend.validationFailures,
+      repairs: args.spend.repairs,
+      tasks: args.tasks
+    },
+    dimensions: args.plan.dimensions,
+    conclusions: args.allConclusions.map((row) => ({
+      id: row.subject_id,
+      kind: row.kind,
+      status: row.status,
+      confidence: row.confidence,
+      method: row.method,
+      ai_used: row.ai_used,
+      ai_reason: row.ai_reason,
+      retrieval_queries: row.retrieval_queries,
+      relevant_files: row.relevant_files,
+      evidence_count: row.evidence_count
+    })),
+    diff: args.diff
+  };
+}
+function failure(context, plan, base) {
+  return {
+    reviewId: null,
+    status: "failed",
+    context,
+    plan,
+    conclusions: [],
+    findings: [],
+    claims: [],
+    assessment: null,
+    alignment: null,
+    architecture: null,
+    implementation: null,
+    engineering: [],
+    testing: null,
+    tasks: [],
+    diagnostics: { error: base.error ?? "unknown" },
+    diff: null,
+    totalCostUsd: 0,
+    totalTokens: 0,
+    error: base.error
+  };
 }
 
 // analysis/index.ts
@@ -4901,7 +9723,7 @@ async function readAnalysis(req, url) {
   if (error) throw new HttpError("Could not load the analysis.", 500);
   return json({
     ...data ?? {},
-    // The browser needs to know whether Phase 6 can run at all.
+    // The browser needs to know whether the analysis can run at all.
     ai_available: aiConfigured()
   });
 }
@@ -4922,15 +9744,29 @@ async function act(req) {
     case "reanalyze":
       await new AnalysisStore().markStale(submissionId);
       return json(await runScan(submissionId, githubUrl, true));
-    case "review": {
-      const onlyModule = body?.only_module ? [String(body.only_module)] : null;
-      return json(await runReviewFor(submission, onlyModule, caller));
+    case "analyze": {
+      const onlyTask = body?.only_task ? [String(body.only_task)] : null;
+      return json(
+        await runAnalysisFor(
+          submission,
+          onlyTask,
+          caller
+        )
+      );
     }
-    case "retry-module": {
-      const module = String(body?.module ?? "");
-      if (!module) throw new HttpError("A module name is required.", 400);
-      return json(await runReviewFor(submission, [module], caller));
+    case "retry-task": {
+      const task = String(body?.task ?? "");
+      if (!task) throw new HttpError("A task name is required.", 400);
+      return json(
+        await runAnalysisFor(
+          submission,
+          [task],
+          caller
+        )
+      );
     }
+    case "diagnostics":
+      return json(await diagnosticsFor(submissionId, caller));
     default:
       throw new HttpError("Unknown action.", 400);
   }
@@ -4946,43 +9782,113 @@ async function runScan(submissionId, githubUrl, reanalyze) {
   if (outcome.status === "failed") {
     throw new HttpError(outcome.error ?? "Repository analysis failed.", 502);
   }
-  return outcome;
+  return {
+    ...outcome,
+    state: outcome.status
+  };
 }
-async function runReviewFor(submission, onlyModules, caller) {
+async function runAnalysisFor(submission, onlyTasks, caller) {
   const store = new AnalysisStore();
   const loaded = await store.loadForReview(submission.id);
   if (!loaded || !["completed", "limited"].includes(loaded.repository.analysis_status)) {
-    throw new HttpError("Analyse the repository before running an AI review.", 409);
+    throw new HttpError("Analyse the repository before running the analysis.", 409);
   }
   if (!aiConfigured()) {
     throw new HttpError(
-      "AI review is not configured on this deployment. Add DEEPSEEK_API_KEY as an edge function secret; repository analysis still works without it.",
+      "The analysis is not configured on this deployment. Add DEEPSEEK_API_KEY as an edge function secret; repository analysis still works without it.",
       503
     );
   }
-  const outcome = await runReview({
+  const hackathon = await loadHackathon(submission.hackathon_id);
+  const requirementMap = await getRequirementMap(submission.hackathon_id, hackathon);
+  const vocabulary = briefVocabulary(requirementMap);
+  const concepts = [
+    ...(requirementMap.requirements ?? []).map(
+      (entry) => analyseRequirement(entry.text, vocabulary, requirementMap)
+    ),
+    {
+      text: String(submission.project_description ?? ""),
+      intent: String(submission.project_description ?? "").slice(0, 300),
+      focus: "general",
+      phrases: [],
+      actions: [],
+      subjects: [],
+      qualifiers: [],
+      terms: [],
+      domainTerms: [],
+      facets: [],
+      artifacts: []
+    }
+  ];
+  const datasetProfiles = (loaded.datasetProfiles ?? []).map(
+    (profile) => rescoreRelevance(profile, concepts)
+  );
+  const outcome = await runAnalysis({
     submission,
-    hackathon: await loadHackathon(submission.hackathon_id),
+    hackathon,
     repository: loaded.repository,
     files: loaded.files,
     chunks: loaded.chunks,
     evidence: loaded.evidence ?? [],
-    projectMap: loaded.projectMap ?? {},
-    members: await loadMembers(submission.id),
+    projectMap: loaded.projectMap,
+    datasetProfiles,
+    semantics: loaded.semantics,
+    routes: loaded.routes,
+    inspection: loaded.inspection,
     actorId: caller.id,
     sessionId: submission.session_id,
-    onlyModules
+    onlyTasks
   });
   return {
     status: outcome.status,
     review_id: outcome.reviewId,
-    modules: outcome.modules.map((module) => ({
-      module: module.module,
-      status: module.status,
-      source: module.source,
-      reason: module.reason ?? ""
+    plan: outcome.plan.summary,
+    requirements_enabled: outcome.plan.requirementsEnabled,
+    dimensions: outcome.plan.dimensions.filter((dimension2) => dimension2.relevance !== "not_applicable").map((dimension2) => ({
+      key: dimension2.key,
+      label: dimension2.label,
+      relevance: dimension2.relevance,
+      reason: dimension2.reason
     })),
+    tasks: outcome.tasks.map((task) => ({
+      key: task.key,
+      kind: task.kind,
+      scope: task.scope,
+      status: task.status,
+      reason: task.reason,
+      input_tokens: task.inputTokens,
+      output_tokens: task.outputTokens,
+      cost_usd: Number(task.costUsd.toFixed(6)),
+      validation_errors: task.validationErrors,
+      rejected_evidence_ids: task.rejectedEvidenceIds,
+      repairs: task.repairs
+    })),
+    conclusions: outcome.conclusions.map((row) => ({
+      id: row.subject_id,
+      kind: row.kind,
+      status: row.status,
+      confidence: row.confidence,
+      evidence_ids: row.evidence_ids,
+      method: row.method
+    })),
+    diagnostics: outcome.diagnostics,
+    diff: outcome.diff,
     error: outcome.error ?? null
+  };
+}
+async function diagnosticsFor(submissionId, caller) {
+  if (caller.role !== "admin") {
+    throw new HttpError("Diagnostics are available to administrators only.", 403);
+  }
+  const { data, error } = await db().from("analysis_snapshots").select(
+    "id, commit_sha, hackathon_version, analysis_version, created_at, plan, conclusions, evidence_count, input_tokens, output_tokens, cached_tokens, estimated_cost_usd"
+  ).eq("submission_id", submissionId).order("created_at", { ascending: false }).limit(5);
+  if (error) throw new HttpError("Could not load diagnostics.", 500);
+  const { data: usage } = await db().from("ai_usage").select("operation, status, input_tokens, output_tokens, cached_tokens, estimated_cost_usd, prompt_version, created_at, error_code").eq("submission_id", submissionId).order("created_at", { ascending: false }).limit(100);
+  return {
+    submission_id: submissionId,
+    runs: data ?? [],
+    ai_usage: usage ?? []
   };
 }
 Deno.serve(

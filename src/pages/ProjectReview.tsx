@@ -1,13 +1,15 @@
 import { StudentLayout } from "@/layouts/StudentLayout";
 import { ErrorState, LoadingState } from "@/components/States";
 import {
+  AssessmentCard,
   CoverageMatrix,
+  DatasetList,
   DefenseTargetList,
+  DimensionList,
   EvidenceList,
   FindingsList,
   NoticeState,
   ProjectMapSummary,
-  RequirementStatusPill,
 } from "@/components/analysis";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,19 +26,24 @@ import { cn } from "@/lib/utils";
 import { AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
-import type { CoverageRow, Evidence, RequirementItem } from "@/types/analysis";
+import type {
+  CoverageRow,
+  Evidence,
+  RequirementEvaluation,
+  RequirementItem,
+} from "@/types/analysis";
 
 /** The two steps of the automatic pipeline, in the order they run. */
 type Stage = "scan" | "review";
 
 const STAGE_COPY: Record<Stage, { title: string; body: string }> = {
   scan: {
-    title: "Analysing your repository",
-    body: "Reading your GitHub repository and matching what it contains against the problem statement and the requirements.",
+    title: "Reading your repository",
+    body: "Listing every file, reading the code and the data files, and describing what the project actually does — the functions, the calculations, the endpoints, the screens and the datasets.",
   },
   review: {
-    title: "Writing your review",
-    body: "Comparing what you built against the problem you were given, and writing what you should be ready to explain.",
+    title: "Comparing it against the challenge",
+    body: "For each requirement, finding the code that would have to exist, reading that code, and recording what it does and what it does not show.",
   },
 };
 
@@ -172,14 +179,29 @@ export default function ProjectReview() {
   const projectMap = data.project_map;
   const brief = data.hackathon as Record<string, string>;
 
-  const coverage: CoverageRow[] = (
-    (data.requirement_map?.requirements ?? []) as RequirementItem[]
-  ).map((requirement) => ({
+  // Rows come from whatever the analysis actually wrote, so a conclusion can
+  // never appear here that the review does not hold.
+  const requirements = (data.requirement_map?.requirements ??
+    []) as RequirementItem[];
+  const evaluations = (data.requirements ?? []) as RequirementEvaluation[];
+  const rowFor = (id: string) =>
+    evaluations.find((row) => row.requirement_id === id) ?? null;
+
+  const coverage: CoverageRow[] = requirements.map((requirement) => ({
     requirement,
-    evaluation:
-      data.requirements.find((row) => row.requirement_id === requirement.id) ??
-      null,
+    evaluation: rowFor(requirement.id),
   }));
+
+  const constraintRows = (review?.constraint_rows ?? []) as RequirementEvaluation[];
+  const outcomeRows = (review?.outcome_rows ?? []) as RequirementEvaluation[];
+  const criterionRows = (review?.criterion_rows ?? []) as RequirementEvaluation[];
+  const datasets = projectMap?.data_sources ?? [];
+  const mismatches = data.findings.filter(
+    (finding) => finding.finding_type === "claim_mismatch",
+  );
+  const observationFindings = data.findings.filter(
+    (finding) => finding.finding_type === "observation",
+  );
 
   const strengths = data.findings.filter((f) => f.finding_type === "strength");
   const improvements = data.findings.filter(
@@ -290,11 +312,18 @@ export default function ProjectReview() {
         </Card>
       </Block>
 
-      {review?.summary && (
-        <Card className="mt-8 p-6">
-          <p className="text-base leading-relaxed">{review.summary.headline}</p>
+      {/* ── The assessment, first: what was built and what it shows ── */}
+      <Block title="What the analysis found">
+        <Card className="p-6">
+          <AssessmentCard
+            assessment={review?.assessment ?? null}
+            evidence={evidence}
+            strengths={review?.assessment?.strengths ?? []}
+            gaps={review?.assessment?.gaps ?? []}
+            uncertainties={review?.assessment?.uncertainties ?? []}
+          />
         </Card>
-      )}
+      </Block>
 
       {/* ── Problem alignment ─────────────────────────────────── */}
       <Block
@@ -333,6 +362,56 @@ export default function ProjectReview() {
         <CoverageMatrix rows={coverage} evidence={evidence} />
       </Block>
 
+      {/* ── Where the description and the repository differ ──── */}
+      {mismatches.length > 0 && (
+        <Block title="Where the description and the repository differ" icon={AlertTriangle}>
+          <p className="mb-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            These are differences between what the submission describes and what
+            the analysed repository currently shows. They are not judgements
+            about the team — an implementation can exist in a form the scan did
+            not reach, or on another branch.
+          </p>
+          <FindingsList findings={mismatches} evidence={evidence} />
+        </Block>
+      )}
+
+      {/* ── Constraints ───────────────────────────────────────── */}
+      {constraintRows.length > 0 && (
+        <Block title="Constraints from the brief">
+          <ConclusionTable
+            rows={constraintRows}
+            subjects={(data.requirement_map?.constraints ?? []) as RequirementItem[]}
+            evidence={evidence}
+          />
+        </Block>
+      )}
+
+      {/* ── Expected outcome ──────────────────────────────────── */}
+      {outcomeRows.length > 0 && (
+        <Block title="Expected outcome">
+          <ConclusionTable
+            rows={outcomeRows}
+            subjects={(data.requirement_map?.expected_outcomes ?? []) as RequirementItem[]}
+            evidence={evidence}
+          />
+        </Block>
+      )}
+
+      {/* ── Evaluation criteria ───────────────────────────────── */}
+      {criterionRows.length > 0 && (
+        <Block title="How this reads against the evaluation criteria">
+          <p className="mb-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            Described, not scored. Nothing here compares teams or produces a
+            grade.
+          </p>
+          <ConclusionTable
+            rows={criterionRows}
+            subjects={(data.requirement_map?.evaluation_criteria ?? []) as RequirementItem[]}
+            evidence={evidence}
+          />
+        </Block>
+      )}
+
       {/* ── Strengths ─────────────────────────────────────────── */}
       <Block title="Strengths" icon={CheckCircle2}>
         <FindingsList
@@ -350,6 +429,22 @@ export default function ProjectReview() {
           emptyMessage="No issues were evidenced in your repository."
         />
       </Block>
+
+      {/* ── Datasets ──────────────────────────────────────────── */}
+      <Block title="Your data">
+        <p className="mb-4 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+          The data files in the repository, described rather than uploaded. Only
+          their structure was read.
+        </p>
+        <DatasetList datasets={datasets} />
+      </Block>
+
+      {/* ── What was looked at, and what was not ──────────────── */}
+      {(review?.dimensions ?? []).length > 0 && (
+        <Block title="What was examined">
+          <DimensionList dimensions={review?.dimensions ?? []} />
+        </Block>
+      )}
 
       {/* ── Technical architecture ────────────────────────────── */}
       <Block title="Technical architecture">
@@ -391,11 +486,6 @@ export default function ProjectReview() {
           }
         />
       </div>
-
-      {/* ── Contribution evidence ─────────────────────────────── */}
-      <Block title="Your contribution">
-        <ContributionSection analysis={data} evidence={evidence} />
-      </Block>
 
       {/* ── Defence preparation ───────────────────────────────── */}
       <Block title="What to be ready to defend">
@@ -467,6 +557,73 @@ function Block({
   );
 }
 
+/**
+ * Constraints, outcomes and criteria have the same shape as requirements, so
+ * they get the same treatment. The status vocabulary is per-kind, which is why
+ * the badge comes from the row rather than being hard-coded here.
+ */
+function ConclusionTable({
+  rows,
+  subjects,
+  evidence,
+}: {
+  rows: RequirementEvaluation[];
+  subjects: RequirementItem[];
+  evidence: Evidence[];
+}) {
+  const textFor = (id: string) =>
+    subjects.find((subject) => subject.id === id)?.text ?? null;
+
+  return (
+    <ul className="flex flex-col gap-3">
+      {rows.map((row) => (
+        <li key={row.requirement_id} className="rounded-md border border-border p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="label-mono text-[10px] text-brand">
+              {row.requirement_id}
+            </span>
+            <Badge variant="outline" className="label-mono text-[10px]">
+              {row.status.replace(/_/g, " ")}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              confidence {row.confidence}
+            </span>
+            {row.ai_used === false && (
+              <span className="label-mono text-[10px] text-muted-foreground">
+                measured
+              </span>
+            )}
+          </div>
+          {textFor(row.requirement_id) && (
+            <p className="mt-1.5 text-sm leading-relaxed">
+              {textFor(row.requirement_id)}
+            </p>
+          )}
+          {row.explanation && (
+            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
+              {row.explanation}
+            </p>
+          )}
+          {(row.missing_or_unclear ?? []).length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1">
+              {(row.missing_or_unclear ?? []).map((item) => (
+                <li key={item} className="text-xs leading-relaxed text-stage-submit">
+                  Not established: {item}
+                </li>
+              ))}
+            </ul>
+          )}
+          <EvidenceList
+            ids={row.evidence_ids ?? []}
+            evidence={evidence}
+            className="mt-2.5"
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function SmallBlock({
   title,
   value,
@@ -488,90 +645,5 @@ function SmallBlock({
         {value}
       </p>
     </Card>
-  );
-}
-
-function ContributionSection({
-  analysis,
-  evidence,
-}: {
-  analysis: Awaited<ReturnType<typeof getSubmissionAnalysis>>;
-  evidence: Evidence[];
-}) {
-  const contributions = (analysis.review?.contributions ?? {}) as Record<
-    string,
-    {
-      status: string;
-      confidence: string;
-      evidence_ids: string[];
-      matched_files: string[];
-      explanation: string;
-    }
-  >;
-
-  const members = analysis.contributions as {
-    id: string;
-    user_id: string;
-    full_name?: string | null;
-    email?: string | null;
-    contribution_description: string;
-    contribution_areas: string[];
-  }[];
-
-  if (members.length === 0) {
-    return (
-      <NoticeState
-        title="No contributions recorded"
-        message="Nobody on the team added a contribution description."
-      />
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {members.map((member) => {
-        const check = contributions[member.user_id];
-        return (
-          <Card key={member.id} className="p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-sm font-semibold">
-                {member.full_name || member.email || "Team member"}
-              </p>
-              {check ? (
-                <Badge variant="outline" className="label-mono text-[10px]">
-                  {check.status.replace(/_/g, " ")}
-                </Badge>
-              ) : (
-                <RequirementStatusPill status="unable_to_determine" />
-              )}
-            </div>
-            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
-              {member.contribution_description || "No description provided."}
-            </p>
-            {member.contribution_areas?.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {member.contribution_areas.map((area) => (
-                  <Badge key={area} variant="outline" className="text-[10px]">
-                    {area}
-                  </Badge>
-                ))}
-              </div>
-            )}
-            {check?.explanation && (
-              <p className="mt-2.5 text-sm leading-relaxed">
-                {check.explanation}
-              </p>
-            )}
-            {check && (
-              <EvidenceList
-                ids={check.evidence_ids}
-                evidence={evidence}
-                className="mt-3"
-              />
-            )}
-          </Card>
-        );
-      })}
-    </div>
   );
 }

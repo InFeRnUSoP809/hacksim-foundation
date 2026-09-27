@@ -22,7 +22,20 @@ export type EvidenceType =
   | "test_framework"
   | "testing"
   | "config"
-  | "readme";
+  | "readme"
+  // Behaviour, not technology. These are what a requirement is judged on.
+  | "file"
+  | "function"
+  | "class"
+  | "calculation"
+  | "rule"
+  | "model"
+  | "data_access"
+  | "ui"
+  | "dataset"
+  | "dataset_profile"
+  | "integration"
+  | "test";
 
 export interface Evidence {
   id: string;
@@ -88,6 +101,14 @@ export interface ProjectMap {
   apis: ApiRoute[];
   external_integrations: ExternalIntegration[];
   features: string[];
+  /** §36 — every dataset the scan profiled, with its structure. */
+  data_sources: DatasetProfile[];
+  /** §20 — what the code computes, independent of which library it imported. */
+  business_logic: Record<string, unknown>[];
+  calculations: Record<string, unknown>[];
+  models: Record<string, unknown>[];
+  data_access: Record<string, unknown>[];
+  ui_flows: Record<string, unknown>[];
   testing: {
     test_file_count: number;
     frameworks: string[];
@@ -123,6 +144,33 @@ export interface ProjectMap {
   }[];
   warnings: string[];
   truncated: Record<string, number>;
+}
+
+/**
+ * A dataset, described rather than quoted. The rows behind this never reach a
+ * model; only the structure and a couple of samples do.
+ */
+export interface DatasetProfile {
+  path: string;
+  format: "csv" | "tsv" | "json" | "jsonl" | "text";
+  size_bytes: number;
+  approx_row_count: number;
+  row_count_exact: boolean;
+  column_names: string[];
+  date_columns: string[];
+  entity_columns: string[];
+  quantity_columns: string[];
+  stock_columns: string[];
+  price_columns: string[];
+  supplier_columns: string[];
+  identifier_columns: string[];
+  numeric_columns: string[];
+  categorical_columns: string[];
+  sample_rows?: string[][];
+  likely_purpose: string;
+  relevance: "high" | "medium" | "low" | "none";
+  relevance_terms?: string[];
+  notes?: string[];
 }
 
 export interface ApiRoute {
@@ -217,14 +265,89 @@ export interface RequirementMap {
   evaluation_criteria: RequirementItem[];
 }
 
+/** How a conclusion was reached. Shown so a reader can trust the method. */
+export type ConclusionMethod =
+  | "deterministic_count"
+  | "deterministic_literal"
+  | "ai_evidence"
+  | "ai_insufficient_inspection"
+  | "not_evaluated";
+
+export type ConclusionKind =
+  | "requirement"
+  | "constraint"
+  | "outcome"
+  | "criterion"
+  | "claim";
+
 export interface RequirementEvaluation {
   id: string;
   requirement_id: string;
+  kind?: ConclusionKind;
   status: RequirementStatus;
   evidence_ids: string[];
   confidence: Confidence;
   explanation: string | null;
   source: "deterministic" | "ai" | "skipped";
+  /** The specific part that is not established, named rather than implied. */
+  missing_or_unclear?: string[];
+  method?: ConclusionMethod;
+  /** The queries the retrieval plan generated from this requirement's wording. */
+  retrieval_queries?: string[];
+  relevant_files?: string[];
+  evidence_count?: number;
+  ai_used?: boolean;
+  ai_reason?: string;
+}
+
+/** One planned analysis dimension and why it was or was not relevant. */
+export interface AnalysisDimension {
+  key: string;
+  label: string;
+  relevance: "required" | "relevant" | "not_applicable";
+  reason: string;
+  method: "deterministic" | "ai" | "skipped";
+  expectation_source: string;
+}
+
+/**
+ * §50 — a structured factual assessment, never a score. Every field is a
+ * sentence about the evidence; `gaps` and `uncertainties` are first-class
+ * output, not failure.
+ */
+export interface ProjectAssessment {
+  headline: string;
+  understanding: string;
+  problem_relevance: string;
+  solution_coherence: string;
+  implementation_evidence: string;
+  functional_completeness: string;
+  technical_quality: string;
+  claim_accuracy: string;
+  hackathon_alignment: string;
+  evidence_ids?: string[];
+  strengths?: string[];
+  gaps?: string[];
+  uncertainties?: string[];
+  engineering_concerns?: string[];
+}
+
+export interface EngineeringObservation {
+  topic: string;
+  status: "observed" | "not_applicable" | "concern";
+  summary: string;
+  evidence_ids: string[];
+  concern: string;
+  improvement: string;
+}
+
+export interface ClaimCheck {
+  claim: string;
+  status: "supported" | "partially_supported" | "not_evidenced";
+  confidence?: Confidence;
+  evidence_ids: string[];
+  files?: string[];
+  explanation: string;
 }
 
 /** The §34 coverage matrix: one row per requirement. */
@@ -329,8 +452,26 @@ export interface ProjectReview {
   testing: Record<string, unknown> | null;
   scalability: Record<string, unknown> | null;
   technical_decisions: unknown;
-  contributions: Record<string, ContributionCheck> | null;
   updated_at: string;
+  // ── The rebuilt pipeline ────────────────────────────────────────────
+  analysis_version?: string | null;
+  hackathon_version?: string | null;
+  scanner_version?: string | null;
+  commit_sha?: string | null;
+  dimensions?: AnalysisDimension[] | null;
+  requirement_rows?: RequirementEvaluation[] | null;
+  constraint_rows?: RequirementEvaluation[] | null;
+  outcome_rows?: RequirementEvaluation[] | null;
+  criterion_rows?: RequirementEvaluation[] | null;
+  assessment?: ProjectAssessment | null;
+  engineering?: EngineeringObservation[] | null;
+  diff?: {
+    previous_commit?: string | null;
+    commit?: string | null;
+    changed: { id: string; from: string; to: string }[];
+    added: string[];
+    removed: string[];
+  } | null;
 }
 
 // ── Defence targets (§50) ──────────────────────────────────────────────────
@@ -363,7 +504,6 @@ export interface SubmissionAnalysis {
   review: ProjectReview | null;
   findings: AiFinding[];
   defense_targets: DefenseTarget[];
-  contributions: Record<string, unknown>[];
   /** Admin only — a student never receives this key. */
   ai_usage: {
     requests: number;

@@ -1,23 +1,38 @@
 /**
- * Phase 6 review orchestrator.
+ * The analysis orchestrator.
  *
- * Runs the modules, decides per module whether the model is needed at all, and
- * writes every result to the database. The shape of a run:
+ * This is the pipeline the product spec describes, in the order it describes it:
  *
- *   requirements  → deterministic pass → AI only where ambiguous
- *   alignment     → deterministic pass → AI only where thin
- *   architecture  → always AI (interpretation, not counting)
- *   quality       → security/test facts pre-computed; AI only for the rest
- *   contributions → only for members whose claim is specific enough to check
+ *   hackathon context → requirement concepts → retrieval plan → deterministic
+ *   gate → (DeepSeek, only if the gate cannot conclude) → validated JSON →
+ *   conflict detection → conclusions → review → defence targets → knowledge
  *
- * Every module is independently recoverable (§89): a failure is recorded, the
- * successful modules are not re-run, and the review is saved as `partial`.
+ * Design decisions worth stating plainly:
+ *
+ * • **Planning is explicit.** `planner.ts` decides which dimensions matter and
+ *   which calls are worth making, from this hackathon and this repository. The
+ *   reasons are stored with the result.
+ *
+ * • **A missing technology cannot fail a requirement.** There is no code path
+ *   from a dependency list to a status. The only deterministic verdicts are
+ *   counts and named literals, and everything else is the model's reading of
+ *   retrieved code.
+ *
+ * • **Coverage limits are never a project verdict.** If the scan was limited,
+ *   "not found" becomes `unable_to_determine` and the reason is recorded.
+ *
+ * • **Uncertainty is output, not an error.** `uncertainty`, `gaps` and
+ *   `unable_to_determine` are normal, expected results, and the UI shows them
+ *   as findings rather than hiding them.
+ *
+ * Individual contribution analysis is gone. There is no code path to it, no
+ * prompt for it, and no column written for it.
  */
 
 import { db } from "./http.ts";
 import {
-  aiConfigured,
   AIError,
+  aiConfigured,
   calculateCost,
   checkBudget,
   completeJson,
@@ -30,207 +45,165 @@ import {
   type ModelPricing,
 } from "./ai.ts";
 import * as M from "./modules.ts";
-import type { Evidence, ProjectMap } from "./github.ts";
-import { buildPacket } from "./retrieval.ts";
-import { getRequirementMap, type RequirementEntry, type RequirementMap } from "./requirements.ts";
+import * as C from "./concepts.ts";
+import * as E from "./evidence.ts";
+import * as V from "./validate.ts";
+import * as P from "./planner.ts";
+import * as RET from "./retrieval.ts";
+import * as DET from "./deterministic.ts";
+import { buildHackathonContext, type HackathonContext } from "./context.ts";
+import { getRequirementMap, type RequirementMap } from "./requirements.ts";
+import type { DatasetProfile } from "./datasets.ts";
+import type { SemanticsResult } from "./semantics.ts";
+import type { Evidence } from "./github.ts";
 
-const MAX_MEMBER_MODULES = 6;
+// ── Input / output ─────────────────────────────────────────────────────────
 
-export interface ContributionMember {
-  id: string;
-  user_id: string | null;
-  full_name: string | null;
-  email: string | null;
-  contribution_description: string | null;
-  contribution_areas: string[] | null;
-  planned_responsibilities: string | null;
-  ai_tools_used: string | null;
-  ai_usage_description: string | null;
-}
-
-export interface ReviewOutcome {
-  reviewId: string | null;
-  status: string;
-  modules: M.ModuleResult[];
-  totalCostUsd: number;
-  totalTokens: number;
-  error?: string;
-}
-
-export interface ReviewInput {
+export interface AnalysisInput {
   submission: Record<string, unknown>;
   hackathon: Record<string, unknown>;
   repository: Record<string, unknown>;
   files: Record<string, unknown>[];
   chunks: Record<string, unknown>[];
   evidence: Evidence[];
-  projectMap: ProjectMap;
-  members: ContributionMember[];
+  projectMap: Record<string, unknown>;
+  datasetProfiles?: DatasetProfile[];
+  semantics?: SemanticsResult[];
+  routes?: RET.IndexRoute[];
+  inspection?: {
+    mode: "full" | "limited";
+    warnings: string[];
+    filesSeen: number;
+    filesRead: number;
+  };
   actorId?: string | null;
   sessionId?: string | null;
-  onlyModules?: string[] | null;
+  onlyTasks?: string[] | null;
+  /**
+   * An alternative model client. Used by the offline regression harness so the
+   * pipeline can be exercised end to end — retrieval, validation, citation
+   * filtering, repair, persistence — without a provider key. Never populated
+   * from a request body.
+   */
+  provider?: ((args: {
+    task: string;
+    promptVersion: string;
+    maxOutputTokens: number;
+  }) => Promise<AIResponse>) | null;
 }
 
-function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
-  return allowed.includes(value as T) ? (value as T) : fallback;
+export interface TaskOutcome {
+  key: string;
+  kind: string;
+  scope: string;
+  status: "executed" | "cached" | "avoided" | "failed" | "skipped";
+  reason: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+  validationErrors: string[];
+  rejectedEvidenceIds: string[];
+  repairs: number;
+  evidenceIds: string[];
 }
 
-function section(payload: unknown, evidenceIds: Set<string>): Record<string, unknown> {
-  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
-    return { summary: "No result returned.", source: "skipped" };
-  }
-  const record = payload as Record<string, unknown>;
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (key !== "evidence_ids") result[key] = value;
-  }
-  const cited = ((record.evidence_ids as string[]) ?? []).filter((id) => evidenceIds.has(id));
-  // Always present, even when empty. Omitting the key stored JSON with no
-  // evidence_ids at all, and every reader that maps over it then crashed on
-  // undefined — an empty citation list is a normal answer, not a missing field.
-  result.evidence_ids = cited.slice(0, 12);
-  return result;
+export interface ConclusionRow {
+  subject_id: string;
+  kind: V.SubjectKind;
+  status: string;
+  confidence: string;
+  evidence_ids: string[];
+  explanation: string;
+  missing_or_unclear: string[];
+  method: string;
+  files: string[];
+  retrieval_queries: string[];
+  relevant_files: string[];
+  evidence_count: number;
+  ai_used: boolean;
+  ai_reason: string;
 }
 
-/**
- * Keep only rows for real constraint ids, with real evidence ids.
- *
- * The constraint table used to be structurally unanswerable: `rowsFromModule`
- * has always read `module.data.constraints`, but no prompt ever asked for them,
- * so every CON row rendered as "not checked" no matter what the model said.
- */
-function validateConstraintRows(
-  raw: unknown,
-  requirementMap: RequirementMap,
-  evidenceIds: Set<string>,
-): Record<string, unknown>[] {
-  if (!Array.isArray(raw)) return [];
-
-  const known = new Set(
-    (requirementMap.constraints ?? []).map((c: { id: string }) => c.id),
-  );
-  const rows: Record<string, unknown>[] = [];
-
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    const id = String(record.constraint_id ?? "");
-    // §49 — never invent a constraint the brief does not contain.
-    if (!known.has(id)) continue;
-
-    rows.push({
-      constraint_id: id,
-      status: oneOf(record.status, M.CONSTRAINT_STATUSES, "unable_to_determine"),
-      confidence: oneOf(record.confidence, M.CONFIDENCES, "low"),
-      evidence_ids: ((record.evidence_ids as string[]) ?? [])
-        .filter((eid) => evidenceIds.has(eid))
-        .slice(0, 12),
-      explanation: String(record.explanation ?? "").slice(0, 1500),
-    });
-  }
-  return rows;
+export interface AnalysisOutcome {
+  reviewId: string | null;
+  status: string;
+  context: HackathonContext;
+  plan: P.AnalysisPlan;
+  conclusions: ConclusionRow[];
+  findings: E.ValidatedFinding[];
+  claims: V.ValidatedClaim[];
+  assessment: V.ValidatedAssessment | null;
+  alignment: V.ValidatedAlignment | null;
+  architecture: Record<string, unknown> | null;
+  implementation: Record<string, unknown> | null;
+  engineering: Record<string, unknown>[];
+  testing: DET.DeterministicVerdict | E.TestingFacts | null;
+  tasks: TaskOutcome[];
+  diagnostics: Record<string, unknown>;
+  diff: Record<string, unknown> | null;
+  totalCostUsd: number;
+  totalTokens: number;
+  error?: string;
 }
 
-/** Keep only rows for real requirement ids, with real evidence ids. */
-function validateRequirementRows(
-  raw: unknown,
-  requirements: RequirementEntry[],
-  evidenceIds: Set<string>,
-): Record<string, unknown>[] {
-  if (!Array.isArray(raw)) return [];
-
-  const known = new Set(requirements.map((r) => r.id));
-  const rows: Record<string, unknown>[] = [];
-
-  for (const entry of raw) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    const id = String(record.requirement_id ?? "");
-    // §49 — never invent a requirement that the brief does not contain.
-    if (!known.has(id)) continue;
-
-    rows.push({
-      requirement_id: id,
-      status: oneOf(record.status, M.REQUIREMENT_STATUSES, "unable_to_determine"),
-      confidence: oneOf(record.confidence, M.CONFIDENCES, "low"),
-      evidence_ids: ((record.evidence_ids as string[]) ?? [])
-        .filter((e) => evidenceIds.has(e))
-        .slice(0, 12),
-      explanation: String(record.explanation ?? "").slice(0, 1500),
-    });
-  }
-  return rows;
-}
-
-function claimsFrom(submission: Record<string, unknown>): string[] {
-  const claims: string[] = [];
-  for (const line of String(submission.key_features ?? "").split("\n")) {
-    const cleaned = line.trim().replace(/^[-*•\s]+/, "").trim();
-    if (cleaned.length > 8) claims.push(cleaned.slice(0, 200));
-  }
-  const description = String(submission.project_description ?? "").trim();
-  if (description) claims.unshift(description.slice(0, 300));
-  return claims.slice(0, 10);
-}
-
-function deterministicClaims(claims: string[]): Record<string, unknown> {
-  return {
-    claims: claims.map((claim) => ({
-      claim,
-      status: "not_evidenced",
-      evidence_ids: [],
-      explanation: "AI review unavailable; no deterministic evidence matched.",
-    })),
-  };
-}
-
-function overallStatus(modules: M.ModuleResult[]): string {
-  if (modules.length === 0) return "pending";
-  if (modules.every((m) => m.status === "failed")) return "failed";
-  if (modules.some((m) => ["completed", "cached"].includes(m.status))) {
-    return modules.some((m) => m.status === "failed") ? "partial" : "completed";
-  }
-  return modules.some((m) => m.status === "skipped") ? "partial" : "pending";
-}
-
-// ── The single call site: budget, cache, usage, errors ────────────────────
-
-/** Running spend for one review. The cache path adds nothing, by design. */
-export interface Spend {
+interface Spend {
   costUsd: number;
   tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  calls: number;
+  cacheHits: number;
+  failures: number;
+  validationFailures: number;
+  repairs: number;
 }
+
+// ── The single guarded call site ───────────────────────────────────────────
 
 interface CallInput {
   operation: string;
   task: string;
   promptVersion: string;
-  contextParts: unknown[];
   scopeKey: string;
+  /** Subjects this call is responsible for. Part of the cache identity. */
+  subjectIds: string[];
+  contextParts: unknown[];
   repositoryId: string | null;
+  commitSha: string | null;
   submissionId: string | null;
   pricing: ModelPricing;
   actorId: string | null;
   sessionId: string | null;
   estimateTokens: number;
   spend: Spend;
+  /** Injected only by the offline harness; see AnalysisInput.provider. */
+  provider?: AnalysisInput["provider"];
 }
 
 /**
- * One guarded AI call. Returns `null` when it was not allowed or failed.
- * Every rejection is still written to the ledger so the numbers explain
- * themselves (§91).
+ * One guarded DeepSeek call.
+ *
+ * Order: hash → configured? → cache → budget → request → ledger. A rejection
+ * never reaches the provider and is still recorded, so the numbers explain
+ * themselves whether or not the money was spent.
  */
 async function call(input: CallInput): Promise<AIResponse | null> {
   const { pricing } = input;
-  const ctxHash = await contextHash(input.contextParts, input.promptVersion, pricing.modelName);
+  const ctxHash = await contextHash(
+    [input.subjectIds, input.contextParts],
+    input.promptVersion,
+    pricing.modelName,
+  );
 
   if (!aiConfigured()) {
-    console.info("[hacksim.review] AI not configured; skipping", input.operation);
+    console.info("[hacksim.analysis] AI not configured; skipping", input.operation);
     return null;
   }
 
-  // §58 — reuse before spending.
+  // §22 — the cache identity is commit + subjects + prompt version + context +
+  // model. Same commit and same question means the same answer.
   const cached = await findCachedAnalysis({
     repositoryId: input.repositoryId,
     analysisType: input.scopeKey,
@@ -239,7 +212,8 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     ctxHash,
   });
   if (cached?.result) {
-    console.info("[hacksim.review] cache hit for", input.scopeKey);
+    input.spend.cacheHits += 1;
+    console.info("[hacksim.analysis] cache hit for", input.scopeKey, input.subjectIds);
     return {
       content: JSON.stringify(cached.result),
       parsed: cached.result as Record<string, unknown>,
@@ -255,17 +229,16 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     };
   }
 
-  // §52 — the gate.
   const decision = await checkBudget({
     pricing,
     submissionId: input.submissionId,
     estimatedInputTokens: input.estimateTokens,
     estimatedOutputTokens: pricing.maxOutputTokens,
-    cacheRatio: ["alignment", "quality"].includes(input.scopeKey) ? 0.5 : 0,
+    cacheRatio: input.scopeKey === "properness" ? 0.5 : 0,
   });
 
   if (!decision.allowed) {
-    console.info("[hacksim.review] blocked", input.operation, decision.reason);
+    console.info("[hacksim.analysis] blocked", input.operation, decision.reason);
     await recordUsage({
       operation: input.operation,
       provider: pricing.provider,
@@ -288,26 +261,34 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     return null;
   }
 
-  // §59 — the stable half of the prompt, built once and reused verbatim.
+  // The stable half: identical across every call in a run, so the provider
+  // caches it once and every later task reads it from cache.
   const contextStable = JSON.stringify({
     context_hash: ctxHash,
-    modules: input.contextParts,
+    hackathon: input.contextParts[0],
+    project_map: input.contextParts[1],
   }).slice(0, 12000);
 
   let response: AIResponse;
   try {
-    response = await completeJson({
-      systemStable: M.SYSTEM_STABLE,
-      contextStable,
-      task: input.task,
-      promptVersion: input.promptVersion,
-      maxOutputTokens: Math.min(pricing.maxOutputTokens, 2500),
-    });
+    response = input.provider
+      ? await input.provider({
+        task: input.task,
+        promptVersion: input.promptVersion,
+        maxOutputTokens: Math.min(pricing.maxOutputTokens, 3000),
+      })
+      : await completeJson({
+        systemStable: M.SYSTEM_STABLE,
+        contextStable,
+        task: input.task,
+        promptVersion: input.promptVersion,
+        maxOutputTokens: Math.min(pricing.maxOutputTokens, 3000),
+      });
   } catch (error) {
     const code = error instanceof AIError ? error.code : "unknown";
     const message = (error as Error).message;
-    console.warn("[hacksim.review]", input.operation, "failed:", message);
-
+    console.warn("[hacksim.analysis]", input.operation, "failed:", message);
+    input.spend.failures += 1;
     await recordUsage({
       operation: input.operation,
       provider: pricing.provider,
@@ -351,20 +332,20 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     return null;
   }
 
-  // §57 — cost from the provider's own reported usage.
   const cost = calculateCost(pricing, {
     cachedTokens: response.cachedTokens,
     cacheMissTokens: response.cacheMissTokens,
     outputTokens: response.outputTokens,
   });
   const valid = response.parsed !== null;
-  const status = valid ? "success" : "failed";
-  const errorCode = valid ? null : "invalid_json";
-  const errorMessage = valid ? null : "Provider did not return valid JSON.";
 
-  // A malformed reply still cost tokens, so it counts against the review total.
+  input.spend.calls += 1;
   input.spend.costUsd += cost;
   input.spend.tokens += response.inputTokens + response.outputTokens;
+  input.spend.inputTokens += response.inputTokens;
+  input.spend.outputTokens += response.outputTokens;
+  input.spend.cachedTokens += response.cachedTokens;
+  if (!valid) input.spend.failures += 1;
 
   await recordUsage({
     operation: input.operation,
@@ -377,14 +358,14 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     cacheMissTokens: response.cacheMissTokens,
     costUsd: cost,
     requestId: response.requestId,
-    status,
+    status: valid ? "success" : "failed",
     durationMs: response.durationMs,
     userId: input.actorId,
     submissionId: input.submissionId,
     repositoryId: input.repositoryId,
     sessionId: input.sessionId,
-    errorCode,
-    errorMessage,
+    errorCode: valid ? null : "invalid_json",
+    errorMessage: valid ? null : "Provider did not return valid JSON.",
   });
 
   await saveAnalysis({
@@ -393,7 +374,7 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     model: response.model,
     promptVersion: input.promptVersion,
     ctxHash,
-    status,
+    status: valid ? "success" : "failed",
     resultPayload: response.parsed,
     inputTokens: response.inputTokens,
     outputTokens: response.outputTokens,
@@ -404,8 +385,8 @@ async function call(input: CallInput): Promise<AIResponse | null> {
     repositoryId: input.repositoryId,
     submissionId: input.submissionId,
     scopeKey: input.scopeKey,
-    errorCode,
-    errorMessage,
+    errorCode: valid ? null : "invalid_json",
+    errorMessage: valid ? null : "Provider did not return valid JSON.",
     completedAt: valid ? new Date().toISOString() : null,
   });
 
@@ -414,521 +395,1358 @@ async function call(input: CallInput): Promise<AIResponse | null> {
 
 // ── Orchestrator ───────────────────────────────────────────────────────────
 
-export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
-  const repositoryId =
-    (input.repository.repository_id as string) ?? (input.repository.id as string);
-  const repositoryIdValue = repositoryId ?? null;
+export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome> {
   const submissionId = (input.submission.id as string) ?? null;
-  const evidenceIds = new Set(
-    input.evidence.map((item) => item.id).filter((id): id is string => Boolean(id)),
+  const repositoryId =
+    ((input.repository.repository_id as string) ?? (input.repository.id as string)) ?? null;
+  const commitSha = (input.repository.analyzed_commit_sha as string) ?? null;
+
+  const hackathonId = String(input.hackathon.id ?? "");
+  const requirementMap: RequirementMap = await getRequirementMap(hackathonId, input.hackathon);
+  const context = await buildHackathonContext(
+    input.hackathon,
+    requirementMap,
+    input.submission,
   );
 
-  const outcome: ReviewOutcome = {
-    reviewId: null,
-    status: "pending",
-    modules: [],
-    totalCostUsd: 0,
-    totalTokens: 0,
-  };
+  const evidenceSet = E.buildEvidenceSet(
+    V.asRawEvidence((input.evidence ?? []) as never),
+  );
+  const datasetProfiles = input.datasetProfiles ?? [];
+  const semantics = input.semantics ?? [];
+  const projectMap = input.projectMap ?? {};
 
-  const review = await loadReview(submissionId, repositoryIdValue);
-  const requirementMap = await getRequirementMap(
-    String(input.hackathon.id),
-    input.hackathon,
+  const index = RET.buildRepoIndex({
+    files: input.files as unknown as RET.IndexFile[],
+    chunks: input.chunks as unknown as RET.IndexChunk[],
+    evidence: evidenceSet.byId ? [...evidenceSet.byId.values()] : [],
+    routes: input.routes ?? [],
+    datasetProfiles,
+    semantics: semantics as unknown as RET.IndexSemantics[],
+  });
+
+  // ── Concepts and grouping ───────────────────────────────────────────────
+  const vocabulary = C.briefVocabulary(requirementMap);
+  const requirementConcepts = new Map<string, C.ConceptSet>();
+  for (const entry of requirementMap.requirements ?? []) {
+    requirementConcepts.set(
+      entry.id,
+      C.analyseRequirement(entry.text, vocabulary, requirementMap),
+    );
+  }
+  const groups = C.groupRequirements(requirementMap);
+  const constraintConcepts = C.analyseBriefItems(requirementMap.constraints ?? [], requirementMap);
+  const outcomeConcepts = C.analyseBriefItems(requirementMap.expected_outcomes ?? [], requirementMap);
+  const criteriaConcepts = C.analyseBriefItems(requirementMap.evaluation_criteria ?? [], requirementMap);
+
+  // ── Counts the deterministic layer is allowed to use ────────────────────
+  const facts = countFacts(input, projectMap, index);
+
+  // ── Inspection coverage ────────────────────────────────────────────────
+  const inspection = input.inspection ?? {
+    mode: (projectMap.analysis_mode as "full" | "limited") ?? "full",
+    warnings: ((projectMap.warnings as string[]) ?? []).slice(0, 5),
+    filesSeen: facts.fileCount,
+    filesRead: facts.fileCount,
+  };
+  const coverage = DET.inspectionCovers(inspection);
+  const inspectionNote = coverage.covered
+    ? ""
+    : coverage.note + " Prefer 'unable_to_determine' over a negative status for anything not found.";
+
+  // ── Plan ───────────────────────────────────────────────────────────────
+  const plan = P.planAnalysis(
+    context,
+    facts,
+    groups.map((group) => ({
+      focus: group.focus,
+      label: group.label,
+      ids: group.entries.map((entry) => entry.id),
+      questions: P.questionsForGroup(group.concepts),
+    })),
+    (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+    (requirementMap.constraints ?? []).map((entry) => entry.id),
+    (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+    alignmentQuestions(context),
   );
 
   const pricing = await loadPricing();
+  const spend: Spend = {
+    costUsd: 0,
+    tokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    calls: 0,
+    cacheHits: 0,
+    failures: 0,
+    validationFailures: 0,
+    repairs: 0,
+  };
+
+  const conclusions: ConclusionRow[] = [];
+  const findings: E.ValidatedFinding[] = [];
+  const tasks: TaskOutcome[] = [];
+  let claims: V.ValidatedClaim[] = [];
+  let alignment: V.ValidatedAlignment | null = null;
+  let architecture: Record<string, unknown> | null = null;
+  let implementation: Record<string, unknown> | null = null;
+  let engineering: Record<string, unknown>[] = [];
+  let assessment: V.ValidatedAssessment | null = null;
+
+  const wants = (key: string) => !input.onlyTasks?.length || input.onlyTasks.includes(key);
+
   if (!pricing) {
-    outcome.status = "failed";
-    outcome.error = "No AI model is configured.";
-    await upsertReview(submissionId, repositoryIdValue, {}, outcome, null);
-    return outcome;
+    return failure(context, plan, {
+      reviewId: null,
+      status: "failed",
+      conclusions: [],
+      findings: [],
+      tasks: [],
+      diagnostics: {},
+      totalCostUsd: 0,
+      totalTokens: 0,
+      error: "No AI model is configured.",
+    } as unknown as AnalysisOutcome);
   }
 
-  const results: Record<string, unknown> = { ...((review?.data as Record<string, unknown>) ?? {}) };
-  const spend: Spend = { costUsd: 0, tokens: 0 };
-  const wants = (module: string) => !input.onlyModules || input.onlyModules.includes(module);
+  // ── Deterministic conclusions, before any model is consulted ───────────
+  const deterministicRows = new Map<string, ConclusionRow>();
+  for (const entry of requirementMap.requirements ?? []) {
+    if (!wants("requirements")) break;
+    const concept = requirementConcepts.get(entry.id);
+    if (!concept) continue;
+    const planForRequirement = RET.buildRetrievalPlan(entry.id, concept);
+    const retrieval = RET.retrieve({ plan: planForRequirement, index });
 
-  // ── Module A: alignment, requirements, claims ─────────────────────────
-  if (wants(M.MODULE_A)) {
-    try {
-      const result = await moduleAlignment({
-        input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
-      });
-      outcome.modules.push(result);
-      Object.assign(results, result.data);
-    } catch (error) {
-      console.error("[hacksim.review] module A failed", error);
-      outcome.modules.push({
-        ...M.moduleResult(M.MODULE_A, "failed", "ai", {}),
-        errorMessage: (error as Error).message,
+    const counted = DET.deterministicCount(entry.text, facts.countables);
+    const literal = DET.deterministicLiteral(entry.text, index, evidenceSet);
+    const verdict = counted.status ? counted : literal;
+
+    if (verdict.status) {
+      deterministicRows.set(entry.id, {
+        subject_id: entry.id,
+        kind: "requirement",
+        status: verdict.status,
+        confidence: verdict.status === "evidence_found" ? "high" : "medium",
+        evidence_ids: verdict.evidenceIds,
+        explanation: verdict.explanation,
+        missing_or_unclear: [],
+        method: verdict.method ?? "deterministic_count",
+        files: retrieval.files.map((hit) => hit.path).slice(0, 6),
+        retrieval_queries: planForRequirement.questions.slice(0, 2),
+        relevant_files: retrieval.files.map((hit) => hit.path).slice(0, 6),
+        evidence_count: verdict.evidenceIds.length,
+        ai_used: false,
+        ai_reason:
+          "A count or a named artefact settled this; the deterministic pass is " +
+          "authoritative and no model call was made.",
       });
     }
   }
 
-  // ── Module B: architecture ───────────────────────────────────────────
-  if (wants(M.MODULE_B)) {
-    try {
-      const result = await moduleGeneric({
-        module: M.MODULE_B,
-        promptVersion: M.PROMPT_VERSIONS.architecture,
-        taskBuilder: (snippets) =>
-          M.buildArchitectureTask({
-            requirementMap, submission: input.submission,
-            projectMap: input.projectMap, evidence: input.evidence, snippets,
-          }),
-        question: "How is this project architected, and what technical decisions does it make?",
-        input, evidenceIds, submissionId, repositoryIdValue, pricing, spend, scope: "architecture",
-      });
-      outcome.modules.push(result);
-      if (result.data.architecture) results.architecture = result.data.architecture;
-      if (result.data.technical_decisions) results.technical_decisions = result.data.technical_decisions;
-      if (result.data.implementation) results.implementation = result.data.implementation;
-    } catch (error) {
-      console.error("[hacksim.review] module B failed", error);
-      outcome.modules.push({
-        ...M.moduleResult(M.MODULE_B, "failed", "ai", {}),
-        errorMessage: (error as Error).message,
-      });
-    }
-  }
+  // ── Task loop ──────────────────────────────────────────────────────────
+  for (const planned of plan.tasks) {
+    if (!wants(planned.key)) continue;
 
-  // ── Module C: security, database, testing, scalability ────────────────
-  if (wants(M.MODULE_C)) {
-    try {
-      const result = await moduleQuality({
-        input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
+    // 1. Alignment
+    if (planned.kind === "alignment") {
+      const retrieval = retrieveFor(conceptFromTask(planned, requirementConcepts, context, index), index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildAlignmentTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.alignment,
+        scopeKey: "alignment",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => V.validateAlignment(payload, evidenceSet),
+        pick: (items) => items[0],
+        evidenceIdsFrom: (item) => item.evidence_ids,
       });
-      outcome.modules.push(result);
-      if (result.data.security) results.security = result.data.security;
-      if (result.data.database) results.database_review = result.data.database;
-      if (result.data.testing) results.testing = result.data.testing;
-      if (result.data.scalability) results.scalability = result.data.scalability;
-    } catch (error) {
-      console.error("[hacksim.review] module C failed", error);
-      outcome.modules.push({
-        ...M.moduleResult(M.MODULE_C, "failed", "ai", {}),
-        errorMessage: (error as Error).message,
-      });
-    }
-  }
-
-  // ── Module D: contributions, per member ───────────────────────────────
-  if (wants(M.MODULE_D)) {
-    try {
-      const contributionResults = await moduleContributions({
-        input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
-      });
-      outcome.modules.push(...contributionResults);
-      if (contributionResults.length) {
-        results.contributions = Object.fromEntries(
-          contributionResults
-            .filter((item) => item.data.user_id)
-            .map((item) => [item.data.user_id as string, item.data]),
+      if (outcome.item) {
+        alignment = outcome.item;
+        findings.push(
+          ...E.validateFindings((outcome.payload?.findations ?? null), evidenceSet, "hackathon"),
         );
+        if (alignment.downgraded) spend.validationFailures += 1;
       }
-    } catch (error) {
-      console.error("[hacksim.review] module D failed", error);
-      outcome.modules.push({
-        ...M.moduleResult(M.MODULE_D, "failed", "ai", {}),
-        errorMessage: (error as Error).message,
+      continue;
+    }
+
+    // 2. Requirements, one group at a time
+    if (planned.kind === "requirements") {
+      const group = groups.find((item) => item.focus === planned.focus);
+      if (!group) continue;
+      const pending: typeof group.entries = [];
+      for (const entry of group.entries) {
+        if (deterministicRows.has(entry.id)) continue;
+        pending.push(entry);
+      }
+      if (!pending.length) {
+        tasks.push({
+          key: planned.key,
+          kind: planned.kind,
+          scope: planned.scope,
+          status: "avoided",
+          reason: "The deterministic pass settled every requirement in this group.",
+          inputTokens: 0,
+          outputTokens: 0,
+          cachedTokens: 0,
+          costUsd: 0,
+          validationErrors: [],
+          rejectedEvidenceIds: [],
+          repairs: 0,
+          evidenceIds: [],
+        });
+        continue;
+      }
+
+      const retrievals = new Map<string, RET.RetrievalResult>();
+      for (const entry of pending) {
+        const concept = requirementConcepts.get(entry.id);
+        if (!concept) continue;
+        retrievals.set(entry.id, RET.retrieve({ plan: RET.buildRetrievalPlan(entry.id, concept), index }));
+      }
+      const merged = mergeRetrievals([...retrievals.values()]);
+
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildRequirementsTask(
+          promptContext(context, input, index, evidenceSet, merged, projectMap, datasetProfiles, semantics, inspectionNote, group.concepts),
+          pending.map((entry) => ({
+            id: entry.id,
+            text: entry.text,
+            importance: entry.importance,
+          })),
+          group.label,
+        ),
+        promptVersion: M.PROMPT_VERSIONS.requirements,
+        scopeKey: "requirements",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) =>
+          V.validateConclusions(payload, {
+            kind: "requirement",
+            allowedSubjects: pending.map((entry) => entry.id),
+            evidence: evidenceSet,
+          }),
+        evidenceIdsFrom: () => [],
       });
-    }
-  }
 
-  // ── Persist ──────────────────────────────────────────────────────────
-  outcome.status = overallStatus(outcome.modules);
-  outcome.totalCostUsd = spend.costUsd;
-  outcome.totalTokens = spend.tokens;
-  outcome.reviewId = await upsertReview(submissionId, repositoryIdValue, results, outcome, pricing);
-  await replaceRequirementEvaluations(submissionId, outcome.modules, evidenceIds);
-  await replaceFindings(outcome.reviewId, outcome.modules, evidenceIds);
-  await replaceDefenseTargets(submissionId, input.members, outcome.modules, requirementMap, evidenceIds);
-
-  return outcome;
-}
-
-// ── Modules ────────────────────────────────────────────────────────────────
-
-type CommonArgs = {
-  input: ReviewInput;
-  evidenceIds: Set<string>;
-  submissionId: string | null;
-  repositoryIdValue: string | null;
-  pricing: ModelPricing;
-  spend: Spend;
-};
-
-async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementMap }) {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-  const requirements = requirementMap.requirements ?? [];
-  const out: Record<string, unknown> = {};
-
-  // The model decides. A deterministic pre-pass used to answer this from a
-  // three-keyword signal table matched against the authentication detectors,
-  // which reported "weakly evidenced" for every brief it did not recognise —
-  // including a repository that solved the problem outright — and, by
-  // returning a value, stopped the model from ever reading the code. Alignment
-  // is the one question in this product that cannot be answered by counting
-  // dependencies, so it is asked, every time.
-  {
-    // The retriever scores files by the words in `question`. A fixed question
-    // searched for "repository/hackathon/requirements", which match every repo
-    // equally and so surfaced the same generic code whatever the challenge was.
-    // Feeding it the brief makes it look for THIS challenge's vocabulary —
-    // inventory, expiry, demand — which is the code that decides alignment.
-    const searchBrief = [
-      requirementMap.problem_summary ?? "",
-      ...(requirementMap.requirements ?? []).slice(0, 8).map((r) => r.text),
-    ]
-      .join(" ")
-      .slice(0, 1500);
-
-    const packet = buildPacket({
-      question: `Does this repository implement the hackathon requirements? ${searchBrief}`,
-      files: input.files,
-      chunks: input.chunks,
-      category: "api",
-    });
-    const response = await call({
-      operation: `${M.MODULE_A}.alignment`,
-      task: M.buildAlignmentTask({
-        requirementMap,
-        projectMap: input.projectMap,
-        evidence: input.evidence,
-        snippets: packet.render(),
-        submission: input.submission,
-      }),
-      promptVersion: M.PROMPT_VERSIONS.alignment,
-      contextParts: [requirementMap, input.projectMap],
-      scopeKey: "alignment",
-      repositoryId: repositoryIdValue,
-      submissionId,
-      pricing,
-      actorId: input.actorId ?? null,
-      sessionId: input.sessionId ?? null,
-      estimateTokens: packet.estimateTokens() + 3500,
-      spend,
-    });
-
-    if (response === null) {
-      return M.moduleResult(M.MODULE_A, "skipped", "ai", {}, "no_call");
-    }
-
-    const payload = response.parsed ?? {};
-    const alignment = (payload.problem_alignment ?? {}) as Record<string, unknown>;
-    out.problem_alignment = {
-      status: oneOf(alignment.status, M.ALIGNMENT_STATUSES, "unclear"),
-      confidence: oneOf(alignment.confidence, ["high", "medium", "low"] as const, "low"),
-      evidence_ids: ((alignment.evidence_ids as string[]) ?? [])
-        .filter((id) => evidenceIds.has(id))
-        .slice(0, 12),
-      explanation: String(alignment.explanation ?? "").slice(0, 1500),
-      source: "ai",
-    };
-    out.requirements = validateRequirementRows(payload.requirements, requirements, evidenceIds);
-    out.constraints = validateConstraintRows(payload.constraints, requirementMap, evidenceIds);
-
-    const summary = (payload.summary ?? {}) as Record<string, unknown>;
-    out.summary = {
-      headline: String(summary.headline ?? "").slice(0, 300),
-      strengths: ((summary.strengths as string[]) ?? []).map((s) => String(s).slice(0, 200)).slice(0, 6),
-      areas_to_clarify: ((summary.areas_to_clarify as string[]) ?? [])
-        .map((s) => String(s).slice(0, 200))
-        .slice(0, 6),
-      source: "ai",
-    };
-  }
-
-  // Claims are checked in the same pass: same evidence, same context.
-  const claims = claimsFrom(input.submission);
-  if (claims.length) {
-    const claimResult = await moduleGeneric({
-      module: "claims",
-      promptVersion: M.PROMPT_VERSIONS.claims,
-      taskBuilder: (snippets) =>
-        M.buildClaimsTask({
-          claims, projectMap: input.projectMap, evidence: input.evidence, snippets,
-        }),
-      question: "Which claimed features are supported by the code?",
-      input, evidenceIds, submissionId, repositoryIdValue, pricing, spend, scope: "claims",
-      preComputed: deterministicClaims(claims),
-    });
-
-    if (claimResult.data.claims) out.claims = claimResult.data.claims;
-    // Claim mismatches become findings on the review page.
-    const mismatches = ((claimResult.data.findings as Record<string, unknown>[]) ?? []).filter(
-      (finding) => finding.finding_type === "claim_mismatch",
-    );
-    if (mismatches.length) {
-      out.findings = [...((out.findings as Record<string, unknown>[]) ?? []), ...mismatches];
-    }
-  }
-
-  return M.moduleResult(M.MODULE_A, "completed", "ai", out);
-}
-
-async function moduleQuality(args: CommonArgs & { requirementMap: RequirementMap }) {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-
-  // Security secrets and test counts need no model.
-  const securityFacts = M.securityFromEvidence(input.projectMap);
-  const testingFacts = M.testingFromEvidence(input.projectMap);
-
-  const packet = buildPacket({
-    question: "authentication authorization middleware database schema and tests",
-    files: input.files,
-    chunks: input.chunks,
-    category: "security",
-  });
-
-  const response = await call({
-    operation: `${M.MODULE_C}.quality`,
-    task: M.buildQualityTask({
-      requirementMap, submission: input.submission,
-      projectMap: input.projectMap, evidence: input.evidence, snippets: packet.render(),
-    }),
-    promptVersion: M.PROMPT_VERSIONS.quality,
-    contextParts: [input.projectMap, testingFacts, securityFacts],
-    scopeKey: "quality",
-    repositoryId: repositoryIdValue,
-    submissionId,
-    pricing,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    estimateTokens: packet.estimateTokens() + 3500,
-    spend,
-  });
-
-  const out: Record<string, unknown> = {};
-  const findings: Record<string, unknown>[] = [];
-
-  if (response?.parsed) {
-    const payload = response.parsed;
-    out.security = section(payload.security, evidenceIds);
-    out.database = section(payload.database, evidenceIds);
-    out.scalability = section(payload.scalability, evidenceIds);
-    // §42 — a test count is arithmetic. Keep the deterministic answer.
-    out.testing = { ...testingFacts, source: "deterministic" };
-    findings.push(
-      ...(M.validateFindings(payload.findings, evidenceIds) as unknown as Record<
-        string,
-        unknown
-      >[]),
-    );
-  } else {
-    out.security = securityFacts ?? { summary: "AI review unavailable.", source: "skipped" };
-    out.database = { summary: "AI review unavailable.", source: "skipped" };
-    out.scalability = { summary: "AI review unavailable.", source: "skipped" };
-    out.testing = { ...testingFacts, source: "deterministic" };
-  }
-
-  if (securityFacts) {
-    findings.push(
-      ...(securityFacts.confirmed_issues as unknown as Record<string, unknown>[]),
-    );
-  }
-
-  if (testingFacts.finding && testingFacts.testFileCount === 0) {
-    findings.push({
-      finding_type: "testing_gap",
-      severity: "medium",
-      title: "No automated tests detected",
-      description: testingFacts.explanation,
-      evidence_ids: [],
-      files: [],
-      symbols: [],
-      why_it_matters: "Behaviour that is not covered by tests is unverified when it changes.",
-      suggested_improvement: "Add tests for the main user path, starting with failure cases.",
-      confidence: "medium",
-    });
-  }
-
-  if (findings.length) out.findings = findings;
-  return M.moduleResult(M.MODULE_C, "completed", "ai", out);
-}
-
-async function moduleGeneric(
-  args: CommonArgs & {
-    module: string;
-    promptVersion: string;
-    taskBuilder: (snippets: string) => string;
-    question: string;
-    scope: string;
-    preComputed?: Record<string, unknown>;
-  },
-) {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend, scope } = args;
-
-  const packet = buildPacket({
-    question: args.question,
-    files: input.files,
-    chunks: input.chunks,
-  });
-
-  const response = await call({
-    operation: `${args.module}.${scope}`,
-    task: args.taskBuilder(packet.render()),
-    promptVersion: args.promptVersion,
-    contextParts: [input.projectMap],
-    scopeKey: scope,
-    repositoryId: repositoryIdValue,
-    submissionId,
-    pricing,
-    actorId: input.actorId ?? null,
-    sessionId: input.sessionId ?? null,
-    estimateTokens: packet.estimateTokens() + 3000,
-    spend,
-  });
-
-  if (response === null || !response.parsed) {
-    return M.moduleResult(
-      args.module,
-      "skipped",
-      "deterministic",
-      {
-        ...(args.preComputed ?? {}),
-        status: "skipped",
-        reason: "AI unavailable or budget exhausted; deterministic facts only.",
-      },
-    );
-  }
-
-  const data: Record<string, unknown> = { ...response.parsed };
-  data.findings = M.validateFindings(response.parsed.findings, evidenceIds);
-  return M.moduleResult(args.module, "completed", "ai", data);
-}
-
-async function moduleContributions(args: CommonArgs & { requirementMap: RequirementMap }): Promise<M.ModuleResult[]> {
-  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
-
-  // §41 — only members whose claim is specific enough to check, capped.
-  const checkable = input.members
-    .filter((member) => (member.contribution_description ?? "").trim())
-    .slice(0, MAX_MEMBER_MODULES);
-
-  const results: M.ModuleResult[] = [];
-  const otherNames = input.members.map(
-    (member) => member.full_name || member.email || "member",
-  );
-
-  for (const member of checkable) {
-    const question = (member.contribution_description ?? "").slice(0, 400);
-    const packet = buildPacket({
-      question, files: input.files, chunks: input.chunks, maxFiles: 4,
-    });
-
-    const response = await call({
-      operation: `${M.MODULE_D}.contribution`,
-      task: M.buildContributionTask({
-        member: member as unknown as Record<string, unknown>,
-        requirementMap, submission: input.submission,
-        projectMap: input.projectMap,
-        evidence: input.evidence,
-        snippets: packet.render(),
-        otherMembers: otherNames,
-      }),
-      promptVersion: M.PROMPT_VERSIONS.contribution,
-      contextParts: [input.projectMap, member.id],
-      scopeKey: `contribution:${member.id}`,
-      repositoryId: repositoryIdValue,
-      submissionId,
-      pricing,
-      actorId: input.actorId ?? null,
-      sessionId: input.sessionId ?? null,
-      estimateTokens: packet.estimateTokens() + 2000,
-      spend,
-    });
-
-    if (response === null || !response.parsed) {
-      results.push(
-        M.moduleResult(M.MODULE_D, "skipped", "deterministic", {
-          user_id: member.user_id,
-          member_id: member.id,
-          status: "not_yet_verified",
-          confidence: "none",
-          explanation: "Contribution analysis was unavailable.",
-        }),
+      for (const item of outcome.items) {
+        const retrieval = retrievals.get(item.subject_id);
+        const coverageNote = coverage.covered
+          ? ""
+          : " The repository was not fully inspected, so absence of evidence here is inconclusive.";
+        const finalStatus = item.status === "not_evidenced" && !coverage.covered
+          ? "unable_to_determine"
+          : item.status;
+        conclusions.push({
+          subject_id: item.subject_id,
+          kind: "requirement",
+          status: finalStatus,
+          confidence: finalStatus === "unable_to_determine" ? "none" : item.confidence,
+          evidence_ids: item.evidence_ids,
+          explanation: item.explanation + coverageNote,
+          missing_or_unclear: item.missing_or_unclear,
+          method: "ai_evidence",
+          files: item.files,
+          retrieval_queries: (retrieval?.plan.questions ?? []).slice(0, 2),
+          relevant_files: (retrieval?.files ?? []).map((hit) => hit.path).slice(0, 6),
+          evidence_count: item.evidence_ids.length,
+          ai_used: true,
+          ai_reason: outcome.reason,
+        });
+      }
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
       );
       continue;
     }
 
-    const payload = response.parsed;
-    results.push(
-      M.moduleResult(M.MODULE_D, "completed", "ai", {
-        user_id: member.user_id,
-        member_id: member.id,
-        status: oneOf(payload.status, M.CONTRIBUTION_STATUSES, "not_yet_verified"),
-        confidence: oneOf(payload.confidence, ["high", "medium", "low"] as const, "low"),
-        evidence_ids: ((payload.evidence_ids as string[]) ?? [])
-          .filter((id) => evidenceIds.has(id))
-          .slice(0, 10),
-        matched_files: ((payload.matched_files as string[]) ?? [])
-          .map((f) => String(f).slice(0, 200))
-          .slice(0, 10),
-        matched_symbols: ((payload.matched_symbols as string[]) ?? [])
-          .map((s) => String(s).slice(0, 120))
-          .slice(0, 10),
-        explanation: String(payload.explanation ?? "").slice(0, 1200),
-      }),
-    );
+    // 3. Constraints
+    if (planned.kind === "constraints") {
+      const subjects = requirementMap.constraints ?? [];
+      const retrieval = retrieveForBrief(constraintConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildConstraintsTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, constraintConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text, importance: entry.importance })),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.constraints,
+        scopeKey: "constraints",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) =>
+          V.validateConclusions(payload, {
+            kind: "constraint",
+            allowedSubjects: subjects.map((entry) => entry.id),
+            evidence: evidenceSet,
+          }),
+        evidenceIdsFrom: () => [],
+      });
+      pushConclusions(conclusions, outcome.items, "constraint", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
+      );
+      continue;
+    }
+
+    // 4. Expected outcomes
+    if (planned.kind === "outcomes") {
+      const subjects = requirementMap.expected_outcomes ?? [];
+      const retrieval = retrieveForBrief(outcomeConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildOutcomesTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, outcomeConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text })),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.outcomes,
+        scopeKey: "outcomes",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) =>
+          V.validateConclusions(payload, {
+            kind: "outcome",
+            allowedSubjects: subjects.map((entry) => entry.id),
+            evidence: evidenceSet,
+          }),
+        evidenceIdsFrom: () => [],
+      });
+      pushConclusions(conclusions, outcome.items, "outcome", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
+      );
+      continue;
+    }
+
+    // 5. Evaluation criteria — descriptive only, never a score
+    if (planned.kind === "criteria") {
+      const subjects = requirementMap.evaluation_criteria ?? [];
+      const retrieval = retrieveForBrief(criteriaConcepts, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildCriteriaTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, criteriaConcepts),
+          subjects.map((entry) => ({ id: entry.id, text: entry.text })),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.criteria,
+        scopeKey: "criteria",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) =>
+          V.validateConclusions(payload, {
+            kind: "criterion",
+            allowedSubjects: subjects.map((entry) => entry.id),
+            evidence: evidenceSet,
+          }),
+        evidenceIdsFrom: () => [],
+      });
+      pushConclusions(conclusions, outcome.items, "criterion", "ai_evidence", outcome.reason, []);
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
+      );
+      continue;
+    }
+
+    // 6. Claims
+    if (planned.kind === "claims") {
+      const claimList = claimsFrom(input.submission);
+      if (!claimList.length) continue;
+      const retrieval = retrieveForText(planned.question, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildClaimsTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+          claimList,
+        ),
+        promptVersion: M.PROMPT_VERSIONS.claims,
+        scopeKey: "claims",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => V.validateClaims(payload, evidenceSet, claimList),
+        evidenceIdsFrom: () => [],
+      });
+      claims = outcome.items;
+      for (const claim of claims) {
+        const observed = observationFor(claim, evidenceSet);
+        findings.push(...E.detectConflicts(
+          {
+            claim: claim.claim,
+            status: claim.status as E.ClaimStatus,
+            evidenceIds: claim.evidence_ids,
+            explanation: claim.explanation,
+            observed,
+          },
+          evidenceSet,
+        ));
+      }
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "claim"),
+      );
+      continue;
+    }
+
+    // 7. Implementation and coherence
+    if (planned.kind === "implementation") {
+      const retrieval = retrieveForText(planned.question, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildImplementationTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.implementation,
+        scopeKey: "implementation",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: () => ({ items: [], rejectedSubjects: [], rejectedEvidenceIds: [], errors: [] }),
+        pick: () => null,
+        evidenceIdsFrom: () => [],
+      });
+      const payload = outcome.payload ?? {};
+      architecture = (payload.architecture as Record<string, unknown>) ?? null;
+      implementation = (payload.implementation as Record<string, unknown>) ?? null;
+      findings.push(
+        ...E.validateFindings(payload.findings ?? null, evidenceSet, "general"),
+      );
+      const dead = (implementation?.incomplete_or_dead as string[]) ?? [];
+      for (const item of dead.slice(0, 5)) {
+        findings.push({
+          finding_type: "dead_feature",
+          severity: "low",
+          title: `Present but not doing anything: ${item.slice(0, 120)}`,
+          description: String(item).slice(0, 600),
+          evidence_ids: [],
+          files: [],
+          symbols: [],
+          why_it_matters:
+            "A feature that exists but has no effect is misleading in a write-up and in a demo.",
+          suggested_improvement: "Complete it or remove the claim that it is part of the solution.",
+          confidence: "low",
+          expectation_source: "general",
+        });
+      }
+      continue;
+    }
+
+    // 8. Engineering observations
+    if (planned.kind === "engineering") {
+      const retrieval = retrieveForText(planned.question, index);
+      const topics = plan.dimensions
+        .filter((item) => item.relevance !== "not_applicable" && item.method === "ai" && item.key !== "problem_alignment")
+        .map((item) => item.label);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildEngineeringTask(
+          promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
+          topics.slice(0, 6),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.engineering,
+        scopeKey: "engineering",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: () => ({ items: [], rejectedSubjects: [], rejectedEvidenceIds: [], errors: [] }),
+        pick: () => null,
+        evidenceIdsFrom: () => [],
+      });
+      const list = Array.isArray(outcome.payload?.observations)
+        ? (outcome.payload!.observations as Record<string, unknown>[])
+        : [];
+      engineering = list
+        .filter((item) => item && typeof item === "object")
+        .slice(0, 8)
+        .map((item) => {
+          const citations = E.filterCitations(item.evidence_ids, evidenceSet);
+          return {
+            topic: String(item.topic ?? "general").slice(0, 60),
+            status: ["observed", "not_applicable", "concern"].includes(String(item.status))
+              ? String(item.status)
+              : "observed",
+            summary: String(item.summary ?? "").slice(0, 900),
+            evidence_ids: citations.accepted,
+            concern: String(item.concern ?? "").slice(0, 600),
+            improvement: String(item.improvement ?? "").slice(0, 600),
+            expectation_source: "general",
+          };
+        });
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "general"),
+      );
+      continue;
+    }
+
+    // 9. Properness — reads the conclusions, not the code
+    if (planned.kind === "properness") {
+      const prior = [
+        ...(alignment
+          ? [{ label: "problem alignment", status: alignment.status, summary: alignment.explanation }]
+          : []),
+        ...conclusions.map((row) => ({
+          label: row.subject_id,
+          status: row.status,
+          summary: row.explanation,
+        })),
+        ...claims.map((claim) => ({
+          label: `claim: ${claim.claim.slice(0, 60)}`,
+          status: claim.status,
+          summary: claim.explanation,
+        })),
+      ];
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildPropernessTask(
+          promptContext(context, input, index, evidenceSet, emptyRetrieval(), projectMap, datasetProfiles, semantics, inspectionNote, []),
+          prior.slice(0, 24),
+        ),
+        promptVersion: M.PROMPT_VERSIONS.properness,
+        scopeKey: "properness",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => V.validateAssessment(payload, evidenceSet),
+        pick: (items) => items[0],
+        evidenceIdsFrom: (item) => item.evidence_ids,
+      });
+      if (outcome.item) {
+        assessment = outcome.item;
+        findings.push(
+          ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "general"),
+        );
+      }
+      continue;
+    }
   }
 
-  return results;
+  // Deterministic rows join the conclusion set, before the AI rows so the order
+  // on the page follows the brief.
+  const allConclusions = [
+    ...deterministicOrdered(requirementMap, deterministicRows, conclusions),
+  ];
+
+  // Testing and secrets: literal facts, always recorded, never model output.
+  const testing = E.testingFromEvidence(projectMap);
+  const secrets = E.securityFromEvidence(projectMap);
+  if (secrets) {
+    for (const issue of secrets.confirmed_issues) {
+      findings.push({
+        finding_type: "security_concern",
+        severity: issue.severity,
+        title: issue.title,
+        description: issue.description,
+        evidence_ids: [],
+        files: [],
+        symbols: [],
+        why_it_matters: issue.why_it_matters,
+        suggested_improvement: issue.suggested_improvement,
+        confidence: "medium",
+        expectation_source: "general",
+      });
+    }
+  }
+  if (testing.finding === "testing_gap" && testing.testFileCount === 0) {
+    const testingRequired = plan.dimensions.some(
+      (item) => item.key === "testing" && item.relevance === "required",
+    );
+    findings.push({
+      finding_type: "testing_gap",
+      severity: testingRequired ? "medium" : "informational",
+      title: "No automated tests were detected",
+      description: testing.explanation,
+      evidence_ids: [],
+      files: [],
+      symbols: [],
+      why_it_matters: testingRequired
+        ? "This hackathon asks about testing, and no test file was found in the analysed repository."
+        : "Behaviour that is not covered by tests is unverified when it changes. This was not a requirement here.",
+      suggested_improvement: "Add a test for the main user path, starting with failure cases.",
+      confidence: "medium",
+      expectation_source: testingRequired ? "hackathon" : "general",
+    });
+  }
+
+  // Defence targets: topics to prepare for, never questions. §28.
+  const defenseTargets = buildDefenseTargets(allConclusions, findings, claimListOf(claims));
+
+  // ── Persist ───────────────────────────────────────────────────────────
+  const reviewId = await upsertReview({
+    submissionId,
+    repositoryId,
+    context,
+    plan,
+    alignment,
+    allConclusions,
+    assessment,
+    architecture,
+    implementation,
+    engineering,
+    testing,
+    spend,
+    commitSha,
+  });
+  await replaceRequirementEvaluations(submissionId, allConclusions);
+  await replaceFindings(reviewId, findings);
+  await replaceDefenseTargets(submissionId, defenseTargets);
+  await saveSnapshot({
+    submissionId,
+    repositoryId,
+    commitSha,
+    context,
+    plan,
+    evidence: evidenceSet.byId.size,
+    allConclusions,
+    spend,
+  });
+
+  const previous = await previousEvaluations(submissionId);
+  const diff = diffAgainst(previous, allConclusions, commitSha);
+
+  const diagnostics = buildDiagnostics({
+    context,
+    plan,
+    facts,
+    allConclusions,
+    tasks,
+    spend,
+    inspection,
+    coverage: coverage.covered,
+    datasetProfiles,
+    evidenceCount: evidenceSet.byId.size,
+    diff,
+  });
+
+  return {
+    reviewId,
+    status: statusFor(allConclusions, tasks, findings),
+    context,
+    plan,
+    conclusions: allConclusions,
+    findings: dedupeFindings(findings),
+    claims,
+    assessment,
+    alignment,
+    architecture,
+    implementation,
+    engineering,
+    testing,
+    tasks,
+    diagnostics,
+    diff,
+    totalCostUsd: spend.costUsd,
+    totalTokens: spend.tokens,
+  };
+}
+
+/** Kept so the edge entry point's import keeps working. */
+export const runReview = runAnalysis;
+
+// ── Task execution ─────────────────────────────────────────────────────────
+
+interface RunAiArgs<T> {
+  planned: P.PlannedTask;
+  prompt: string;
+  promptVersion: string;
+  scopeKey: string;
+  promptContextItems: unknown[];
+  repositoryId: string | null;
+  commitSha: string | null;
+  submissionId: string | null;
+  pricing: ModelPricing;
+  input: AnalysisInput;
+  spend: Spend;
+  tasks: TaskOutcome[];
+  validate: (payload: unknown) => V.ValidationResult<T>;
+  pick?: (items: T[]) => T | null;
+  evidenceIdsFrom: (item: T) => string[];
+}
+
+/**
+ * One planned call: request, validate, and — at most once — repair.
+ *
+ * The retry budget is deliberately finite. A model that cannot produce a valid,
+ * correctly cited answer to a schema it was shown twice is recorded as failed
+ * and the pipeline continues without it, which is a visible, honest outcome
+ * rather than an infinite loop.
+ */
+async function runAi<T>(args: RunAiArgs<T>): Promise<{
+  payload: Record<string, unknown> | null;
+  items: T[];
+  item: T | null;
+  reason: string;
+}> {
+  const { planned, spend, tasks } = args;
+  const record: TaskOutcome = {
+    key: planned.key,
+    kind: planned.kind,
+    scope: planned.scope,
+    status: "executed",
+    reason: planned.reason,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    costUsd: 0,
+    validationErrors: [],
+    rejectedEvidenceIds: [],
+    repairs: 0,
+    evidenceIds: [],
+  };
+
+  const before = { cost: spend.costUsd, calls: spend.calls };
+  const response = await call({
+    operation: `analysis.${planned.key}`,
+    task: args.prompt,
+    promptVersion: args.promptVersion,
+    scopeKey: args.scopeKey,
+    subjectIds: planned.subjectIds,
+    contextParts: args.promptContextItems,
+    repositoryId: args.repositoryId,
+    commitSha: args.commitSha,
+    submissionId: args.submissionId,
+    pricing: args.pricing,
+    actorId: args.input.actorId ?? null,
+    sessionId: args.input.sessionId ?? null,
+    estimateTokens: Math.ceil(args.prompt.length / 4) + 1200,
+    spend,
+    provider: args.input.provider ?? null,
+  });
+
+  record.inputTokens = Math.max(0, spend.inputTokens);
+  record.outputTokens = Math.max(0, spend.outputTokens);
+  record.cachedTokens = spend.cachedTokens;
+  record.costUsd = Math.max(0, spend.costUsd - before.cost);
+  record.status = spend.calls === before.calls ? "cached" : "executed";
+
+  if (!response || !response.parsed) {
+    record.status = response ? "failed" : "skipped";
+    record.reason = response
+      ? "The model did not return valid JSON; the call is recorded as failed."
+      : "The call was not made (no key, or the budget for this submission is exhausted).";
+    tasks.push(record);
+    return { payload: null, items: [], item: null, reason: record.reason };
+  }
+
+  let payload = response.parsed;
+  let validation = args.validate(payload);
+  record.validationErrors = validation.errors;
+  record.rejectedEvidenceIds = validation.rejectedEvidenceIds;
+
+  // One repair, only when the shape was the problem.
+  if (validation.errors.length) {
+    spend.validationFailures += 1;
+    const repairTask = V.repairPrompt(args.prompt, validation.errors);
+    const repaired = await call({
+      operation: `analysis.${planned.key}.repair`,
+      task: repairTask,
+      promptVersion: `${args.promptVersion}-r1`,
+      scopeKey: `${args.scopeKey}:repair`,
+      subjectIds: planned.subjectIds,
+      contextParts: args.promptContextItems,
+      repositoryId: args.repositoryId,
+      commitSha: args.commitSha,
+      submissionId: args.submissionId,
+      pricing: args.pricing,
+      actorId: args.input.actorId ?? null,
+      sessionId: args.input.sessionId ?? null,
+      estimateTokens: Math.ceil(repairTask.length / 4) + 800,
+      spend,
+      provider: args.input.provider ?? null,
+    });
+    record.repairs = 1;
+    spend.repairs += 1;
+    if (repaired?.parsed) {
+      payload = repaired.parsed;
+      validation = args.validate(payload);
+      record.validationErrors = validation.errors;
+      record.rejectedEvidenceIds = validation.rejectedEvidenceIds;
+    }
+  }
+
+  const items = validation.items;
+  const item = args.pick ? args.pick(items) : null;
+  record.evidenceIds = [...new Set(items.flatMap((entry) => args.evidenceIdsFrom(entry)))].slice(0, 20);
+  record.reason = items.length
+    ? planned.reason
+    : `${planned.reason} No usable conclusion survived validation.`;
+  tasks.push(record);
+
+  return { payload, items, item, reason: record.reason };
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function claimsFrom(submission: Record<string, unknown>): string[] {
+  const claims: string[] = [];
+  const description = String(submission.project_description ?? "").trim();
+  if (description) claims.push(description.slice(0, 300));
+  for (const line of String(submission.key_features ?? "").split("\n")) {
+    const cleaned = line.trim().replace(/^[-*•\s]+/, "").trim();
+    if (cleaned.length > 8) claims.push(cleaned.slice(0, 200));
+  }
+  return claims.slice(0, 10);
+}
+
+function claimListOf(claims: V.ValidatedClaim[]): string[] {
+  return claims.map((claim) => claim.claim);
+}
+
+/** What the repository actually shows, for a conflict statement. */
+function observationFor(claim: V.ValidatedClaim, evidence: E.EvidenceSet): string[] {
+  const out: string[] = [];
+  for (const id of claim.evidence_ids) {
+    const item = evidence.byId.get(id);
+    if (item) out.push(`${item.file ?? "repository"}: ${item.claim.slice(0, 160)}`);
+  }
+  if (out.length) return out;
+  return [
+    "no file, symbol or dataset in the analysed repository was found that " +
+      "demonstrates this behaviour",
+  ];
+}
+
+function pushConclusions(
+  target: ConclusionRow[],
+  items: V.ValidatedConclusion[],
+  kind: V.SubjectKind,
+  method: string,
+  reason: string,
+  queries: string[],
+) {
+  for (const item of items) {
+    target.push({
+      subject_id: item.subject_id,
+      kind,
+      status: item.status,
+      confidence: item.confidence,
+      evidence_ids: item.evidence_ids,
+      explanation: item.explanation,
+      missing_or_unclear: item.missing_or_unclear,
+      method,
+      files: item.files,
+      retrieval_queries: queries,
+      relevant_files: [],
+      evidence_count: item.evidence_ids.length,
+      ai_used: true,
+      ai_reason: reason,
+    });
+  }
+}
+
+function deterministicOrdered(
+  requirementMap: RequirementMap,
+  deterministicRows: Map<string, ConclusionRow>,
+  aiRows: ConclusionRow[],
+): ConclusionRow[] {
+  const out: ConclusionRow[] = [];
+  const used = new Set<string>();
+  for (const entry of requirementMap.requirements ?? []) {
+    const row = deterministicRows.get(entry.id) ?? aiRows.find((item) => item.subject_id === entry.id);
+    if (row) {
+      out.push(row);
+      used.add(entry.id);
+    }
+  }
+  for (const row of aiRows) {
+    if (used.has(row.subject_id)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
+function retrieveFor(
+  concepts: C.ConceptSet[],
+  index: RET.RepoIndex,
+): RET.RetrievalResult {
+  if (!concepts.length) return emptyRetrieval();
+  const results = concepts.map((concept, position) =>
+    RET.retrieve({ plan: RET.buildRetrievalPlan(`c${position}`, concept), index }),
+  );
+  return mergeRetrievals(results);
+}
+
+function retrieveForBrief(
+  concepts: C.ConceptSet[],
+  index: RET.RepoIndex,
+): RET.RetrievalResult {
+  return retrieveFor(concepts, index);
+}
+
+function retrieveForText(question: string, index: RET.RepoIndex): RET.RetrievalResult {
+  const concept: C.ConceptSet = {
+    text: question.slice(0, 600),
+    intent: question.slice(0, 300),
+    focus: "general",
+    phrases: C.nounPhrases(question).slice(0, 8),
+    actions: [],
+    subjects: C.termsOf(question).slice(0, 10),
+    qualifiers: [],
+    terms: C.termsOf(question),
+    domainTerms: [],
+    facets: [],
+    artifacts: [],
+  };
+  return RET.retrieve({ plan: RET.buildRetrievalPlan("context", concept), index });
+}
+
+function conceptFromTask(
+  planned: P.PlannedTask,
+  requirementConcepts: Map<string, C.ConceptSet>,
+  context: HackathonContext,
+  index: RET.RepoIndex,
+): C.ConceptSet[] {
+  void context;
+  void index;
+  const concepts: C.ConceptSet[] = [];
+  for (const id of planned.subjectIds) {
+    const concept = requirementConcepts.get(id);
+    if (concept) concepts.push(concept);
+  }
+  return concepts;
+}
+
+function mergeRetrievals(results: RET.RetrievalResult[]): RET.RetrievalResult {
+  const byPath = new Map<string, RET.FileHit>();
+  const evidenceIds: string[] = [];
+  const datasetPaths: string[] = [];
+  const questions: string[] = [];
+  const unmatched: string[] = [];
+  let considered = 0;
+
+  for (const result of results) {
+    considered = Math.max(considered, result.considered);
+    for (const question of result.plan.questions) {
+      if (questions.length < 6 && !questions.includes(question)) questions.push(question);
+    }
+    for (const id of result.evidenceIds) {
+      if (evidenceIds.length < 40 && !evidenceIds.includes(id)) evidenceIds.push(id);
+    }
+    for (const path of result.datasetPaths) {
+      if (!datasetPaths.includes(path)) datasetPaths.push(path);
+    }
+    for (const term of result.unmatchedTerms) {
+      if (unmatched.length < 10 && !unmatched.includes(term)) unmatched.push(term);
+    }
+    for (const hit of result.files) {
+      const existing = byPath.get(hit.path);
+      if (!existing) {
+        byPath.set(hit.path, hit);
+        continue;
+      }
+      existing.score += Math.min(hit.score, 20);
+      existing.matchedTerms = [...new Set([...existing.matchedTerms, ...hit.matchedTerms])].slice(0, 8);
+    }
+  }
+
+  const files = [...byPath.values()].sort((a, b) => b.score - a.score).slice(0, 6);
+  return {
+    plan: {
+      subjectId: results[0]?.plan.subjectId ?? "",
+      focus: results[0]?.plan.focus ?? "general",
+      terms: [...new Set(results.flatMap((result) => result.plan.terms))].slice(0, 40),
+      phrases: [...new Set(results.flatMap((result) => result.plan.phrases))].slice(0, 12),
+      artifacts: results[0]?.plan.artifacts ?? [],
+      questions,
+    },
+    files,
+    evidenceIds: evidenceIds.slice(0, 24),
+    datasetPaths: datasetPaths.slice(0, 6),
+    considered,
+    truncated: byPath.size > files.length,
+    unmatchedTerms: unmatched,
+  };
+}
+
+function emptyRetrieval(): RET.RetrievalResult {
+  return {
+    plan: {
+      subjectId: "",
+      focus: "general",
+      terms: [],
+      phrases: [],
+      artifacts: [],
+      questions: [],
+    },
+    files: [],
+    evidenceIds: [],
+    datasetPaths: [],
+    considered: 0,
+    truncated: false,
+    unmatchedTerms: [],
+  };
+}
+
+function promptContext(
+  context: HackathonContext,
+  input: AnalysisInput,
+  index: RET.RepoIndex,
+  evidence: E.EvidenceSet,
+  retrieval: RET.RetrievalResult,
+  projectMap: Record<string, unknown>,
+  datasetProfiles: DatasetProfile[],
+  semantics: SemanticsResult[],
+  inspectionNote: string,
+  concepts: C.ConceptSet[],
+): M.PromptContext {
+  const paths = new Set(retrieval.files.map((hit) => hit.path));
+  // Only the evidence that belongs to the retrieved files travels with the
+  // requirement. This is the single biggest token saving in the pipeline.
+  const scoped: Evidence[] = [];
+  for (const path of paths) {
+    for (const item of evidence.byFile.get(path) ?? []) {
+      scoped.push(item as unknown as Evidence);
+    }
+  }
+  for (const item of evidenceSetGlobal(evidence)) {
+    if (scoped.length < 40) scoped.push(item as unknown as Evidence);
+  }
+  void input;
+  void index;
+
+  return {
+    context,
+    projectMap,
+    evidence: scoped,
+    terms: retrieval.plan.terms,
+    code: RET.renderPacket(retrieval),
+    datasetProfiles: datasetProfiles.filter((profile) =>
+      retrieval.datasetPaths.includes(profile.path),
+    ),
+    semantics: semantics.filter((item) => paths.has(item.path)),
+    concepts,
+    inspectionNote,
+  };
+}
+
+function evidenceSetGlobal(evidence: E.EvidenceSet): E.RawEvidence[] {
+  const out: E.RawEvidence[] = [];
+  for (const item of evidence.byId.values()) {
+    if (!item.file) out.push(item);
+  }
+  return out;
+}
+
+function countFacts(
+  input: AnalysisInput,
+  projectMap: Record<string, unknown>,
+  index: RET.RepoIndex,
+) {
+  const symbols = (projectMap.important_files ?? []) as unknown[];
+  void symbols;
+  const semantics = input.semantics ?? [];
+  const routes = input.routes ?? [];
+  const files = input.files ?? [];
+  const functionCount = countBy(input.chunks, "symbol_type", [
+    "function",
+    "method",
+  ]);
+  const classCount = countBy(input.chunks, "symbol_type", ["class", "type"]);
+  const datasets = input.datasetProfiles ?? [];
+  const fileCount = files.filter((file) => !file.is_ignored).length;
+  const testFileCount = Number(
+    ((projectMap.testing as Record<string, unknown>)?.test_file_count ?? 0),
+  );
+
+  return {
+    fileCount,
+    sourceFileCount: files.filter(
+      (file) =>
+        !file.is_ignored &&
+        ["source", "component", "api", "model", "schema", "database"].includes(
+          String(file.file_category),
+        ),
+    ).length,
+    datasetCount: datasets.length,
+    datasetProfileCount: datasets.length,
+    functionCount,
+    classCount,
+    routeCount: routes.length,
+    modelFindingCount: semantics.reduce((sum, item) => sum + item.models.length, 0),
+    calculationCount: semantics.reduce((sum, item) => sum + item.calculations.length, 0),
+    ruleCount: semantics.reduce((sum, item) => sum + item.rules.length, 0),
+    dataAccessCount: semantics.reduce((sum, item) => sum + item.dataAccess.length, 0),
+    uiFindingCount: semantics.reduce((sum, item) => sum + item.ui.length, 0),
+    testFileCount,
+    deploymentFileCount: files.filter((file) => file.file_category === "deployment").length,
+    secretCount: Number(
+      ((projectMap.security as Record<string, unknown>)?.hardcoded_secrets as unknown[])?.length ?? 0,
+    ),
+    authDetected: Boolean((projectMap.authentication as Record<string, unknown>)?.detected),
+    databaseDetected: Boolean((projectMap.database as Record<string, unknown>)?.technologies),
+    hasReadme: Boolean((projectMap.readme as Record<string, unknown>)?.present),
+    analysisMode: (projectMap.analysis_mode as "full" | "limited") ?? "full",
+    stackSummary: stackSummaryOf(projectMap),
+    countables: DET.countablesFrom({
+      projectMap,
+      functionCount,
+      classCount,
+      routeCount: routes.length,
+      datasetCount: datasets.length,
+      modelCount: semantics.reduce((sum, item) => sum + item.models.length, 0),
+      fileCount,
+      calculationCount: semantics.reduce((sum, item) => sum + item.calculations.length, 0),
+      testFileCount,
+    }),
+    index,
+  };
+}
+
+function countBy(
+  rows: Record<string, unknown>[],
+  field: string,
+  values: string[],
+): number {
+  return rows.filter((row) => values.includes(String(row[field]))).length;
+}
+
+function stackSummaryOf(projectMap: Record<string, unknown>): string {
+  const stack = (projectMap.stack ?? {}) as Record<string, unknown>;
+  const frameworks = (stack.frameworks as string[]) ?? [];
+  const languages = Object.keys((stack.languages as Record<string, number>) ?? {});
+  return [...languages.slice(0, 4), ...frameworks.slice(0, 5)].join(" ");
+}
+
+/** The hackathon part of the cacheable context block. */
+function contextSnapshot(context: HackathonContext): Record<string, unknown> {
+  return {
+    name: context.name,
+    type: context.type,
+    version: context.version,
+    problem: context.problem.slice(0, 1200),
+    theme: context.theme,
+    claims: context.claims,
+    custom: context.customInstructions?.slice(0, 400) ?? null,
+    notes: context.freeformNotes.slice(0, 3),
+  };
+}
+
+function slimMap(projectMap: Record<string, unknown>): Record<string, unknown> {
+  return {
+    analysis_mode: projectMap.analysis_mode,
+    stack: projectMap.stack,
+    database: projectMap.database,
+    authentication: projectMap.authentication,
+    testing: projectMap.testing,
+    deployment: projectMap.deployment,
+    repository_stats: projectMap.repository_stats,
+    features: projectMap.features,
+    warnings: projectMap.warnings,
+  };
+}
+
+function alignmentQuestions(context: HackathonContext): string[] {
+  const source = [
+    context.problem,
+    context.theme ?? "",
+    context.claims.description,
+    context.claims.features,
+  ].join(" ");
+  return C.nounPhrases(source).slice(0, 18);
+}
+
+function dedupeFindings(findings: E.ValidatedFinding[]): E.ValidatedFinding[] {
+  const seen = new Set<string>();
+  const out: E.ValidatedFinding[] = [];
+  for (const finding of findings) {
+    const key = `${finding.finding_type}|${finding.title.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(finding);
+  }
+  return out.slice(0, 30);
+}
+
+function statusFor(
+  conclusions: ConclusionRow[],
+  tasks: TaskOutcome[],
+  findings: E.ValidatedFinding[],
+): string {
+  const executed = tasks.filter((task) => task.status === "executed" || task.status === "cached");
+  const failed = tasks.filter((task) => task.status === "failed");
+  if (executed.length === 0 && findings.length === 0) return "pending";
+  if (failed.length > 0 && executed.length === 0) return "failed";
+  if (failed.length > 0) return "partial";
+  if (conclusions.length > 0) return "completed";
+  return "partial";
+}
+
+function buildDefenseTargets(
+  conclusions: ConclusionRow[],
+  findings: E.ValidatedFinding[],
+  claims: string[],
+): Record<string, unknown>[] {
+  const targets: Record<string, unknown>[] = [];
+
+  // P1: an organiser expectation the evidence does not cover.
+  for (const row of conclusions) {
+    if (row.kind !== "requirement" && row.kind !== "constraint") continue;
+    if (row.status !== "not_evidenced" && row.status !== "partial_evidence") continue;
+    targets.push({
+      topic: `${row.subject_id}: ${row.explanation.slice(0, 240)}`.slice(0, 300),
+      reason:
+        row.missing_or_unclear.length
+          ? `Not established by the analysed repository: ${row.missing_or_unclear.join("; ").slice(0, 400)}`
+          : row.explanation.slice(0, 600),
+      priority: row.status === "not_evidenced" ? "P1" : "P2",
+      evidence_ids: row.evidence_ids.slice(0, 10),
+      question_area: row.kind,
+      status: "open",
+    });
+  }
+
+  // P0: a claim the repository does not currently show. This is about the
+  // project's own description, never about a person.
+  for (const finding of findings) {
+    if (finding.finding_type !== "claim_mismatch") continue;
+    targets.push({
+      topic: finding.title.slice(0, 300),
+      reason: (finding.description || finding.why_it_matters).slice(0, 600),
+      priority: "P0",
+      evidence_ids: finding.evidence_ids.slice(0, 10),
+      question_area: "claim_support",
+      status: "open",
+    });
+  }
+
+  // P5: security.
+  for (const finding of findings) {
+    if (finding.finding_type !== "security_concern") continue;
+    targets.push({
+      topic: String(finding.title).slice(0, 300),
+      reason: (finding.why_it_matters || finding.description).slice(0, 600),
+      priority: "P5",
+      evidence_ids: finding.evidence_ids.slice(0, 10),
+      question_area: "security",
+      status: "open",
+    });
+  }
+
+  void claims;
+  return targets.slice(0, 20);
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────
 
-async function loadReview(submissionId: string | null, repositoryId: string | null) {
-  if (!submissionId || !repositoryId) return null;
-  const { data } = await db()
-    .from("project_reviews")
-    .select("*")
-    .eq("submission_id", submissionId)
-    .eq("repository_id", repositoryId)
-    .limit(1);
-  return ((data ?? []) as Record<string, unknown>[])[0] ?? null;
-}
-
-async function upsertReview(
-  submissionId: string | null,
-  repositoryId: string | null,
-  results: Record<string, unknown>,
-  outcome: ReviewOutcome,
-  pricing: ModelPricing | null,
-): Promise<string | null> {
-  if (!submissionId || !repositoryId) return null;
-
+async function upsertReview(args: {
+  submissionId: string | null;
+  repositoryId: string | null;
+  context: HackathonContext;
+  plan: P.AnalysisPlan;
+  alignment: V.ValidatedAlignment | null;
+  allConclusions: ConclusionRow[];
+  assessment: V.ValidatedAssessment | null;
+  architecture: Record<string, unknown> | null;
+  implementation: Record<string, unknown> | null;
+  engineering: Record<string, unknown>[];
+  testing: E.TestingFacts | null;
+  spend: Spend;
+  commitSha: string | null;
+}): Promise<string | null> {
+  if (!args.submissionId || !args.repositoryId) return null;
   const service = db();
-  const existing = await loadReview(submissionId, repositoryId);
+
+  const byKind = (kind: V.SubjectKind) =>
+    args.allConclusions.filter((row) => row.kind === kind);
 
   const payload: Record<string, unknown> = {
-    submission_id: submissionId,
-    repository_id: repositoryId,
-    status: outcome.status,
-    model: pricing?.modelName ?? null,
+    submission_id: args.submissionId,
+    repository_id: args.repositoryId,
+    status: "completed",
+    model: null,
     prompt_version: M.PROMPT_VERSIONS.alignment,
-    estimated_cost_usd: outcome.totalCostUsd,
-    total_tokens: outcome.totalTokens,
+    estimated_cost_usd: args.spend.costUsd,
+    total_tokens: args.spend.tokens,
+    // New, versioned knowledge (§44, §27). Old columns are kept so the existing
+    // admin dashboards and the §80 payload keep working.
+    analysis_version: "a3",
+    hackathon_version: args.context.version,
+    scanner_version: null,
+    commit_sha: args.commitSha,
+    dimensions: args.plan.dimensions,
+    requirement_rows: byKind("requirement"),
+    constraint_rows: byKind("constraint"),
+    outcome_rows: byKind("outcome"),
+    criterion_rows: byKind("criterion"),
+    assessment: args.assessment,
+    engineering: args.engineering,
+    diagnostics_summary: {
+      calls_planned: args.plan.tasks.length,
+      calls_executed: args.spend.calls,
+      cache_hits: args.spend.cacheHits,
+    },
   };
-  for (const key of [
-    "summary", "problem_alignment", "requirements", "constraints", "expected_outcomes",
-    "evaluation_criteria", "architecture", "implementation", "security",
-    "database_review", "testing", "scalability", "technical_decisions", "contributions",
-  ]) {
-    if (results[key] !== undefined && results[key] !== null) payload[key] = results[key];
-  }
+  if (args.alignment) payload.problem_alignment = args.alignment;
+  if (args.architecture) payload.architecture = args.architecture;
+  if (args.implementation) payload.implementation = args.implementation;
+  if (args.testing) payload.testing = args.testing;
 
   try {
-    if (existing?.id) {
-      const { error } = await service
-        .from("project_reviews")
-        .update(payload)
-        .eq("id", existing.id);
+    const { data: existing } = await service
+      .from("project_reviews")
+      .select("id")
+      .eq("submission_id", args.submissionId)
+      .eq("repository_id", args.repositoryId)
+      .limit(1);
+    const row = (existing ?? [])[0] as { id: string } | undefined;
+    if (row) {
+      const { error } = await service.from("project_reviews").update(payload).eq("id", row.id);
       if (error) throw error;
-      return existing.id as string;
+      return row.id;
     }
-
     const { data, error } = await service
       .from("project_reviews")
       .insert(payload)
@@ -937,212 +1755,313 @@ async function upsertReview(
     if (error || !data) throw error ?? new Error("no row");
     return (data as { id: string }).id;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist review:", error);
+    console.warn("[hacksim.analysis] could not persist review:", error);
     return null;
   }
 }
 
-interface EvaluationRow {
-  requirement_id: string;
-  status: string;
-  evidence_ids: string[];
-  confidence: string;
-  explanation: string;
-  source: string;
-}
-
-function rowsFromModule(module: M.ModuleResult, evidenceIds: Set<string>): EvaluationRow[] {
-  const rows: EvaluationRow[] = [];
-  const cite = (value: unknown) =>
-    ((value as string[]) ?? []).filter((id) => evidenceIds.has(id)).slice(0, 12);
-
-  for (const entry of (module.data.requirements as Record<string, unknown>[]) ?? []) {
-    if (!entry?.requirement_id) continue;
-    rows.push({
-      requirement_id: String(entry.requirement_id).slice(0, 32),
-      status: oneOf(entry.status, M.REQUIREMENT_STATUSES, "unable_to_determine"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, M.CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: module.source === "deterministic" ? "deterministic" : "ai",
-    });
-  }
-
-  for (const entry of (module.data.constraints as Record<string, unknown>[]) ?? []) {
-    if (!entry?.constraint_id) continue;
-    rows.push({
-      requirement_id: String(entry.constraint_id).slice(0, 32),
-      status: oneOf(entry.status, M.CONSTRAINT_STATUSES, "unable_to_determine"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, M.CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: "ai",
-    });
-  }
-
-  for (const entry of (module.data.expected_outcomes as Record<string, unknown>[]) ?? []) {
-    if (!entry?.outcome_id) continue;
-    rows.push({
-      requirement_id: String(entry.outcome_id).slice(0, 32),
-      status: oneOf(entry.status, M.OUTCOME_STATUSES, "unclear"),
-      evidence_ids: cite(entry.evidence_ids),
-      confidence: oneOf(entry.confidence, M.CONFIDENCES, "low"),
-      explanation: String(entry.explanation ?? "").slice(0, 1500),
-      source: "ai",
-    });
-  }
-
-  return rows;
-}
-
 async function replaceRequirementEvaluations(
   submissionId: string | null,
-  modules: M.ModuleResult[],
-  evidenceIds: Set<string>,
+  conclusions: ConclusionRow[],
 ): Promise<void> {
   if (!submissionId) return;
+  const rows = conclusions.map((row) => ({
+    submission_id: submissionId,
+    requirement_id: row.subject_id,
+    status:
+      row.kind === "constraint" || row.kind === "criterion" || row.kind === "outcome"
+        ? row.status === "evidence_found"
+          ? "supported"
+          : row.status
+        : row.status,
+    evidence_ids: row.evidence_ids,
+    confidence: row.confidence,
+    explanation: row.explanation.slice(0, 2000),
+    source: row.ai_used ? "ai" : "deterministic",
+    // New columns; written defensively so an un-migrated database still works.
+    kind: row.kind,
+    method: row.method,
+    missing_or_unclear: row.missing_or_unclear,
+    retrieval_queries: row.retrieval_queries,
+    relevant_files: row.relevant_files,
+    evidence_count: row.evidence_count,
+    ai_used: row.ai_used,
+    ai_reason: row.ai_reason,
+  }));
 
-  const rows = modules.flatMap((module) => rowsFromModule(module, evidenceIds));
-  if (rows.length === 0) return;
-
+  if (!rows.length) return;
   try {
-    // Replace rather than merge: a re-review is a new answer, not a delta.
-    const { data: existing } = await db()
+    const service = db();
+    const { data: existing } = await service
       .from("requirement_evaluations")
       .select("id")
       .eq("submission_id", submissionId);
     if ((existing ?? []).length) {
-      await db().from("requirement_evaluations").delete().eq("submission_id", submissionId);
+      await service.from("requirement_evaluations").delete().eq("submission_id", submissionId);
     }
-    const { error } = await db()
+    const { error } = await service
       .from("requirement_evaluations")
-      .upsert(
-        rows.map((row) => ({ submission_id: submissionId, ...row })),
-        { onConflict: "submission_id,requirement_id" },
-      );
+      .upsert(rows, { onConflict: "submission_id,requirement_id" });
     if (error) throw error;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist requirement evaluations:", error);
+    console.warn("[hacksim.analysis] could not persist evaluations:", error);
   }
 }
 
 async function replaceFindings(
   reviewId: string | null,
-  modules: M.ModuleResult[],
-  evidenceIds: Set<string>,
+  findings: E.ValidatedFinding[],
 ): Promise<void> {
   if (!reviewId) return;
-
-  const rows = modules
-    .flatMap((module) => (module.data.findings as Record<string, unknown>[]) ?? [])
-    .map((finding) => ({
-      project_review_id: reviewId,
-      finding_type: (finding.finding_type as string) ?? "observation",
-      severity: (finding.severity as string) ?? "low",
-      title: String(finding.title ?? "Untitled finding").slice(0, 200),
-      description: String(finding.description ?? "").slice(0, 2000),
-      evidence_ids: ((finding.evidence_ids as string[]) ?? [])
-        .filter((id) => evidenceIds.has(id))
-        .slice(0, 12),
-      files: ((finding.files as string[]) ?? []).slice(0, 12),
-      symbols: ((finding.symbols as string[]) ?? []).slice(0, 12),
-      why_it_matters: String(finding.why_it_matters ?? "").slice(0, 1000),
-      suggested_improvement: String(finding.suggested_improvement ?? "").slice(0, 1000),
-      confidence: (finding.confidence as string) ?? "low",
-    }))
-    // A finding with no resolvable evidence is not stored — §47, twice over.
-    .filter((row) => row.evidence_ids.length > 0);
+  const rows = findings.map((finding) => ({
+    project_review_id: reviewId,
+    finding_type: finding.finding_type,
+    severity: finding.severity,
+    title: finding.title.slice(0, 200),
+    description: finding.description.slice(0, 2000),
+    evidence_ids: finding.evidence_ids.slice(0, 12),
+    files: finding.files.slice(0, 12),
+    symbols: finding.symbols.slice(0, 12),
+    why_it_matters: finding.why_it_matters.slice(0, 1000),
+    suggested_improvement: finding.suggested_improvement.slice(0, 1000),
+    confidence: finding.confidence,
+  }));
 
   try {
-    await db().from("project_review_findings").delete().eq("project_review_id", reviewId);
+    const service = db();
+    await service.from("project_review_findings").delete().eq("project_review_id", reviewId);
     if (rows.length) {
-      const { error } = await db().from("project_review_findings").insert(rows);
+      const { error } = await service.from("project_review_findings").insert(rows);
       if (error) throw error;
     }
   } catch (error) {
-    console.warn("[hacksim.review] could not persist findings:", error);
+    console.warn("[hacksim.analysis] could not persist findings:", error);
   }
 }
 
-/** §50 — topics to prepare for, never questions. */
 async function replaceDefenseTargets(
   submissionId: string | null,
-  members: ContributionMember[],
-  modules: M.ModuleResult[],
-  requirementMap: RequirementMap,
-  evidenceIds: Set<string>,
+  targets: Record<string, unknown>[],
 ): Promise<void> {
   if (!submissionId) return;
-
-  const targets: Record<string, unknown>[] = [];
-  const requirementTexts = new Map(
-    requirementMap.requirements.map((r) => [r.id, r.text]),
-  );
-
-  // P1: requirements with no evidence. These are the obvious weak spots.
-  for (const module of modules) {
-    for (const entry of (module.data.requirements as Record<string, unknown>[]) ?? []) {
-      const status = entry.status;
-      if (status !== "not_evidenced" && status !== "partial_evidence") continue;
-      const id = String(entry.requirement_id ?? "");
-      targets.push({
-        submission_id: submissionId,
-        topic: (requirementTexts.get(id) ?? id).slice(0, 300),
-        reason:
-          String(entry.explanation ?? "").slice(0, 600) ||
-          "The analysed repository did not provide sufficient evidence for this requirement.",
-        priority: status === "not_evidenced" ? "P1" : "P2",
-        evidence_ids: ((entry.evidence_ids as string[]) ?? [])
-          .filter((e) => evidenceIds.has(e))
-          .slice(0, 10),
-        question_area: "requirement_coverage",
-        status: "open",
-      });
-    }
-  }
-
-  // P0: a member's own contribution that the repository could not support.
-  for (const module of modules.filter((m) => m.module === M.MODULE_D)) {
-    const data = module.data;
-    if (data.status !== "not_yet_verified" && data.status !== "partially_supported") continue;
-    const member = members.find((m) => m.id === data.member_id);
-    if (!member) continue;
-    targets.push({
-      submission_id: submissionId,
-      user_id: member.user_id,
-      topic: (member.contribution_description || "Your contribution").slice(0, 300),
-      reason: String(data.explanation ?? "").slice(0, 600),
-      priority: "P0",
-      evidence_ids: ((data.evidence_ids as string[]) ?? []).slice(0, 10),
-      question_area: "personal_contribution",
-      status: "open",
-    });
-  }
-
-  // P5: confirmed security findings.
-  for (const module of modules) {
-    for (const finding of (module.data.findings as Record<string, unknown>[]) ?? []) {
-      if (finding.finding_type !== "security_concern") continue;
-      targets.push({
-        submission_id: submissionId,
-        topic: String(finding.title ?? "Security concern").slice(0, 300),
-        reason: String(finding.why_it_matters ?? finding.description ?? "").slice(0, 600),
-        priority: "P5",
-        evidence_ids: finding.evidence_ids ?? [],
-        question_area: "security",
-        status: "open",
-      });
-    }
-  }
-
-  if (targets.length === 0) return;
-
   try {
-    await db().from("defense_targets").delete().eq("submission_id", submissionId);
-    // Cap the list; a long one is noise, not preparation.
-    const { error } = await db().from("defense_targets").insert(targets.slice(0, 20));
+    const service = db();
+    await service.from("defense_targets").delete().eq("submission_id", submissionId);
+    if (targets.length) {
+      const { error } = await service
+        .from("defense_targets")
+        .insert(targets.map((target) => ({ submission_id: submissionId, ...target })));
+      if (error) throw error;
+    }
+  } catch (error) {
+    console.warn("[hacksim.analysis] could not persist defence targets:", error);
+  }
+}
+
+/**
+ * §27 / §65 — the knowledge store. A snapshot per run keeps the analysis
+ * reproducible: a later brief change cannot rewrite what an old run concluded,
+ * and a re-analysis can be diffed against it.
+ */
+async function saveSnapshot(args: {
+  submissionId: string | null;
+  repositoryId: string | null;
+  commitSha: string | null;
+  context: HackathonContext;
+  plan: P.AnalysisPlan;
+  evidence: number;
+  allConclusions: ConclusionRow[];
+  spend: Spend;
+}): Promise<void> {
+  if (!args.submissionId || !args.repositoryId) return;
+  try {
+    const { error } = await db().from("analysis_snapshots").insert({
+      submission_id: args.submissionId,
+      repository_id: args.repositoryId,
+      commit_sha: args.commitSha,
+      hackathon_version: args.context.version,
+      analysis_version: "a3",
+      scanner_version: null,
+      prompt_versions: M.PROMPT_VERSIONS,
+      plan: {
+        summary: args.plan.summary,
+        dimensions: args.plan.dimensions,
+        tasks: args.plan.tasks.map((task) => ({ key: task.key, scope: task.scope })),
+      },
+      hackathon_snapshot: args.context.snapshot,
+      conclusions: args.allConclusions,
+      evidence_count: args.evidence,
+      input_tokens: args.spend.inputTokens,
+      output_tokens: args.spend.outputTokens,
+      cached_tokens: args.spend.cachedTokens,
+      estimated_cost_usd: args.spend.costUsd,
+    });
     if (error) throw error;
   } catch (error) {
-    console.warn("[hacksim.review] could not persist defense targets:", error);
+    console.warn("[hacksim.analysis] could not save snapshot:", error);
   }
+}
+
+async function previousEvaluations(
+  submissionId: string | null,
+): Promise<{ requirement_id: string; status: string; commit_sha: string | null }[]> {
+  if (!submissionId) return [];
+  try {
+    const { data } = await db()
+      .from("requirement_evaluations")
+      .select("requirement_id, status")
+      .eq("submission_id", submissionId);
+    void data;
+    const { data: snapshots } = await db()
+      .from("analysis_snapshots")
+      .select("commit_sha")
+      .eq("submission_id", submissionId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+    const commit = ((snapshots ?? [])[0] as { commit_sha: string } | undefined)?.commit_sha ?? null;
+    return ((data ?? []) as { requirement_id: string; status: string }[]).map((row) => ({
+      requirement_id: row.requirement_id,
+      status: row.status,
+      commit_sha: commit,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** §45 — what changed since the last run, shown rather than overwritten. */
+function diffAgainst(
+  previous: { requirement_id: string; status: string; commit_sha: string | null }[],
+  current: ConclusionRow[],
+  commitSha: string | null,
+): Record<string, unknown> | null {
+  if (!previous.length) return null;
+  const before = new Map(previous.map((row) => [row.requirement_id, row.status]));
+  const changed: { id: string; from: string; to: string }[] = [];
+  const added: string[] = [];
+  for (const row of current) {
+    const prior = before.get(row.subject_id);
+    if (prior === undefined) {
+      added.push(row.subject_id);
+      continue;
+    }
+    if (prior !== row.status) {
+      changed.push({ id: row.subject_id, from: prior, to: row.status });
+    }
+  }
+  const removed = [...before.keys()].filter(
+    (id) => !current.some((row) => row.subject_id === id),
+  );
+  if (!changed.length && !added.length && !removed.length) return null;
+  return {
+    previous_commit: previous[0]?.commit_sha ?? null,
+    commit: commitSha,
+    changed,
+    added,
+    removed,
+  };
+}
+
+function buildDiagnostics(args: {
+  context: HackathonContext;
+  plan: P.AnalysisPlan;
+  facts: ReturnType<typeof countFacts>;
+  allConclusions: ConclusionRow[];
+  tasks: TaskOutcome[];
+  spend: Spend;
+  inspection: { mode: string; warnings: string[]; filesSeen: number; filesRead: number };
+  coverage: boolean;
+  datasetProfiles: DatasetProfile[];
+  evidenceCount: number;
+  diff: Record<string, unknown> | null;
+}): Record<string, unknown> {
+  return {
+    hackathon: {
+      name: args.context.name,
+      type: args.context.type,
+      version: args.context.version,
+      config_version: args.context.configVersion,
+      requirements: args.context.requirements.length,
+      constraints: args.context.constraints.length,
+      outcomes: args.context.expectedOutcomes.length,
+      criteria: args.context.evaluationCriteria.length,
+      requirements_enabled: args.plan.requirementsEnabled,
+      requirements_reason: args.plan.requirementsReason,
+    },
+    repository: {
+      files_seen: args.inspection.filesSeen,
+      files_read: args.inspection.filesRead,
+      source_files: args.facts.sourceFileCount,
+      dataset_files: args.facts.datasetCount,
+      dataset_profiles: args.datasetProfiles.length,
+      functions: args.facts.functionCount,
+      classes: args.facts.classCount,
+      routes: args.facts.routeCount,
+      models: args.facts.modelFindingCount,
+      calculations: args.facts.calculationCount,
+      rules: args.facts.ruleCount,
+      ui_sites: args.facts.uiFindingCount,
+      evidence_count: args.evidenceCount,
+      analysis_mode: args.inspection.mode,
+      fully_inspected: args.coverage,
+      warnings: args.inspection.warnings.slice(0, 8),
+    },
+    ai: {
+      calls_planned: args.plan.tasks.length,
+      calls_executed: args.spend.calls,
+      calls_avoided: args.tasks.filter((task) => task.status === "avoided").length,
+      cache_hits: args.spend.cacheHits,
+      cache_misses: Math.max(0, args.spend.calls - args.spend.cacheHits),
+      input_tokens: args.spend.inputTokens,
+      output_tokens: args.spend.outputTokens,
+      cached_tokens: args.spend.cachedTokens,
+      cost_usd: Number(args.spend.costUsd.toFixed(6)),
+      failures: args.spend.failures,
+      validation_failures: args.spend.validationFailures,
+      repairs: args.spend.repairs,
+      tasks: args.tasks,
+    },
+    dimensions: args.plan.dimensions,
+    conclusions: args.allConclusions.map((row) => ({
+      id: row.subject_id,
+      kind: row.kind,
+      status: row.status,
+      confidence: row.confidence,
+      method: row.method,
+      ai_used: row.ai_used,
+      ai_reason: row.ai_reason,
+      retrieval_queries: row.retrieval_queries,
+      relevant_files: row.relevant_files,
+      evidence_count: row.evidence_count,
+    })),
+    diff: args.diff,
+  };
+}
+
+function failure(
+  context: HackathonContext,
+  plan: P.AnalysisPlan,
+  base: Partial<AnalysisOutcome>,
+): AnalysisOutcome {
+  return {
+    reviewId: null,
+    status: "failed",
+    context,
+    plan,
+    conclusions: [],
+    findings: [],
+    claims: [],
+    assessment: null,
+    alignment: null,
+    architecture: null,
+    implementation: null,
+    engineering: [],
+    testing: null,
+    tasks: [],
+    diagnostics: { error: base.error ?? "unknown" },
+    diff: null,
+    totalCostUsd: 0,
+    totalTokens: 0,
+    error: base.error,
+  };
 }

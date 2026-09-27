@@ -1,261 +1,713 @@
 /**
- * Targeted code retrieval (§28).
+ * Requirement-aware retrieval.
  *
- * This file is the reason Phase 6 is affordable. For a given question it
- * assembles the smallest useful packet:
+ * The old retriever was asked one fixed question — "does this repository
+ * implement the hackathon requirements?" — and scored files by category and
+ * path fragments. Those words match every repository equally, so it returned
+ * the same generic handful of files whatever the challenge was, and the model
+ * was left to judge a requirement from code that had nothing to do with it.
  *
- *     ≤ 6 files
- *     ≤ 120 lines per snippet
+ * This engine is built the other way round. For one requirement it takes the
+ * requirement's own concepts — its actions, subjects, phrases and synonyms —
+ * and ranks the repository against them, with a separate score for each
+ * signal so the admin panel can show *why* a file was retrieved:
  *
- * Selection is deterministic and ranked, never a blind "first N files that look
- * relevant". If nothing ranks, the caller gets an empty packet and is expected
- * to record `not_evidenced` rather than pad the prompt.
+ *   semantic   the file's code and identifiers speak the requirement's words
+ *   keyword    a literal phrase from the requirement appears in a path or symbol
+ *   importance how central the file is to the project
+ *   symbol     a symbol inside the file is named after the requirement
+ *   route      an endpoint path matches
+ *   dataset    a profiled dataset is relevant to the requirement
+ *   dependency a manifest or import matches
+ *   logic      a calculation, rule or model operation involves the terms
+ *
+ * There is no technology term anywhere in the ranking. A repository that
+ * implements a requirement with a hand-written loop and a repository that
+ * implements it with a library are ranked by what they *do*.
  */
 
-import { settings } from "./ai.ts";
+import type { ConceptSet, FocusGroup } from "./concepts.ts";
+import type { DatasetProfile } from "./datasets.ts";
 
-// Terms that, when present in a question, point at a kind of file.
-const QUESTION_SIGNALS: Record<string, string[]> = {
-  security: [
-    "auth", "login", "password", "token", "jwt", "session", "cookie", "permission",
-    "role", "secret", "key", "credential", "encrypt", "hash",
-  ],
-  database: [
-    "database", "db", "schema", "migration", "table", "query", "sql", "model",
-    "orm", "index", "postgres", "supabase", "storage", "data",
-  ],
-  api: [
-    "api", "endpoint", "route", "request", "response", "controller", "handler",
-    "rest", "graphql", "webhook", "fetch", "http",
-  ],
-  frontend: [
-    "ui", "component", "page", "screen", "form", "render", "view", "react", "vue",
-    "dashboard", "interface", "click", "button",
-  ],
-  testing: ["test", "spec", "coverage", "assert", "mock", "fixture"],
-  prediction: [
-    "predict", "forecast", "model", "train", "inference", "ml", "machine learning",
-    "algorithm", "score", "accuracy", "dataset",
-  ],
-  deployment: ["deploy", "docker", "build", "ci", "pipeline", "hosting", "vercel"],
-  configuration: ["config", "setting", "environment", "env", "variable", "option"],
-};
+export interface RetrievalPlan {
+  subjectId: string;
+  focus: FocusGroup;
+  /** Ranked retrieval terms, most significant first. */
+  terms: string[];
+  /** Literal multi-word phrases to look for. */
+  phrases: string[];
+  /** Which kinds of file could plausibly show this requirement. */
+  artifacts: string[];
+  /** Alternative query strings, for diagnostics and for the model prompt. */
+  questions: string[];
+}
 
-// Path fragments that indicate a file answers a category.
-const PATH_SIGNALS: Record<string, string[]> = {
-  security: ["auth", "login", "session", "permission", "middleware", "guard", "acl"],
-  database: ["schema", "migration", "model", "db", "database", "sql", "prisma", "repository"],
-  api: ["route", "router", "controller", "api", "endpoint", "handler", "view"],
-  frontend: ["component", "page", "view", "screen", "ui", "app/", "layout"],
-  testing: ["test", "spec", "__tests__", "fixtures"],
-  deployment: ["docker", "workflow", "deploy", "ci", "vercel", "netlify"],
-  configuration: ["config", "settings", ".env", "settings.py", "constants"],
-};
-
-// Category → file_category preference, used when the question has no signal.
-const CATEGORY_PREFERENCE: Record<string, string[]> = {
-  security: ["source", "api", "config", "model"],
-  database: ["database", "schema", "model", "source"],
-  api: ["api", "source", "component"],
-  frontend: ["component", "source"],
-  testing: ["test"],
-  deployment: ["deployment", "config"],
-  configuration: ["config", "deployment", "source"],
-};
-
-export interface Snippet {
+export interface FileHit {
   path: string;
+  score: number;
+  components: {
+    semantic: number;
+    keyword: number;
+    importance: number;
+    symbol: number;
+    route: number;
+    dataset: number;
+    dependency: number;
+    logic: number;
+    /** The requirement is about this kind of artefact, and this is that kind. */
+    artifact: number;
+  };
+  matchedTerms: string[];
   symbol: string | null;
   startLine: number;
   endLine: number;
-  content: string;
-  language: string | null;
-  score: number;
+  excerpt: string;
 }
 
-export class ContextPacket {
-  constructor(
-    readonly question: string,
-    readonly category: string,
-  ) {}
-
-  snippets: Snippet[] = [];
-  filesConsidered = 0;
-  truncated = false;
-
-  get isEmpty(): boolean {
-    return this.snippets.length === 0;
-  }
-
-  /** A deliberately crude estimate — good enough to gate a budget. */
-  estimateTokens(): number {
-    return Math.floor(this.snippets.reduce((sum, s) => sum + s.content.length, 0) / 4);
-  }
-
-  render(maxSnippetLines = settings().retrievalMaxSnippetLines): string {
-    if (this.snippets.length === 0) return "";
-
-    const blocks = this.snippets.map((snippet) => {
-      const all = snippet.content.split("\n");
-      const shown = all.slice(0, maxSnippetLines);
-      let body = shown.join("\n");
-      if (shown.length < all.length) body += "\n… (truncated)";
-      return (
-        `--- ${snippet.path} [${snippet.symbol ?? "file"}] ` +
-        `lines ${snippet.startLine}-${snippet.endLine} ---\n${body}`
-      );
-    });
-
-    return blocks.join("\n\n");
-  }
+export interface RetrievalResult {
+  plan: RetrievalPlan;
+  files: FileHit[];
+  evidenceIds: string[];
+  datasetPaths: string[];
+  considered: number;
+  truncated: boolean;
+  /** Terms that matched nothing anywhere. */
+  unmatchedTerms: string[];
 }
 
-/** Pick the single most relevant retrieval category for a question. */
-export function classifyQuestion(question: string, categories?: string[]): string {
-  const lowered = (question ?? "").toLowerCase();
-  const wanted = categories ?? Object.keys(QUESTION_SIGNALS);
+// ── The index ──────────────────────────────────────────────────────────────
 
-  let bestCategory = "general";
-  let bestScore = 0;
-  for (const category of wanted) {
-    const score = (QUESTION_SIGNALS[category] ?? []).filter((term) => lowered.includes(term)).length;
-    if (score > bestScore) {
-      bestScore = score;
-      bestCategory = category;
+export interface IndexFile {
+  path: string;
+  language?: string | null;
+  file_category?: string | null;
+  importance?: string | null;
+  is_ignored?: boolean;
+  is_binary?: boolean;
+  line_count?: number | null;
+}
+
+export interface IndexChunk {
+  file_path?: string;
+  path?: string;
+  content?: string;
+  symbol_name?: string | null;
+  symbol_type?: string | null;
+  importance?: string | null;
+  start_line?: number | null;
+  end_line?: number | null;
+}
+
+export interface IndexEvidence {
+  id: string;
+  type: string;
+  claim: string;
+  file?: string;
+  symbol?: string;
+  lines?: string;
+  confidence: string;
+}
+
+export interface IndexRoute {
+  method?: string;
+  path: string;
+  file: string;
+  line?: number;
+  symbol?: string | null;
+}
+
+export interface IndexSemantics {
+  path: string;
+  calculations: { identifiers: string[]; operation: string }[];
+  rules: { identifiers: string[]; operation: string }[];
+  models: { identifiers: string[]; operation: string }[];
+  dataAccess: { identifiers: string[]; operation: string }[];
+  ui: { identifiers: string[]; operation: string }[];
+}
+
+export interface RepoIndex {
+  files: Map<string, IndexFile>;
+  /** Tokens from path, symbols and evidence claims, for a file. */
+  termsByPath: Map<string, Set<string>>;
+  /** Tokens from the file's own code, for a file. */
+  bodyTermsByPath: Map<string, Set<string>>;
+  symbolsByPath: Map<string, string[]>;
+  chunksByPath: Map<string, IndexChunk[]>;
+  evidenceByPath: Map<string, IndexEvidence[]>;
+  globalEvidence: IndexEvidence[];
+  datasetByPath: Map<string, DatasetProfile>;
+  routesByPath: Map<string, IndexRoute[]>;
+  semanticsByPath: Map<string, IndexSemantics>;
+  manifestPaths: Set<string>;
+}
+
+const IMPORTANCE_SCORE: Record<string, number> = {
+  high: 24,
+  medium: 12,
+  low: 4,
+  ignored: 0,
+};
+
+const MAX_TOKENS_PER_FILE = 400;
+const STOP = new Set([
+  "def", "class", "return", "const", "let", "var", "function", "import",
+  "from", "the", "and", "for", "this", "self", "true", "false", "null", "none",
+]);
+
+function tokenize(text: string, limit = MAX_TOKENS_PER_FILE): Set<string> {
+  const out = new Set<string>();
+  const raw = String(text ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_\-./\\]+/g, " ")
+    .toLowerCase();
+  for (const token of raw.split(/[^a-z0-9]+/)) {
+    if (token.length < 3 || token.length > 32) continue;
+    if (STOP.has(token)) continue;
+    out.add(token);
+    if (out.size >= limit) break;
+  }
+  return out;
+}
+
+/** Built once per review and reused for every requirement. */
+export function buildRepoIndex(input: {
+  files: IndexFile[];
+  chunks: IndexChunk[];
+  evidence: IndexEvidence[];
+  routes?: IndexRoute[];
+  datasetProfiles?: DatasetProfile[];
+  semantics?: IndexSemantics[];
+}): RepoIndex {
+  const files = new Map<string, IndexFile>();
+  const termsByPath = new Map<string, Set<string>>();
+  const symbolsByPath = new Map<string, string[]>();
+  const chunksByPath = new Map<string, IndexChunk[]>();
+  const evidenceByPath = new Map<string, IndexEvidence[]>();
+  const bodyTermsByPath = new Map<string, Set<string>>();
+  const datasetByPath = new Map<string, DatasetProfile>();
+  const routesByPath = new Map<string, IndexRoute[]>();
+  const semanticsByPath = new Map<string, IndexSemantics>();
+  const globalEvidence: IndexEvidence[] = [];
+  const manifestPaths = new Set<string>();
+
+  for (const file of input.files) {
+    if (!file?.path) continue;
+    files.set(file.path, file);
+    const terms = tokenize(file.path);
+    termsByPath.set(file.path, terms);
+    if (
+      /(package\.json|requirements\.txt|pyproject\.toml|go\.mod|cargo\.toml|pom\.xml|build\.gradle|composer\.json|pubspec\.yaml)$/i
+        .test(file.path)
+    ) {
+      manifestPaths.add(file.path);
     }
   }
-  return bestCategory;
-}
 
-/**
- * Assemble the packet for one question.
- *
- * `files` is the Phase 5 inventory and `chunks` its symbol-level chunks. Files
- * are ranked by category signal, then by lexical overlap with the question, then
- * by Phase 5 importance.
- */
-export function buildPacket(input: {
-  question: string;
-  files: Record<string, unknown>[];
-  chunks: Record<string, unknown>[];
-  category?: string;
-  maxFiles?: number;
-  maxLines?: number;
-}): ContextPacket {
-  const config = settings();
-  const limitFiles = input.maxFiles ?? config.retrievalMaxFiles;
-  const limitLines = input.maxLines ?? config.retrievalMaxSnippetLines;
-
-  const category = input.category ?? classifyQuestion(input.question);
-  const packet = new ContextPacket(input.question, category);
-  packet.filesConsidered = input.files.length;
-
-  if (input.files.length === 0) return packet;
-
-  const questionTerms = (input.question ?? "")
-    .toLowerCase()
-    .split(/\W+/)
-    .filter((term) => term.length > 3);
-
-  const pathTerms = PATH_SIGNALS[category] ?? [];
-  const preferredCategories = CATEGORY_PREFERENCE[category] ?? [];
-  const importanceWeight: Record<string, number> = {
-    high: 30, medium: 15, low: 5, ignored: 0,
-  };
-
-  const chunksByFile = new Map<string, Record<string, unknown>[]>();
   for (const chunk of input.chunks) {
     const path = (chunk.file_path ?? chunk.path) as string | undefined;
     if (!path) continue;
-    const list = chunksByFile.get(path) ?? [];
+    const list = chunksByPath.get(path) ?? [];
     list.push(chunk);
-    chunksByFile.set(path, list);
-  }
+    chunksByPath.set(path, list);
 
-  interface Ranked {
-    score: number;
-    path: string;
-    language: string | null;
-    chunks: Record<string, unknown>[];
-  }
-
-  const ranked: Ranked[] = [];
-
-  for (const record of input.files) {
-    const path = (record.path as string) ?? "";
-    if (!path || record.is_ignored || record.is_binary) continue;
-    if (record.importance === "ignored") continue;
-
-    const lowered = path.toLowerCase();
-    let score = importanceWeight[(record.importance as string) ?? "low"] ?? 5;
-
-    if (pathTerms.some((fragment) => lowered.includes(fragment))) score += 40;
-    if (preferredCategories.includes(record.file_category as string)) score += 20;
-    score += questionTerms.filter((term) => lowered.includes(term)).length * 6;
-
-    const candidateChunks = chunksByFile.get(path) ?? [];
-    if (
-      candidateChunks.some((chunk) => {
-        const symbol = String(chunk.symbol_name ?? "").toLowerCase();
-        return Boolean(symbol) && questionTerms.some((term) => symbol.includes(term));
-      })
-    ) {
-      score += 18;
+    const symbol = String(chunk.symbol_name ?? "");
+    if (symbol) {
+      const symbols = symbolsByPath.get(path) ?? [];
+      symbols.push(symbol);
+      symbolsByPath.set(path, symbols);
+      for (const token of tokenize(symbol, 20)) {
+        termsByPath.get(path)?.add(token);
+      }
     }
-
-    if (score <= 5) continue;
-    ranked.push({ score, path, language: (record.language as string) ?? null, chunks: candidateChunks });
+    const body = bodyTermsByPath.get(path) ?? new Set<string>();
+    for (const token of tokenize(String(chunk.content ?? ""))) body.add(token);
+    bodyTermsByPath.set(path, body);
   }
 
-  ranked.sort((a, b) => b.score - a.score);
-
-  const selected = ranked.slice(0, limitFiles);
-  if (ranked.length > selected.length) packet.truncated = true;
-
-  for (const item of selected) {
-    if (item.chunks.length) {
-      // Prefer a chunk whose symbol matches the question.
-      const chosen = [...item.chunks].sort((a, b) => {
-        const highA = a.importance === "high" ? 1 : 0;
-        const highB = b.importance === "high" ? 1 : 0;
-        if (highA !== highB) return highB - highA;
-        const termsA = questionTerms.filter((term) =>
-          String(a.symbol_name ?? "").toLowerCase().includes(term),
-        ).length;
-        const termsB = questionTerms.filter((term) =>
-          String(b.symbol_name ?? "").toLowerCase().includes(term),
-        ).length;
-        return termsB - termsA;
-      })[0];
-
-      const start = Number(chosen.start_line ?? 1);
-      const end = Math.min(
-        start + limitLines - 1,
-        Number(chosen.end_line ?? start + limitLines),
-      );
-      packet.snippets.push({
-        path: item.path,
-        symbol: (chosen.symbol_name as string) ?? null,
-        startLine: start,
-        endLine: end,
-        content: (chosen.content as string) ?? "",
-        language: item.language,
-        score: item.score,
-      });
+  for (const evidence of input.evidence ?? []) {
+    if (!evidence?.id) continue;
+    if (evidence.file) {
+      const list = evidenceByPath.get(evidence.file) ?? [];
+      list.push(evidence);
+      evidenceByPath.set(evidence.file, list);
+      for (const token of tokenize(`${evidence.claim} ${evidence.symbol ?? ""}`, 30)) {
+        termsByPath.get(evidence.file)?.add(token);
+      }
     } else {
-      // A file with no symbol chunk contributes its identity only — we never
-      // fetch content the scanner did not already read.
-      packet.snippets.push({
-        path: item.path,
-        symbol: null,
-        startLine: 1,
-        endLine: limitLines,
-        content: "",
-        language: item.language,
-        score: item.score,
-      });
+      globalEvidence.push(evidence);
     }
   }
 
-  return packet;
+  for (const route of input.routes ?? []) {
+    if (!route?.file) continue;
+    const list = routesByPath.get(route.file) ?? [];
+    list.push(route);
+    routesByPath.set(route.file, list);
+    for (const token of tokenize(route.path, 20)) {
+      termsByPath.get(route.file)?.add(token);
+    }
+  }
+
+  for (const profile of input.datasetProfiles ?? []) {
+    if (!profile?.path) continue;
+    datasetByPath.set(profile.path, profile);
+    const terms = termsByPath.get(profile.path) ?? new Set<string>();
+    for (const name of profile.column_names) {
+      for (const token of tokenize(name, 20)) terms.add(token);
+    }
+    termsByPath.set(profile.path, terms);
+  }
+
+  for (const semantics of input.semantics ?? []) {
+    if (!semantics?.path) continue;
+    semanticsByPath.set(semantics.path, semantics);
+  }
+
+  return {
+    files,
+    termsByPath,
+    bodyTermsByPath,
+    symbolsByPath,
+    chunksByPath,
+    evidenceByPath,
+    globalEvidence,
+    datasetByPath,
+    routesByPath,
+    semanticsByPath,
+    manifestPaths,
+  };
+}
+
+// ── The plan ───────────────────────────────────────────────────────────────
+
+const GENERIC_TERMS = new Set([
+  "system", "application", "project", "solution", "user", "users", "data",
+  "value", "values", "item", "items", "result", "results", "name", "names",
+  "id", "ids", "service", "code", "file", "files", "page", "pages", "app",
+  "use", "using", "provide", "support", "build", "make", "create", "add",
+  "must", "should", "shall", "able", "ensure", "allow", "allow", "need",
+  "require", "functionality", "feature", "features", "capability",
+]);
+
+/**
+ * Turn one requirement's concepts into an executable plan. Everything ranked
+ * here came from the requirement text or from the hackathon's own vocabulary.
+ */
+export function buildRetrievalPlan(subjectId: string, concept: ConceptSet): RetrievalPlan {
+  const ranked: { term: string; weight: number }[] = [];
+  const seen = new Set<string>();
+
+  const push = (term: string, weight: number) => {
+    const key = term.toLowerCase().trim();
+    if (key.length < 3 || GENERIC_TERMS.has(key) || seen.has(key)) return;
+    seen.add(key);
+    ranked.push({ term: key, weight });
+  };
+
+  // Domain words the brief itself used are the strongest signal, because they
+  // are the vocabulary of this problem.
+  for (const term of concept.domainTerms) push(term, 10);
+  for (const term of concept.actions) push(term, 9);
+  for (const term of concept.subjects) push(term, 8);
+  for (const term of concept.terms) push(term, 4);
+  for (const phrase of concept.phrases) {
+    for (const part of phrase.split(" ")) push(part, 5);
+  }
+
+  const phrases = concept.phrases.filter((phrase) => phrase.includes(" "));
+  const questions = [
+    concept.intent.slice(0, 300),
+    [...phrases, ...concept.actions, ...concept.subjects].join(" ").slice(0, 300),
+  ].filter(Boolean);
+
+  return {
+    subjectId,
+    focus: concept.focus,
+    // Thirty terms is the useful ceiling. A longer list does not add recall, it
+    // dilutes the weights so that every file looks equally relevant to every
+    // requirement.
+    terms: ranked.sort((a, b) => b.weight - a.weight).map((item) => item.term).slice(0, 30),
+    phrases,
+    artifacts: concept.artifacts,
+    questions,
+  };
+}
+
+// ── Ranking ────────────────────────────────────────────────────────────────
+
+export interface RetrieveInput {
+  plan: RetrievalPlan;
+  index: RepoIndex;
+  maxFiles?: number;
+  maxSnippetLines?: number;
+  maxEvidenceIds?: number;
+}
+
+export function retrieve(input: RetrieveInput): RetrievalResult {
+  const { plan, index } = input;
+  const maxFiles = input.maxFiles ?? 6;
+  const maxLines = input.maxSnippetLines ?? 120;
+  const maxEvidence = input.maxEvidenceIds ?? 24;
+
+  const hits: FileHit[] = [];
+  const datasetScores = new Map<string, number>();
+  const matchedAnywhere = new Set<string>();
+  let considered = 0;
+
+  for (const [path, file] of index.files) {
+    if (file.is_ignored || file.is_binary) continue;
+    // A file with no chunk is not skipped: it is scored on whatever signals it
+    // has (path, evidence claims, routes, semantics, dataset profile) and drops
+    // out at `score <= 4` if none of them match. Skipping it outright used to
+    // make every interface requirement blind to the HTML that implements it.
+    considered += 1;
+
+    const pathTerms = index.termsByPath.get(path) ?? new Set<string>();
+    const bodyTerms = index.bodyTermsByPath.get(path) ?? new Set<string>();
+    const symbols = index.symbolsByPath.get(path) ?? [];
+    const routes = index.routesByPath.get(path) ?? [];
+    const dataset = index.datasetByPath.get(path);
+    const semantics = index.semanticsByPath.get(path);
+
+    const components: FileHit["components"] = {
+      semantic: 0,
+      keyword: 0,
+      importance: 0,
+      symbol: 0,
+      route: 0,
+      dataset: 0,
+      dependency: 0,
+      logic: 0,
+      artifact: artifactAffinity(plan.artifacts, file),
+    };
+    const matched: string[] = [];
+
+    // Semantic relevance: does the code itself speak the requirement's words?
+    // Rank matters, so the first terms are worth more than the last.
+    plan.terms.forEach((term, index_) => {
+      const weight = Math.max(1, 10 - Math.floor(index_ / 4));
+      if (pathTerms.has(term) || symbols.some((symbol) => symbol.toLowerCase().includes(term))) {
+        components.symbol += weight;
+        components.semantic += weight;
+        matched.push(term);
+        matchedAnywhere.add(term);
+      }
+      if (bodyTerms.has(term)) {
+        components.semantic += weight;
+        matchedAnywhere.add(term);
+      }
+    });
+    components.semantic = Math.min(40, components.semantic);
+
+    // Literal phrase match beats token match.
+    for (const phrase of plan.phrases) {
+      const needle = phrase.toLowerCase();
+      const inPath = path.toLowerCase().includes(needle);
+      const inSymbol = symbols.some((symbol) => symbol.toLowerCase().includes(needle));
+      if (inPath || inSymbol) {
+        components.keyword += 10;
+        matched.push(phrase);
+        matchedAnywhere.add(phrase);
+      }
+    }
+    components.keyword = Math.min(30, components.keyword);
+
+    components.importance =
+      IMPORTANCE_SCORE[String(file.importance ?? "low")] ?? 4;
+
+    for (const route of routes) {
+      const routeText = `${route.path} ${route.symbol ?? ""}`.toLowerCase();
+      if (plan.terms.some((term) => routeText.includes(term))) {
+        components.route += 10;
+        matchedAnywhere.add(route.path);
+      }
+    }
+
+    if (dataset) {
+      if (dataset.relevance === "high") components.dataset += 14;
+      else if (dataset.relevance === "medium") components.dataset += 7;
+
+      // A dataset's *shape* is evidence too. A requirement about forecasting
+      // over a configurable future window is answered by a file that is dated,
+      // keyed by item and carries measured amounts; a requirement about
+      // reorder quantities is answered by one that carries stock levels. None of
+      // that is technology detection, and none of it is a keyword match on a
+      // filename.
+      const entityHit = [...dataset.entity_columns, ...dataset.identifier_columns].some(
+        (column) => plan.terms.some((term) => column.toLowerCase().includes(term)),
+      );
+      if (entityHit) components.dataset += 10;
+
+      if (
+        plan.terms.some((term) =>
+          [
+            "date", "time", "history", "historical", "trend", "future", "window",
+            "horizon", "daily", "weekly", "monthly", "forecast", "demand",
+            "season", "overdue", "upcoming",
+          ].includes(term),
+        ) &&
+        dataset.date_columns.length
+      ) {
+        components.dataset += 8;
+      }
+
+      if (
+        plan.terms.some((term) =>
+          [
+            "quantity", "qty", "amount", "stock", "level", "sales", "revenue",
+            "price", "count", "volume", "units", "balance", "available",
+          ].includes(term),
+        ) &&
+        (dataset.quantity_columns.length ||
+          dataset.stock_columns.length ||
+          dataset.price_columns.length)
+      ) {
+        components.dataset += 8;
+      }
+    }
+
+    if (index.manifestPaths.has(path)) {
+      const fileTokens = pathTerms;
+      if (plan.terms.some((term) => fileTokens.has(term))) components.dependency += 6;
+    }
+
+    // Business logic: a calculation or rule that involves the requirement's
+    // words is the single strongest signal that the behaviour exists.
+    if (semantics) {
+      const groups = [
+        semantics.calculations,
+        semantics.rules,
+        semantics.models,
+        semantics.dataAccess,
+      ];
+      for (const group of groups) {
+        const hit = group.find((item) =>
+          item.identifiers.some((identifier) =>
+            plan.terms.some((term) => identifier.toLowerCase().includes(term)),
+          ),
+        );
+        if (hit) {
+          components.logic += 12;
+          matched.push(...hit.identifiers.slice(0, 2));
+          matchedAnywhere.add(hit.operation);
+        }
+      }
+      if (plan.artifacts.includes("ui") && semantics.ui.length > 0) {
+        const hit = semantics.ui.find((item) =>
+          item.identifiers.some((identifier) =>
+            plan.terms.some((term) => identifier.toLowerCase().includes(term)),
+          ),
+        );
+        if (hit) components.logic += 6;
+      }
+    }
+
+    const score =
+      components.semantic +
+      components.keyword +
+      components.importance +
+      components.symbol +
+      components.route +
+      components.dataset +
+      components.dependency +
+      components.logic +
+      components.artifact;
+
+    if (score <= 4) continue;
+
+    if (dataset) datasetScores.set(path, components.dataset + components.semantic);
+
+    const chunk = pickChunk(index, path, plan, maxLines);
+    hits.push({
+      path,
+      score,
+      components,
+      matchedTerms: [...new Set(matched)].slice(0, 8),
+      symbol: chunk?.symbol_name ?? null,
+      startLine: Number(chunk?.start_line ?? 1),
+      endLine: Number(chunk?.end_line ?? Math.max(1, Number(chunk?.end_line ?? 1))),
+      excerpt: chunk ? renderChunk(chunk, maxLines) : "",
+    });
+  }
+
+  hits.sort((a, b) => b.score - a.score);
+  // A repository that keeps a copy of a data file in two places is common, and
+  // both copies score identically. Two slots for one fact wastes the packet, so
+  // only the best-scoring copy of each name is kept.
+  const seenNames = new Set<string>();
+  const deduped = hits.filter((hit) => {
+    const name = hit.path.slice(hit.path.lastIndexOf("/") + 1).toLowerCase();
+    if (seenNames.has(name)) return false;
+    seenNames.add(name);
+    return true;
+  });
+  const selected = deduped.slice(0, maxFiles);
+
+  const selectedPaths = new Set(selected.map((hit) => hit.path));
+
+  // A dataset is evidence in its own right, not just a file: a forecast
+  // requirement is argued from the history, so the two most relevant profiles
+  // travel with every requirement even when their file lost the ranking to
+  // six source files. A compact profile costs ~200 tokens; the rows behind it
+  // never travel at all.
+  const datasetPaths = [...datasetScores.entries()]
+    .filter(([path, score]) => score > 0 && !selectedPaths.has(path))
+    .sort((a, b) => b[1] - a[1])
+    .map(([path]) => path);
+  const seenDatasetNames = new Set<string>(
+    [...selectedPaths]
+      .filter((path) => index.datasetByPath.has(path))
+      .map((path) => path.slice(path.lastIndexOf("/") + 1).toLowerCase()),
+  );
+  const topDatasets = datasetPaths
+    .filter((path) => {
+      const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+      if (seenDatasetNames.has(name)) return false;
+      seenDatasetNames.add(name);
+      return true;
+    })
+    .slice(0, 2);
+
+  const evidenceIds: string[] = [];
+  for (const path of [...selectedPaths, ...datasetPaths]) {
+    for (const evidence of index.evidenceByPath.get(path) ?? []) {
+      if (!evidenceIds.includes(evidence.id)) evidenceIds.push(evidence.id);
+    }
+  }
+  for (const evidence of index.globalEvidence) {
+    if (evidenceIds.length >= maxEvidence) break;
+    if (!evidenceIds.includes(evidence.id)) evidenceIds.push(evidence.id);
+  }
+
+  return {
+    plan,
+    files: selected,
+    evidenceIds: evidenceIds.slice(0, maxEvidence),
+    datasetPaths: [
+      ...[...selectedPaths].filter((path) => index.datasetByPath.has(path)),
+      ...topDatasets,
+    ].slice(0, 3),
+    considered,
+    truncated: deduped.length > selected.length,
+    unmatchedTerms: plan.terms
+      .filter((term) => !matchedAnywhere.has(term))
+      .slice(0, 12),
+  };
+}
+
+/**
+ * Does the requirement's own artefact list say "this kind of file is where the
+ * answer lives"?
+ *
+ * A brief about an interface points at markup and view files; a brief about a
+ * reorder rule points at service code; a brief about a dataset points at data
+ * files. This is derived from the requirement's own capability, so it cannot
+ * encode an expectation about any technology — a hand-written HTML page and a
+ * React page score identically.
+ */
+function artifactAffinity(artifacts: string[], file: IndexFile): number {
+  if (!artifacts.length) return 0;
+  const path = String(file.path ?? "").toLowerCase();
+  const extension = path.slice(path.lastIndexOf("."));
+  const category = String(file.file_category ?? "");
+
+  const wants = (name: string) => artifacts.includes(name);
+  let score = 0;
+
+  if (wants("ui") && (category === "component" || [".html", ".css", ".scss", ".vue", ".svelte", ".jsx", ".tsx"].includes(extension))) {
+    score += 14;
+  }
+  if (wants("route") && (category === "api" || /route|controller|endpoint|view\//.test(path))) {
+    score += 10;
+  }
+  if (wants("calculation") && ["source", "api", "model"].includes(category) && [".py", ".js", ".ts", ".go", ".rb", ".java", ".php", ".cs"].includes(extension)) {
+    score += 8;
+  }
+  if (wants("model") && /(model|ml|train|predict)/.test(path)) score += 10;
+  if (wants("ingestion") && (/(data|load|ingest|etl|import|seed)/.test(path) || category === "dataset")) {
+    score += 10;
+  }
+  if (wants("schema") && (category === "schema" || category === "database")) score += 8;
+  if (wants("query") && [".sql", ".prisma", ".graphql"].includes(extension)) score += 8;
+  if (wants("test") && (category === "test" || /test|spec/.test(path))) score += 8;
+  if (wants("configuration") && category === "config") score += 4;
+  if (wants("readme") && category === "documentation") score += 6;
+  if (wants("data_loading") && /(read|load|ingest|etl|data)/.test(path)) score += 6;
+  if (wants("file_read") && category === "dataset") score += 6;
+
+  return Math.min(20, score);
+}
+
+function pickChunk(
+  index: RepoIndex,
+  path: string,
+  plan: RetrievalPlan,
+  _maxLines: number,
+): IndexChunk | null {
+  const chunks = index.chunksByPath.get(path) ?? [];
+  if (!chunks.length) return null;
+  const scored = chunks
+    .map((chunk) => {
+      const symbol = String(chunk.symbol_name ?? "").toLowerCase();
+      const content = String(chunk.content ?? "").toLowerCase();
+      const termHits = plan.terms.filter(
+        (term) => symbol.includes(term) || content.includes(term),
+      ).length;
+      const highImportance = chunk.importance === "high" ? 1 : 0;
+      return { chunk, score: termHits * 3 + highImportance };
+    })
+    .sort((a, b) => b.score - a.score);
+  return scored[0]?.chunk ?? null;
+}
+
+function renderChunk(chunk: IndexChunk, maxLines: number): string {
+  const lines = String(chunk.content ?? "").split("\n");
+  const shown = lines.slice(0, maxLines);
+  let body = shown.join("\n");
+  if (shown.length < lines.length) body += "\n… (truncated)";
+  return body;
+}
+
+/** The snippet block handed to a model, with file boundaries made explicit. */
+export function renderPacket(result: RetrievalResult): string {
+  if (!result.files.length) return "";
+  return result.files
+    .map((hit) => {
+      const header =
+        `--- ${hit.path}` +
+        (hit.symbol ? ` [${hit.symbol}]` : "") +
+        ` lines ${hit.startLine}-${hit.endLine}` +
+        (hit.matchedTerms.length
+          ? ` (matches: ${hit.matchedTerms.slice(0, 4).join(", ")})`
+          : "") +
+        " ---";
+      if (!hit.excerpt) {
+        return `${header}\n(no chunk was extracted for this file; the file's ` +
+          "identifiers and evidence are listed instead)";
+      }
+      return `${header}\n${hit.excerpt}`;
+    })
+    .join("\n\n");
+}
+
+/** One line per file, for the admin diagnostics panel. */
+export function describeRetrieval(result: RetrievalResult): Record<string, unknown> {
+  return {
+    subject_id: result.plan.subjectId,
+    focus: result.plan.focus,
+    queries: result.plan.questions.slice(0, 3),
+    terms: result.plan.terms.slice(0, 14),
+    files_considered: result.considered,
+    files_retrieved: result.files.length,
+    truncated: result.truncated,
+    files: result.files.map((hit) => ({
+      path: hit.path,
+      score: hit.score,
+      symbol: hit.symbol,
+      components: hit.components,
+      matched: hit.matchedTerms,
+    })),
+    unmatched_terms: result.unmatchedTerms,
+    evidence_ids: result.evidenceIds,
+  };
 }

@@ -91,7 +91,7 @@ const CAPABILITIES: Capability[] = [
     synonyms: [
       "ingest", "ingestion", "read_csv", "readcsv", "load_csv", "csv", "tsv",
       "jsonl", "ndjson", "parse", "parser", "loader", "load_data", "read_data",
-      "import", "upload", "file", "files", "pandas", "dataframe", "dataset",
+      "import", "upload", "file", "files", "dataframe", "dataset",
       "raw", "source", "history", "historical", "transaction", "transactions",
       "record", "records", "row", "rows", "column", "columns", "schema",
       "migration", "seed", "fixture", "sample", "snapshot", "extract",
@@ -119,7 +119,7 @@ const CAPABILITIES: Capability[] = [
       "trend", "trendline", "seasonal", "seasonality", "horizon", "window",
       "future", "slope", "coefficient", "weight", "weights", "score", "rmse",
       "mae", "mape", "accuracy", "backtest", "holdout", "timeseries", "series",
-      "np", "numpy", "pd", "math", "statistics", "linregress", "polyfit",
+      "deviation", "expected", "residual",
     ],
     weight: 6,
   },
@@ -266,23 +266,35 @@ export function termsOf(text: string): string[] {
 }
 
 /**
- * A conservative stemmer. Only inflections that keep the word recognisable are
- * folded, and the unstemmed form is always kept too, so a search for "reorder"
- * still finds "reordering" and a search for "reordering" still finds "reorder".
+ * Words whose ending looks like an inflection but is not. Folding "ingest" to
+ * "inge" would make the retriever miss the single most important verb in a data
+ * requirement, so these are excluded by hand.
  */
-function stem(word: string): string {
-  if (word.length <= 4) return word;
-  for (const [suffix, min] of [
-    ["ies", 5], ["ing", 6], ["ed", 5], ["es", 5], ["s", 4],
-  ] as const) {
-    if (word.endsWith(suffix) && word.length >= min) {
-      const base = word.slice(0, word.length - suffix.length);
-      // "ingest" must not become "ing"; "business" must not become "busines".
-      if (base.length >= 3 && !/[aeiou]{3}/.test(base.slice(-3)) === false) {
-        return base;
-      }
-    }
-  }
+const UNFOLDABLE = new Set([
+  "ingest", "business", "series", "process", "status", "analysis", "access",
+  "address", "class", "loss", "bias", "news", "press", "canvas", "basis",
+  "hypothesis", "synthesis", "axis", "crisis", "thesis", "focus", "radius",
+  "virus", "census", "bonus", "consensus", "gas", "less", "this", "was", "has",
+  "its", "us", "plus", "as", "is", "up", "app", "map", "gap", "map", "web",
+  "redis", "less", "across", "less", "series", "always", "perhaps", "unless",
+  "unless", "cross", "less", "styles", "styles", "caches", "boxes", "indexes",
+]);
+
+/**
+ * A deliberately conservative stemmer.
+ *
+ * Only inflections that keep the word recognisable are folded, the result must
+ * stay long enough to still mean something, and the unstemmed form is always
+ * kept alongside it. So "reorder" still finds "reordering" and "reordering"
+ * still finds "reorder", while "ingest" is left alone.
+ */
+export function stem(word: string): string {
+  if (word.length <= 4 || UNFOLDABLE.has(word)) return word;
+  if (word.endsWith("ies") && word.length >= 6) return `${word.slice(0, -3)}y`;
+  if (word.endsWith("ing") && word.length >= 7) return word.slice(0, -3);
+  if (word.endsWith("ed") && word.length >= 6) return word.slice(0, -2);
+  if (word.endsWith("es") && word.length >= 6) return word.slice(0, -2);
+  if (word.endsWith("s") && word.length >= 5) return word.slice(0, -1);
   return word;
 }
 
@@ -422,6 +434,24 @@ export function analyseRequirement(
   map?: RequirementMap,
 ): ConceptSet {
   const clean = String(text ?? "").trim();
+  if (!clean) {
+    // An Open Innovation hackathon has no requirements, and the product
+    // promises not to invent any. An empty concept set is a real answer, and
+    // the planner skips requirement analysis rather than fabricating REQ-001.
+    return {
+      text: "",
+      intent: "",
+      focus: "general",
+      phrases: [],
+      actions: [],
+      subjects: [],
+      qualifiers: [],
+      terms: [],
+      domainTerms: [],
+      facets: [],
+      artifacts: [],
+    };
+  }
   const own = termsOf(clean);
 
   // Capability words present in the requirement itself.
@@ -462,18 +492,24 @@ export function analyseRequirement(
     }
   }
 
-  // Domain vocabulary: nouns from the brief that this requirement also uses,
-  // plus the requirement's own content words. This is what makes the engine
-  // domain-agnostic — the "medicine" in a pharmacy challenge and the
-  // "transaction" in a fintech challenge come from the brief, not from here.
+  // Domain vocabulary: words from the requirement that the brief also uses.
+  //
+  // Only the requirement's *own* words qualify. Promoting the synonym list here
+  // would turn "data" and "model" into domain terms for every brief that
+  // mentions anything at all, and a dataset would then look relevant because
+  // its folder was called `data/`. Domain words are the problem's nouns, and
+  // they come from the brief — which is what makes this engine work for a
+  // pharmacy challenge and a fintech challenge with the same code.
   const domainTerms = new Set<string>();
   for (const word of subjects) {
     if (vocabulary?.words.has(word) || vocabulary?.words.has(stem(word))) {
       domainTerms.add(word);
     }
   }
-  for (const term of termSet) {
-    if (vocabulary?.words.has(term)) domainTerms.add(term);
+  for (const word of actions) {
+    if (vocabulary?.words.has(word) || vocabulary?.words.has(stem(word))) {
+      domainTerms.add(word);
+    }
   }
 
   const qualifiers = detectQualifiers(clean);
@@ -601,6 +637,7 @@ export interface RequirementGroup {
 export function groupRequirements(map: RequirementMap): RequirementGroup[] {
   const vocabulary = briefVocabulary(map);
   const groups = new Map<FocusGroup, RequirementGroup>();
+  if ((map.requirements ?? []).length === 0) return [];
 
   for (const entry of map.requirements ?? []) {
     const concepts = analyseRequirement(entry.text, vocabulary, map);
@@ -629,7 +666,9 @@ export function analyseBriefItems(
   map: RequirementMap,
 ): ConceptSet[] {
   const vocabulary = briefVocabulary(map);
-  return items.map((item) => analyseRequirement(item.text, vocabulary, map));
+  return (items ?? [])
+    .filter((item) => Boolean(item?.text?.trim()))
+    .map((item) => analyseRequirement(item.text, vocabulary, map));
 }
 
 /**

@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 import type {
   AiFinding,
   Confidence,
+  DatasetProfile,
   DefenseTarget,
   Evidence,
   ProjectMap,
@@ -215,6 +216,8 @@ export function CoverageMatrix({
       explanation: string | null;
       evidence_ids: string[];
       source: string;
+      missing_or_unclear?: string[];
+      ai_used?: boolean;
     } | null;
   }[];
   evidence: Evidence[];
@@ -275,6 +278,19 @@ export function CoverageMatrix({
                     {evaluation.explanation}
                   </p>
                 )}
+                {(evaluation?.missing_or_unclear ?? []).length > 0 && (
+                  <ul className="mt-2 flex max-w-md flex-col gap-1">
+                    {(evaluation?.missing_or_unclear ?? []).map((item) => (
+                      <li
+                        key={item}
+                        className="flex items-start gap-1.5 text-xs leading-relaxed text-stage-submit"
+                      >
+                        <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </td>
               <td className="px-4 py-3">
                 {evaluation && (evaluation.evidence_ids ?? []).length > 0 ? (
@@ -310,8 +326,17 @@ export function CoverageMatrix({
                 )}
               </td>
               <td className="px-4 py-3">
-                <span className="label-mono text-[10px] text-muted-foreground">
-                  {evaluation?.source ?? "—"}
+                <span
+                  className="label-mono text-[10px] text-muted-foreground"
+                  title={
+                    evaluation?.ai_used === false
+                      ? "Decided without a model, because a count or a named file settled it."
+                      : "Read from the retrieved code by the model."
+                  }
+                >
+                  {evaluation?.ai_used === false
+                    ? "measured"
+                    : (evaluation?.source ?? "—")}
                 </span>
               </td>
             </tr>
@@ -437,6 +462,240 @@ export function DefenseTargetList({
           {target.reason && (
             <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
               {target.reason}
+            </p>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// ── The structured assessment (§50) ────────────────────────────────────────
+
+/**
+ * The assessment. Every field is a sentence about evidence, and the three lists
+ * — strengths, gaps, uncertainties — are the point: an honest analysis says what
+ * it could not establish, and this component refuses to hide that behind a
+ * summary line. There is no score and no verdict, by design.
+ */
+export function AssessmentCard({
+  assessment,
+  evidence,
+  strengths,
+  gaps,
+  uncertainties,
+}: {
+  assessment: {
+    headline: string;
+    understanding: string;
+    problem_relevance: string;
+    solution_coherence: string;
+    implementation_evidence: string;
+    functional_completeness: string;
+    technical_quality: string;
+    claim_accuracy: string;
+    hackathon_alignment: string;
+    evidence_ids?: string[];
+  } | null;
+  evidence: Evidence[];
+  strengths?: string[];
+  gaps?: string[];
+  uncertainties?: string[];
+}) {
+  if (!assessment) {
+    return (
+      <NoticeState
+        title="No assessment yet"
+        message="The analysis has not been run for this submission."
+      />
+    );
+  }
+
+  const dimensions: [string, string][] = [
+    ["What this project is", assessment.understanding],
+    ["Relation to the problem", assessment.problem_relevance],
+    ["Does it form a working chain", assessment.solution_coherence],
+    ["Implementation evidence", assessment.implementation_evidence],
+    ["What is complete", assessment.functional_completeness],
+    ["Technical quality", assessment.technical_quality],
+    ["Description vs implementation", assessment.claim_accuracy],
+    ["This hackathon's expectations", assessment.hackathon_alignment],
+  ];
+
+  return (
+    <div className="flex flex-col gap-5">
+      <p className="text-base leading-relaxed">{assessment.headline}</p>
+
+      <dl className="grid gap-4 sm:grid-cols-2">
+        {dimensions
+          .filter(([, body]) => Boolean(body?.trim()))
+          .map(([label, body]) => (
+            <div key={label}>
+              <dt className="label-mono text-[10px] text-muted-foreground">
+                {label}
+              </dt>
+              <dd className="mt-1 text-sm leading-relaxed">{body}</dd>
+            </div>
+          ))}
+      </dl>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <ListBlock
+          title="What works"
+          items={strengths ?? []}
+          empty="Nothing was singled out as a strength."
+          tone="text-stage-report"
+        />
+        <ListBlock
+          title="What is missing or partial"
+          items={gaps ?? []}
+          empty="Nothing was recorded as missing."
+          tone="text-stage-submit"
+        />
+        <ListBlock
+          title="What could not be determined"
+          items={uncertainties ?? []}
+          empty="Nothing was left uncertain."
+          tone="text-muted-foreground"
+        />
+      </div>
+
+      <EvidenceList
+        ids={assessment.evidence_ids ?? []}
+        evidence={evidence}
+        className="border-t border-border pt-4"
+      />
+    </div>
+  );
+}
+
+function ListBlock({
+  title,
+  items,
+  empty,
+  tone,
+}: {
+  title: string;
+  items: string[];
+  empty: string;
+  tone: string;
+}) {
+  return (
+    <div>
+      <p className="label-mono text-[10px] text-muted-foreground">{title}</p>
+      {items.length === 0 ? (
+        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+          {empty}
+        </p>
+      ) : (
+        <ul className="mt-1.5 flex flex-col gap-1.5">
+          {items.map((item) => (
+            <li key={item} className={cn("text-xs leading-relaxed", tone)}>
+              {item}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Which characteristics were looked at, and why. The rows marked "not looked
+ * at" are the important ones: they are how a reader learns that a missing
+ * database was a decision, not an oversight.
+ */
+export function DimensionList({
+  dimensions,
+}: {
+  dimensions: { key: string; label: string; relevance: string; reason: string }[];
+}) {
+  const relevant = dimensions.filter((item) => item.relevance !== "not_applicable");
+  const skipped = dimensions.filter((item) => item.relevance === "not_applicable");
+
+  return (
+    <div className="flex flex-col gap-4">
+      {relevant.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {relevant.map((item) => (
+            <li key={item.key} className="flex flex-wrap items-baseline gap-2">
+              <Badge
+                variant="outline"
+                className="label-mono text-[10px]"
+              >
+                {item.relevance === "required" ? "asked for" : "looked at"}
+              </Badge>
+              <span className="text-sm">{item.label}</span>
+              <span className="w-full text-xs leading-relaxed text-muted-foreground sm:w-auto">
+                {item.reason}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {skipped.length > 0 && (
+        <div>
+          <p className="label-mono text-[10px] text-muted-foreground">
+            Not looked at, and why
+          </p>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {skipped.map((item) => (
+              <li
+                key={item.key}
+                className="text-xs leading-relaxed text-muted-foreground"
+              >
+                <span className="text-foreground">{item.label}</span> — {item.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** §36 — the datasets the scan profiled, described rather than dumped. */
+export function DatasetList({ datasets }: { datasets: DatasetProfile[] }) {
+  if (!datasets?.length) {
+    return (
+      <NoticeState
+        title="No datasets in this repository"
+        message="Nothing in the repository looked like a data file. That is only a problem if the challenge needed one."
+      />
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-3">
+      {datasets.map((dataset) => (
+        <li key={dataset.path} className="rounded-md border border-border p-4">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <FileCode2 className="size-3.5 shrink-0 text-brand" />
+            <span className="font-mono text-xs">{dataset.path}</span>
+            <span className="label-mono text-[10px] text-muted-foreground">
+              {dataset.format} · ~
+              {dataset.approx_row_count.toLocaleString()} rows
+              {dataset.row_count_exact ? "" : " (estimated)"} ·{" "}
+              {Math.round(dataset.size_bytes / 1024)} KB
+            </span>
+            {dataset.relevance === "high" && (
+              <Badge variant="outline" className="label-mono text-[10px]">
+                matches the brief
+              </Badge>
+            )}
+          </div>
+          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+            {dataset.likely_purpose}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {dataset.column_names.slice(0, 12).map((column) => (
+              <Badge key={column} variant="outline" className="text-[10px]">
+                {column}
+              </Badge>
+            ))}
+          </div>
+          {(dataset.notes ?? []).length > 0 && (
+            <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+              {(dataset.notes ?? []).join(" ")}
             </p>
           )}
         </li>

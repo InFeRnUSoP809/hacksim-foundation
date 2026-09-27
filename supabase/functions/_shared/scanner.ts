@@ -21,6 +21,8 @@
 import { db, HttpError } from "./http.ts";
 import { settings } from "./ai.ts";
 import { GitHubClient, GitHubError } from "./github-api.ts";
+import { profileDataset, type DatasetProfile } from "./datasets.ts";
+import { analyseSemantics, type SemanticsResult } from "./semantics.ts";
 import {
   basenameOf,
   buildProjectMap,
@@ -58,13 +60,22 @@ import {
   type Symbol,
 } from "./github.ts";
 
-export const SCANNER_VERSION = "p5-1";
+export const SCANNER_VERSION = "p5-3";
 
 // §87 read priority. Anything not in these categories is never fetched.
 const READ_CATEGORIES = new Set([
   "source", "component", "api", "model", "schema", "database", "config",
-  "documentation", "test",
+  "documentation", "test", "dataset",
 ]);
+
+// A repository can ship a hundred data files. Reading all of them is neither
+// necessary nor affordable, so the read set is capped and the omission is
+// recorded as a warning rather than silently producing a thinner analysis.
+const MAX_DATASETS_READ = 25;
+/** Only the head of a dataset is ever read. */
+const DATASET_HEAD_BYTES = 512_000;
+/** A data file above this is recorded in the inventory but not parsed. */
+const MAX_DATASET_BYTES = 20 * 1024 * 1024;
 
 // Config/dependency files that are small and always worth reading.
 const ALWAYS_READ_NAMES = new Set([
@@ -88,6 +99,28 @@ interface FileRecord {
   sha: string | null;
 }
 
+/**
+ * A `.json` file is a config file far more often than it is a dataset, and
+ * guessing wrong on package.json would be absurd. Only a JSON file that is
+ * neither a manifest nor a known config file is treated as a possible dataset;
+ * whether it actually holds records is decided by parsing it.
+ */
+function looksLikeDataPath(path: string, fileName: string): boolean {
+  if (!path.toLowerCase().endsWith(".json")) return false;
+  const name = fileName.toLowerCase();
+  if (name === "package.json" || name === "composer.json" || name === "manifest.json") {
+    return false;
+  }
+  if (name.startsWith("tsconfig") || name.startsWith("jsconfig")) return false;
+  if (name.startsWith("babel") || name.startsWith("eslint")) return false;
+  if (name.startsWith("prettier") || name.startsWith("stylelint")) return false;
+  const parts = path.toLowerCase().split("/");
+  return parts.some((part) =>
+    ["data", "dataset", "datasets", "dump", "export", "records", "rows", "sample", "samples"]
+      .includes(part),
+  );
+}
+
 export interface ScanResult {
   owner: string;
   repoName: string;
@@ -102,6 +135,9 @@ export interface ScanResult {
   chunks: Record<string, unknown>[];
   evidence: Evidence[];
   projectMap: ProjectMap;
+  datasetProfiles: DatasetProfile[];
+  semantics: SemanticsResult[];
+  routes: Route[];
   secretCount: number;
   scannerVersion: string;
 }
@@ -208,12 +244,23 @@ export async function scanRepository(
   }
 
   // ── 2. Choose the read set (§87, §88) ──────────────────────────────────
-  const readCandidates = inventory.filter(
-    (item) =>
-      !item.record.is_ignored &&
+  const readCandidates = inventory.filter((item) => {
+    if (item.record.is_ignored) return false;
+    // A data file is worth reading even when it is far larger than a source
+    // file, because only its head is parsed and its size is what makes the
+    // profile meaningful. A 400 KB source-file cap would skip exactly the
+    // 1.6 MB dataset that decides whether a data requirement is met.
+    if (item.record.file_category === "dataset") {
+      return item.record.file_size <= MAX_DATASET_BYTES;
+    }
+    if (looksLikeDataPath(item.record.path, item.record.file_name ?? "")) {
+      return item.record.file_size <= MAX_DATASET_BYTES;
+    }
+    return (
       READ_CATEGORIES.has(item.record.file_category) &&
-      item.record.file_size <= config.analysisMaxFileBytes,
-  );
+      item.record.file_size <= config.analysisMaxFileBytes
+    );
+  });
 
   // Always read the small, high-signal files first.
   const priority = (item: InventoryItem): number => {
@@ -256,6 +303,19 @@ export async function scanRepository(
   const testCommandContents: string[] = [];
   let readme: ReturnType<typeof parseReadme> | null = null;
   let blobBudgetExhausted = false;
+  const datasetProfiles: DatasetProfile[] = [];
+  const semantics: SemanticsResult[] = [];
+  let datasetsRead = 0;
+  let datasetsSkipped = 0;
+
+  /**
+   * Dataset relevance is scored in Phase 6, where the hackathon brief is
+   * available. The scanner records neutral facts — columns, roles, purpose —
+   * and `datasets.rescoreRelevance` re-scores them against the real brief
+   * later. Scoring it here would require a repository scan to know what
+   * challenge it is being judged against, which it is not.
+   */
+  const conceptSeeds = (): never[] => [];
 
   for (const item of inventory) {
     const { record, category } = item;
@@ -291,7 +351,7 @@ export async function scanRepository(
       continue;
     }
 
-    const binary = looksBinary(blob);
+    const binary = looksBinary(blob, path);
     record.is_binary = binary;
     record.file_size = blob.length;
     files.push(record);
@@ -301,7 +361,36 @@ export async function scanRepository(
       continue;
     }
 
-    const content = decodeText(blob);
+    // ── Datasets: profile the head, never keep the whole file ─────────────
+    const isDataFile =
+      category === "dataset" ||
+      (path.toLowerCase().endsWith(".json") &&
+        looksLikeDataPath(path, record.file_name ?? ""));
+    if (isDataFile) {
+      if (datasetsRead >= MAX_DATASETS_READ) {
+        datasetsSkipped += 1;
+        files.push(record);
+        continue;
+      }
+      datasetsRead += 1;
+      const head =
+        blob.length > DATASET_HEAD_BYTES ? blob.slice(0, DATASET_HEAD_BYTES) : blob;
+      const headText = decodeText(head, path);
+      if (headText !== null) {
+        const profile = profileDataset(
+          { path, content: headText, sizeBytes: blob.length },
+          conceptSeeds(),
+        );
+        if (profile) {
+          datasetProfiles.push(profile);
+          record.importance = "high";
+        }
+      }
+      files.push(record);
+      continue;
+    }
+
+    const content = decodeText(blob, path);
     if (content === null) {
       record.is_binary = true;
       continue;
@@ -351,13 +440,46 @@ export async function scanRepository(
       if (parserStatus === "ok") {
         allSymbols.push(...symbols);
         chunks.push(...chunksFor(path, record, symbols, content, importance));
+      } else {
+        // A language the symbol extractor does not parse — HTML, CSS, SQL — is
+        // still source. Without a chunk it has no body text, so requirement
+        // retrieval cannot see it at all and an interface brief ends up judging
+        // a dashboard requirement against backend files only.
+        chunks.push(headChunk(path, record, content, importance));
       }
       routes.push(...extractRoutes(path, content));
       integrations.push(...extractIntegrations(content, path));
+
+      // What the code *does*, as opposed to which library it imported. This is
+      // the material a requirement is judged against.
+      const found = analyseSemantics(
+        path,
+        content,
+        symbols.map((symbol) => ({
+          name: symbol.name,
+          line: symbol.line,
+          symbol_type: symbol.symbol_type,
+        })),
+      );
+      if (
+        found.calculations.length ||
+        found.rules.length ||
+        found.models.length ||
+        found.dataAccess.length ||
+        found.ui.length
+      ) {
+        semantics.push(found);
+      }
     }
   }
 
   // ── 4. Dependency-derived detections ───────────────────────────────────
+  if (datasetsSkipped) {
+    warnings.push(
+      `${datasetsSkipped} further data file(s) were not profiled to stay within ` +
+        `the limit of ${MAX_DATASETS_READ} datasets per repository.`,
+    );
+  }
   const frameworks = detectFrameworks(dependencies, configFilenames);
   const databases = [
     ...detectDatabases(dependencies, files.map((f) => f.path)),
@@ -387,6 +509,8 @@ export async function scanRepository(
     secrets,
     files,
     analysisMode,
+    datasetProfiles,
+    semantics,
   });
 
   const projectMap = buildProjectMap({
@@ -414,6 +538,8 @@ export async function scanRepository(
     secrets,
     analysisMode,
     warnings,
+    datasetProfiles,
+    semantics,
   });
 
   if (blobBudgetExhausted && !projectMap.apis.length) {
@@ -438,6 +564,9 @@ export async function scanRepository(
     chunks,
     evidence: registry.toList(),
     projectMap,
+    datasetProfiles,
+    semantics,
+    routes,
     secretCount: secrets.length,
     scannerVersion: SCANNER_VERSION,
   };
@@ -492,6 +621,32 @@ function chunksFor(
   return chunks;
 }
 
+/**
+ * One chunk covering the head of a file the symbol parser does not understand.
+ * Enough for retrieval to rank the file and for a model to read its opening
+ * structure; not a parse, and not presented as one.
+ */
+function headChunk(
+  path: string,
+  record: FileRecord,
+  content: string,
+  importance: string,
+): Record<string, unknown> {
+  const lines = content.split("\n");
+  const end = Math.min(lines.length, 200);
+  return {
+    file_path: path,
+    chunk_index: 0,
+    start_line: 1,
+    end_line: end,
+    content: lines.slice(0, end).join("\n").slice(0, 12000),
+    symbol_name: null,
+    symbol_type: "file",
+    language: record.language,
+    importance,
+  };
+}
+
 /** Turn every detection into an evidence object (§26). */
 function recordStructuralEvidence(
   registry: EvidenceRegistry,
@@ -510,6 +665,8 @@ function recordStructuralEvidence(
     secrets: SecretFinding[];
     files: FileRecord[];
     analysisMode: "full" | "limited";
+    datasetProfiles: DatasetProfile[];
+    semantics: SemanticsResult[];
   },
 ): void {
   registry.add({
@@ -616,6 +773,106 @@ function recordStructuralEvidence(
     });
   }
 
+  // ── Datasets (§36) ──────────────────────────────────────────────────────
+  // A dataset is profiled deterministically and enters the evidence set as a
+  // description. No rows are stored, and no row is ever sent to a model.
+  for (const profile of input.datasetProfiles.slice(0, 25)) {
+    const shape = [
+      profile.date_columns.length ? `dated by ${profile.date_columns.join("/")}` : null,
+      profile.entity_columns.length
+        ? `keyed by ${profile.entity_columns.join("/")}`
+        : null,
+      profile.quantity_columns.length || profile.stock_columns.length
+        ? `measuring ${[...profile.quantity_columns, ...profile.stock_columns].join("/")}`
+        : null,
+      profile.price_columns.length ? `priced by ${profile.price_columns.join("/")}` : null,
+      profile.supplier_columns.length
+        ? `with ${profile.supplier_columns.join("/")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    registry.add({
+      type: "dataset_profile",
+      claim:
+        `Dataset \`${profile.path}\` (${profile.format}, ` +
+        `~${profile.approx_row_count.toLocaleString("en-US")} rows, ` +
+        `${Math.round(profile.size_bytes / 1024)} KB) with columns ` +
+        `${profile.column_names.slice(0, 8).join(", ")}` +
+        (shape ? ` — ${shape}` : "") +
+        `. Profile: ${profile.likely_purpose}.`,
+      file: profile.path,
+      confidence: "high",
+      detail: {
+        columns: profile.column_names.slice(0, 20),
+        approx_row_count: profile.approx_row_count,
+        format: profile.format,
+        purpose: profile.likely_purpose,
+      },
+    });
+  }
+
+  // ── Behaviour (§20) ─────────────────────────────────────────────────────
+  // The evidence a requirement is actually judged on: what the code computes,
+  // branches on, calls and shows. This is deliberately independent of which
+  // libraries the file imports.
+  for (const file of input.semantics) {
+    for (const finding of file.calculations.slice(0, 6)) {
+      registry.add({
+        type: "calculation",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation },
+      });
+    }
+    for (const finding of file.rules.slice(0, 4)) {
+      registry.add({
+        type: "rule",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation },
+      });
+    }
+    for (const finding of file.models.slice(0, 4)) {
+      registry.add({
+        type: "model",
+        claim: finding.claim,
+        file: file.path,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation },
+      });
+    }
+    for (const finding of file.dataAccess.slice(0, 4)) {
+      registry.add({
+        type: "data_access",
+        claim: finding.claim,
+        file: file.path,
+        symbol: finding.symbol,
+        lines: finding.lines,
+        confidence: "high",
+        detail: { operation: finding.operation },
+      });
+    }
+    for (const finding of file.ui.slice(0, 3)) {
+      registry.add({
+        type: "ui",
+        claim: finding.claim,
+        file: file.path,
+        lines: finding.lines,
+        confidence: "medium",
+        detail: { operation: finding.operation },
+      });
+    }
+  }
+
   for (const record of input.files
     .filter((f) => ["schema", "database"].includes(f.file_category))
     .slice(0, 20)) {
@@ -639,6 +896,47 @@ function recordStructuralEvidence(
   }
 }
 
+/** Rebuild the per-file semantic summaries the project map stores. */
+function semanticsFrom(projectMap: Record<string, unknown>): SemanticsResult[] {
+  const empty: SemanticsResult[] = [];
+  const byFile = new Map<string, SemanticsResult>();
+  const add = (
+    kind: "calculations" | "rules" | "models" | "dataAccess" | "ui",
+    rows: unknown[],
+  ) => {
+    for (const row of (rows ?? []) as Record<string, unknown>[]) {
+      const file = String(row.file ?? "");
+      if (!file) continue;
+      const entry = byFile.get(file) ?? {
+        path: file,
+        language: null,
+        calculations: [],
+        rules: [],
+        models: [],
+        dataAccess: [],
+        ui: [],
+        imports: [],
+      };
+      entry[kind].push({
+        claim: String(row.claim ?? ""),
+        symbol: (row.symbol as string) ?? null,
+        line: Number(row.line ?? 0),
+        lines: String(row.line ?? 0),
+        excerpt: "",
+        operation: String(row.operation ?? ""),
+        identifiers: ((row.identifiers as string[]) ?? []).map(String),
+      } as never);
+      byFile.set(file, entry);
+    }
+  };
+  add("calculations", projectMap.calculations as unknown[]);
+  add("rules", projectMap.business_logic as unknown[]);
+  add("models", projectMap.models as unknown[]);
+  add("dataAccess", projectMap.data_access as unknown[]);
+  add("ui", projectMap.ui_flows as unknown[]);
+  return byFile.size ? [...byFile.values()] : empty;
+}
+
 // ── Persistence (§13 commit cache) ─────────────────────────────────────────
 
 export interface LoadedAnalysis {
@@ -647,6 +945,15 @@ export interface LoadedAnalysis {
   chunks: Record<string, unknown>[];
   evidence: Record<string, unknown>[];
   projectMap: Record<string, unknown>;
+  datasetProfiles: DatasetProfile[];
+  semantics: SemanticsResult[];
+  routes: Route[];
+  inspection: {
+    mode: "full" | "limited";
+    warnings: string[];
+    filesSeen: number;
+    filesRead: number;
+  };
 }
 
 export class AnalysisStore {
@@ -843,25 +1150,38 @@ export class AnalysisStore {
     const repository = (repositories as unknown as Record<string, unknown>[] | null)?.[0];
     if (!repository) return null;
 
-    const [{ data: files }, { data: chunks }] = await Promise.all([
-      this.service
-        .from("repository_files")
-        .select(
-          "id, path, file_name, language, file_category, importance, " +
-            "is_ignored, is_binary, line_count",
-        )
-        .eq("repository_id", repository.id)
-        .eq("is_ignored", false),
-      this.service
+    const { data: files } = await this.service
+      .from("repository_files")
+      .select(
+        "id, path, file_name, language, file_category, importance, " +
+          "is_ignored, is_binary, line_count",
+      )
+      .eq("repository_id", repository.id)
+      .eq("is_ignored", false);
+
+    // Chunks are the raw material requirement retrieval ranks over, so loading
+    // only the high-importance ones used to hide the very file a requirement
+    // pointed at whenever it happened to be medium-importance. Both passes are
+    // fetched; retrieval decides which of them matters.
+    const fileIds = ((files ?? []) as unknown as { id: string }[]).map((row) => row.id);
+    const chunks: Record<string, unknown>[] = [];
+    for (let start = 0; start < fileIds.length; start += 200) {
+      const { data } = await this.service
         .from("code_chunks")
         .select(
           "file_id, chunk_index, start_line, end_line, content, symbol_name, " +
             "symbol_type, language, importance",
         )
-        .eq("repository_id", repository.id)
-        .eq("importance", "high")
-        .limit(600),
-    ]);
+        .in(
+          "file_id",
+          fileIds.slice(start, start + 200),
+        )
+        .in("importance", ["high", "medium"])
+        .order("importance", { ascending: true })
+        .limit(1200);
+      chunks.push(...((data ?? []) as unknown as Record<string, unknown>[]));
+      if (chunks.length >= 1200) break;
+    }
 
     // Chunks reference paths via file_id; restore it for retrieval ranking.
     const pathById = new Map(
@@ -871,17 +1191,33 @@ export class AnalysisStore {
       ]),
     );
 
+    const projectMap = (repository.project_map as Record<string, unknown>) ?? {};
+    const restored = chunks
+      .map((chunk) => ({
+        ...chunk,
+        file_path: pathById.get(chunk.file_id as string),
+      }))
+      .filter((chunk) => chunk.file_path);
+
     return {
       repository,
       files: (files ?? []) as unknown as Record<string, unknown>[],
-      chunks: ((chunks ?? []) as unknown as Record<string, unknown>[])
-        .map((chunk) => ({
-          ...chunk,
-          file_path: pathById.get(chunk.file_id as string),
-        }))
-        .filter((chunk) => chunk.file_path),
+      chunks: restored,
       evidence: (repository.evidence as Record<string, unknown>[]) ?? [],
-      projectMap: (repository.project_map as Record<string, unknown>) ?? {},
+      projectMap,
+      datasetProfiles: (projectMap.data_sources as DatasetProfile[]) ?? [],
+      semantics: semanticsFrom(projectMap),
+      routes: ((projectMap.apis ?? []) as unknown as Route[]),
+      inspection: {
+        mode: repository.analysis_mode === "limited" ? "limited" : "full",
+        warnings: ((projectMap.warnings as string[]) ?? []).slice(0, 8),
+        filesSeen: Number(
+          (projectMap.repository_stats as Record<string, number>)?.total_files_seen ?? 0,
+        ),
+        filesRead: ((files ?? []) as unknown as { is_ignored?: boolean }[]).filter(
+          (row) => !row.is_ignored,
+        ).length,
+      },
     };
   }
 }

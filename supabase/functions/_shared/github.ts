@@ -85,7 +85,9 @@ const MEDIUM_IMPORTANCE_HINTS = [
 ];
 
 const CATEGORY_BY_EXTENSION: Record<string, string> = {
-  ".py": "source", ".ts": "source", ".tsx": "component", ".jsx": "component",
+  ".py": "source",  ".ts": "source", ".tsx": "component", ".jsx": "component",
+  ".csv": "dataset", ".tsv": "dataset", ".tab": "dataset", ".jsonl": "dataset",
+  ".ndjson": "dataset", ".parquet": "dataset",
   ".js": "source", ".mjs": "source", ".cjs": "source", ".go": "source",
   ".rs": "source", ".rb": "source", ".java": "source", ".kt": "source",
   ".swift": "source", ".dart": "source", ".c": "source", ".h": "source",
@@ -94,6 +96,7 @@ const CATEGORY_BY_EXTENSION: Record<string, string> = {
   ".sql": "database", ".prisma": "schema", ".graphql": "schema",
   ".gql": "schema", ".proto": "schema",
   ".json": "config", ".yaml": "config", ".yml": "config", ".toml": "config",
+  ".log": "documentation",
   ".ini": "config", ".cfg": "config", ".conf": "config",
   ".properties": "config", ".env": "config",
   ".md": "documentation", ".mdx": "documentation", ".rst": "documentation",
@@ -226,6 +229,9 @@ export function importanceOf(path: string, category: string): string {
   if (["api", "model", "component", "config", "source", "test"].includes(category)) {
     return "medium";
   }
+  // A dataset is medium by default: it is worth profiling, and a profile is
+  // what lets a data requirement be judged on its contents.
+  if (category === "dataset") return "medium";
   return "low";
 }
 
@@ -233,6 +239,11 @@ export function isSourceLike(category: string): boolean {
   return ["source", "component", "api", "model", "schema", "database"].includes(
     category,
   );
+}
+
+/** A dataset is read, but only far enough to profile it. */
+export function isDataset(category: string): boolean {
+  return category === "dataset";
 }
 
 // ── GitHub URL parsing (§10) ───────────────────────────────────────────────
@@ -372,23 +383,56 @@ export function scanFileForSecrets(
 
 // ── Binary handling ────────────────────────────────────────────────────────
 
-export function looksBinary(content: Uint8Array): boolean {
+/** Extensions that are text whatever their bytes look like. */
+const TEXT_EXTENSIONS = new Set([
+  ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".java", ".kt",
+  ".rb", ".rs", ".php", ".cs", ".c", ".h", ".cpp", ".hpp", ".swift", ".dart",
+  ".sql", ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
+  ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+  ".md", ".mdx", ".rst", ".txt", ".csv", ".tsv", ".sh", ".bash", ".ps1", ".tf",
+  ".graphql", ".gql", ".prisma", ".proto", ".env", ".example", ".gitignore",
+]);
+
+/**
+ * Binary detection.
+ *
+ * A NUL byte is definitive. Beyond that, the earlier rule — "at least 98% of
+ * bytes must be printable ASCII" — classified any file containing a handful of
+ * non-ASCII characters as binary. Because every byte of a multi-byte UTF-8
+ * character is outside printable ASCII, a single large HTML page containing a
+ * currency sign or an em dash was written off as an asset, and with it every
+ * interface, template and stylesheet in the project. The analysis then judged a
+ * dashboard requirement against backend files only, which is precisely the
+ * failure this system exists to avoid.
+ *
+ * Bytes above 127 are text (UTF-8 and friends), and an extension known to be
+ * text settles it outright.
+ */
+export function looksBinary(content: Uint8Array, path?: string): boolean {
   const sample = content.slice(0, 8000);
   if (sample.length === 0) return false;
+
+  const name = String(path ?? "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot !== -1 && TEXT_EXTENSIONS.has(name.slice(dot))) return false;
+
   let nulls = 0;
   let printable = 0;
   for (const byte of sample) {
     if (byte === 0) nulls++;
-    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126)) {
+    if (
+      byte === 9 || byte === 10 || byte === 13 ||
+      (byte >= 32 && byte <= 126) || byte >= 128
+    ) {
       printable++;
     }
   }
   if (nulls > 0) return true;
-  return printable / sample.length < 0.98;
+  return printable / sample.length < 0.85;
 }
 
-export function decodeText(content: Uint8Array): string | null {
-  if (looksBinary(content)) return null;
+export function decodeText(content: Uint8Array, path?: string): string | null {
+  if (looksBinary(content, path)) return null;
   try {
     return new TextDecoder("utf-8", { fatal: false }).decode(content);
   } catch {
@@ -1450,6 +1494,14 @@ export interface ProjectMap {
   apis: Route[];
   external_integrations: unknown[];
   features: string[];
+  /** §36 — every profiled dataset, with its structure and a few sample rows. */
+  data_sources: unknown[];
+  /** §20 — what the code computes, independent of which library it imported. */
+  business_logic: unknown[];
+  calculations: unknown[];
+  models: unknown[];
+  data_access: unknown[];
+  ui_flows: unknown[];
   testing: Record<string, unknown>;
   deployment: Record<string, unknown>;
   repository_stats: Record<string, number>;
@@ -1482,6 +1534,38 @@ export function buildProjectMap(input: {
   secrets: SecretFinding[];
   analysisMode: "full" | "limited";
   warnings: string[];
+  datasetProfiles?: {
+    path: string;
+    format: string;
+    size_bytes: number;
+    approx_row_count: number;
+    row_count_exact: boolean;
+    column_names: string[];
+    date_columns: string[];
+    entity_columns: string[];
+    quantity_columns: string[];
+    stock_columns: string[];
+    price_columns: string[];
+    supplier_columns: string[];
+    identifier_columns: string[];
+    numeric_columns: string[];
+    categorical_columns: string[];
+    sample_rows: string[][];
+    likely_purpose: string;
+    relevance: string;
+    relevance_terms: string[];
+    notes: string[];
+    columns: unknown[];
+  }[];
+  semantics?: {
+    path: string;
+    language: string | null;
+    calculations: { claim: string; operation: string; line: number; symbol: string | null }[];
+    rules: { claim: string; operation: string; line: number; symbol: string | null }[];
+    models: { claim: string; operation: string; line: number; symbol: string | null }[];
+    dataAccess: { claim: string; operation: string; line: number; symbol: string | null }[];
+    ui: { claim: string; operation: string; line: number; symbol: string | null }[];
+  }[];
 }): ProjectMap {
   const warnings = [...input.warnings];
   const { files, dependencies, routes, analysisMode } = input;
@@ -1626,6 +1710,29 @@ export function buildProjectMap(input: {
     apis: routes.slice(0, MAX_ROUTES),
     external_integrations: input.integrations.slice(0, MAX_INTEGRATIONS),
     features: (input.readme?.features ?? []).slice(0, MAX_FEATURES),
+    data_sources: (input.datasetProfiles ?? []).slice(0, 25).map((profile) => ({
+      ...profile,
+      columns: (profile.columns as unknown[]).slice(0, 30),
+      sample_rows: (profile.sample_rows ?? []).slice(0, 4),
+    })),
+    business_logic: (input.semantics ?? [])
+      .flatMap((file) => [
+        ...file.rules.map((item) => ({ ...item, file: file.path, kind: "rule" })),
+        ...file.calculations.map((item) => ({ ...item, file: file.path, kind: "calculation" })),
+      ])
+      .slice(0, 40),
+    calculations: (input.semantics ?? [])
+      .flatMap((file) => file.calculations.map((item) => ({ ...item, file: file.path })))
+      .slice(0, 40),
+    models: (input.semantics ?? [])
+      .flatMap((file) => file.models.map((item) => ({ ...item, file: file.path })))
+      .slice(0, 25),
+    data_access: (input.semantics ?? [])
+      .flatMap((file) => file.dataAccess.map((item) => ({ ...item, file: file.path })))
+      .slice(0, 30),
+    ui_flows: (input.semantics ?? [])
+      .flatMap((file) => file.ui.map((item) => ({ ...item, file: file.path })))
+      .slice(0, 30),
     testing: {
       test_file_count: input.tests.file_count,
       frameworks: input.tests.frameworks.map((f) => f.name),

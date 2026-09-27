@@ -1,0 +1,23 @@
+{
+  "hackathon": {
+    "id": "fixture-quickfix",
+    "name": "Open Innovation Sprint",
+    "hackathon_type": "open_innovation",
+    "theme": "Everyday problems, solved properly",
+    "problem_statement": "",
+    "requirements": "",
+    "constraints": "",
+    "expected_outcome": "",
+    "evaluation_criteria": "- Does the project solve a real problem?\n- Is the implementation coherent and finished enough to use?\n- Is the description honest about what it does?",
+    "simulation_duration_minutes": 1440,
+    "status": "active"
+  },
+  "submission": {
+    "id": "fixture-submission",
+    "project_name": "quick-fix",
+    "project_description": "A community repair and reuse service that lets people list broken items, find local fixers, and book a repair slot. It includes a small web interface, a data model for listings and bookings, and a service layer that validates availability.",
+    "key_features": "- Create and browse repair listings\n- Match a listing to an available fixer\n- Book and reschedule a repair slot\n- Track listing and booking status",
+    "tech_stack": "Python, Flask, SQLite, Jinja templates",
+    "github_url": "https://github.com/InFeRnUSoP809/quick-fix"
+  }
+}

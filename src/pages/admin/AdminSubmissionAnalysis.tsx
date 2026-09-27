@@ -31,7 +31,12 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { useParams } from "react-router";
-import type { CoverageRow, Evidence, RequirementItem } from "@/types/analysis";
+import type {
+  CoverageRow,
+  Evidence,
+  RequirementEvaluation,
+  RequirementItem,
+} from "@/types/analysis";
 
 /**
  * §80 — the central analysis page.
@@ -474,9 +479,9 @@ export default function AdminSubmissionAnalysis() {
           </div>
         </Section>
 
-        {/* ── 10. Contribution evidence ───────────────────────── */}
-        <Section step={10} title="Contribution evidence" icon={Users}>
-          <ContributionTable analysis={data} evidence={evidence} />
+        {/* ── 10. How the analysis reached its conclusions ────── */}
+        <Section step={10} title="How the analysis concluded" icon={Users}>
+          <DiagnosticsPanel analysis={data} evidence={evidence} />
         </Section>
 
         {/* ── 11. Defence targets ─────────────────────────────── */}
@@ -612,102 +617,143 @@ function ReviewStat({
   );
 }
 
-function ContributionTable({
+/**
+ * §24 + §55 — the trace. For every conclusion: the queries the retrieval plan
+ * generated, the files it considered, how many pieces of evidence it found,
+ * whether a model was used, and why.
+ */
+function DiagnosticsPanel({
   analysis,
   evidence,
 }: {
   analysis: Awaited<ReturnType<typeof getSubmissionAnalysis>>;
   evidence: Evidence[];
 }) {
-  const contributions = (analysis.review?.contributions ?? {}) as Record<
-    string,
-    {
-      status: string;
-      confidence: string;
-      evidence_ids: string[];
-      matched_files: string[];
-      explanation: string;
-    }
-  >;
+  const review = analysis.review;
+  const rows = (analysis.requirements ?? []) as RequirementEvaluation[];
+  const dimensions = review?.dimensions ?? [];
 
-  const members = analysis.contributions as {
-    id: string;
-    user_id: string;
-    contribution_description: string;
-    contribution_areas: string[];
-    planned_responsibilities: string;
-  }[];
-
-  if (members.length === 0) {
+  if (!rows.length) {
     return (
       <NoticeState
-        title="No contributions recorded"
-        message="Nobody added a contribution description to this submission."
+        title="No conclusions recorded"
+        message="The analysis has not been run for this submission yet."
       />
     );
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {members.map((member) => {
-        const check = contributions[member.user_id];
-        return (
-          <Card key={member.id} className="p-5">
-            <div className="flex flex-wrap items-center gap-2">
-              {check ? (
-                <Badge variant="outline" className="label-mono text-[10px]">
-                  {check.status.replace(/_/g, " ")}
-                </Badge>
-              ) : (
-                <Badge
-                  variant="outline"
-                  className="label-mono text-[10px] text-muted-foreground"
-                >
-                  not checked
-                </Badge>
-              )}
-              {check && (
-                <span className="text-[10px] text-muted-foreground">
-                  confidence {check.confidence}
-                </span>
-              )}
-            </div>
+    <div className="flex flex-col gap-5">
+      {dimensions.length > 0 && (
+        <div>
+          <p className="label-mono text-muted-foreground">
+            Dimensions considered
+          </p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {dimensions
+              .filter((item) => item.relevance !== "not_applicable")
+              .map((item) => (
+                <li key={item.key} className="text-xs leading-relaxed">
+                  <span className="text-foreground">{item.label}</span>{" "}
+                  <span className="text-muted-foreground">
+                    ({item.relevance}) — {item.reason}
+                  </span>
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
 
-            <p className="mt-2.5 text-sm leading-relaxed">
-              {member.contribution_description || "No description provided."}
-            </p>
-            {member.contribution_areas?.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {member.contribution_areas.map((area) => (
-                  <Badge key={area} variant="outline" className="text-[10px]">
-                    {area}
-                  </Badge>
-                ))}
-              </div>
-            )}
-
-            {check?.explanation && (
-              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                {check.explanation}
-              </p>
-            )}
-
-            {check && check.matched_files.length > 0 && (
-              <p className="mt-2 font-mono text-[11px] text-muted-foreground">
-                {check.matched_files.slice(0, 5).join(" · ")}
-              </p>
-            )}
-
-            {check && (
-              <EvidenceList
-                ids={check.evidence_ids}
-                evidence={evidence}
-                className="mt-3"
-              />
-            )}
-          </Card>
-        );
-      })}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] text-sm">
+          <thead>
+            <tr className="border-b border-border text-left">
+              <th className="label-mono px-3 py-2 text-muted-foreground">
+                Requirement
+              </th>
+              <th className="label-mono px-3 py-2 text-muted-foreground">
+                Retrieval queries
+              </th>
+              <th className="label-mono px-3 py-2 text-muted-foreground">
+                Files
+              </th>
+              <th className="label-mono px-3 py-2 text-muted-foreground">
+                Evidence
+              </th>
+              <th className="label-mono px-3 py-2 text-muted-foreground">
+                Method
+              </th>
+              <th className="label-mono px-3 py-2 text-muted-foreground">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.requirement_id}
+                className="border-b border-border align-top last:border-0"
+              >
+                <td className="px-3 py-2.5">
+                  <span className="label-mono text-[10px] text-brand">
+                    {row.requirement_id}
+                  </span>
+                  <p className="mt-1 max-w-xs text-xs leading-relaxed">
+                    {row.explanation?.slice(0, 160)}
+                  </p>
+                </td>
+                <td className="px-3 py-2.5">
+                  <ul className="flex max-w-xs flex-col gap-1">
+                    {(row.retrieval_queries ?? []).slice(0, 2).map((query) => (
+                      <li key={query} className="font-mono text-[10px] text-muted-foreground">
+                        {query.slice(0, 90)}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+                <td className="px-3 py-2.5">
+                  <ul className="flex max-w-xs flex-col gap-0.5">
+                    {(row.relevant_files ?? []).slice(0, 4).map((file) => (
+                      <li key={file} className="font-mono text-[10px]">
+                        {file}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+                <td className="px-3 py-2.5">
+                  <ul className="flex max-w-[14rem] flex-col gap-0.5">
+                    {(row.evidence_ids ?? []).slice(0, 4).map((id) => {
+                      const item = evidence.find((entry) => entry.id === id);
+                      return (
+                        <li key={id} className="font-mono text-[10px] text-muted-foreground">
+                          <span className="text-brand">{id}</span>{" "}
+                          {item ? (item.file ?? item.type) : "not found"}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className="label-mono text-[10px]">
+                    {row.ai_used === false ? "deterministic" : "model"}
+                  </span>
+                  {row.ai_reason && (
+                    <p className="mt-1 max-w-[12rem] text-[10px] leading-relaxed text-muted-foreground">
+                      {row.ai_reason}
+                    </p>
+                  )}
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className="label-mono text-[10px]">
+                    {row.status}
+                  </span>
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    {row.confidence}
+                  </p>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
