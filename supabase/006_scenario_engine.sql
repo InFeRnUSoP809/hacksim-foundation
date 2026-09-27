@@ -46,7 +46,14 @@ alter table public.hackathons
   add column if not exists hints text,
   -- §1.1 asks for expected_outcomes; the pre-existing singular column is kept
   -- so existing rows and RPCs keep working. Both feed the requirement map.
-  add column if not exists expected_outcomes text;
+  add column if not exists expected_outcomes text,
+
+  -- Part 20 — the post-build GitHub window is per-hackathon configuration,
+  -- never a hardcoded constant. The UI may offer common values, but any
+  -- duration between 1 and 240 minutes is valid.
+  add column if not exists github_submission_window_enabled boolean not null default false,
+  add column if not exists github_submission_window_minutes integer not null default 5
+    check (github_submission_window_minutes between 1 and 240);
 
 comment on column public.hackathons.hackathon_type is
   'Selects the participant experience. Never branch on this in the client alone; the required-field list is resolved by required_fields_for_type().';
@@ -129,13 +136,22 @@ create unique index if not exists problem_discoveries_one_locked
 
 
 -- ════════════════════════════════════════════════════════════════════════════
--- 2. Five-minute GitHub submission window (Part 13)
+-- 2. Configurable post-build GitHub submission window (Part 20)
 -- ════════════════════════════════════════════════════════════════════════════
 
 alter table public.build_sessions
   add column if not exists build_ends_at timestamptz,
   add column if not exists github_submission_started_at timestamptz,
-  add column if not exists github_submission_ends_at timestamptz;
+  add column if not exists github_submission_ends_at timestamptz,
+
+  -- Part 23 — the window configuration is snapshotted when the simulation
+  -- starts. If the admin later changes the hackathon's window, running
+  -- simulations keep the deadline they started with; only new simulations
+  -- pick up the new value. Without the snapshot, editing the hackathon would
+  -- silently move an active team's deadline.
+  add column if not exists github_submission_window_enabled boolean not null default false,
+  add column if not exists github_submission_window_minutes integer not null default 5
+    check (github_submission_window_minutes between 1 and 240);
 
 -- `ends_at` is the build deadline and is never null; build_ends_at mirrors it
 -- so the two concepts are separately readable. Backfilled rather than left null
@@ -157,6 +173,82 @@ alter table public.build_sessions
   check (status in ('not_started', 'running', 'break', 'completed', 'expired',
                     'build_expired', 'github_submission', 'submitted',
                     'github_submission_expired', 'cancelled'));
+
+-- Part 23 — the snapshot at start. `start_build_session` (002) reads the
+-- hackathon's window configuration into these columns when it inserts the
+-- session; the SELECT below rewrites the function for anyone applying 002
+-- before 006, which is the supported order. Existing sessions keep whatever
+-- they were started with, and later admin edits to the hackathon never move
+-- an active simulation's deadline.
+create or replace function public.start_build_session(p_hackathon_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_team_id  uuid;
+  v_duration integer;
+  v_enabled  boolean;
+  v_status   text;
+  v_existing uuid;
+  v_new      uuid;
+  v_window_enabled boolean;
+  v_window_minutes integer;
+begin
+  if auth.uid() is null then
+    raise exception 'You must be signed in to start a simulation.';
+  end if;
+
+  select tm.team_id into v_team_id
+  from public.team_members tm
+  where tm.user_id = auth.uid()
+  limit 1;
+
+  if v_team_id is null then
+    raise exception 'Create or join a team before starting a simulation.';
+  end if;
+
+  select simulation_duration_minutes, practice_enabled, status,
+         github_submission_window_enabled, github_submission_window_minutes
+    into v_duration, v_enabled, v_status, v_window_enabled, v_window_minutes
+  from public.hackathons
+  where id = p_hackathon_id;
+
+  if v_duration is null then
+    raise exception 'That hackathon does not exist.';
+  end if;
+
+  if not v_enabled then
+    raise exception 'No active practice hackathon.';
+  end if;
+
+  if v_status <> 'active' then
+    raise exception 'That hackathon is not open for participation.';
+  end if;
+
+  select id into v_existing
+  from public.build_sessions
+  where team_id = v_team_id
+    and status in ('running', 'break')
+  limit 1;
+
+  if v_existing is not null then
+    raise exception 'Your team already has a simulation in progress.';
+  end if;
+
+  insert into public.build_sessions
+    (hackathon_id, team_id, started_by, started_at, ends_at, status,
+     github_submission_window_enabled, github_submission_window_minutes)
+  values
+    (p_hackathon_id, v_team_id, auth.uid(), now(),
+     now() + make_interval(mins => v_duration), 'running',
+     coalesce(v_window_enabled, false), coalesce(v_window_minutes, 5))
+  returning id into v_new;
+
+  return v_new;
+end;
+$$;
 
 
 -- ════════════════════════════════════════════════════════════════════════════

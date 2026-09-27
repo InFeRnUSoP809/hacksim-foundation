@@ -8,11 +8,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/use-auth";
 import { useAsync } from "@/hooks/use-async";
+import { useFormatEngine } from "@/hooks/use-format-engine";
+import { formatCountdown, lockSubmission } from "@/lib/format-engine";
 import { cn } from "@/lib/utils";
 import { friendlyError } from "@/services/errors";
 import {
   ensureDraft,
-  finalizeSubmission,
   getSubmission,
   getSubmissionMembers,
   isLocked,
@@ -44,6 +45,11 @@ export default function SubmissionPage() {
     () => (sessionId ? getSubmission(sessionId) : Promise.resolve(null)),
     [sessionId],
   );
+
+  // The phase comes from the server's clock (§13.3, §26), re-synced on an
+  // interval and on tab focus. The UI renders it; it never decides it.
+  const engine = useFormatEngine(sessionId);
+  const windowMinutes = engine.brief?.clock.github_submission_window_minutes ?? 0;
 
   if (!sessionId) {
     return (
@@ -102,6 +108,10 @@ export default function SubmissionPage() {
 
         {locked ? (
           <LockedNotice submission={current!} />
+        ) : engine.phase === "closed" ? (
+          // §31 — late is late. However the countdown on a stale tab looked,
+          // the server has closed the window and nothing here is editable.
+          <WindowClosedNotice />
         ) : (
           <StartDraft
             sessionId={sessionId}
@@ -125,7 +135,14 @@ export default function SubmissionPage() {
               locked={locked}
             />
 
-            {!locked && <FinaliseSection submission={current} />}
+            {!locked && engine.phase === "window" && (
+              <SubmissionWindowSection
+                submission={current}
+                windowMinutes={windowMinutes}
+                windowRemaining={engine.windowRemaining}
+                onSubmitted={() => submission.reload()}
+              />
+            )}
           </div>
         )}
       </div>
@@ -610,21 +627,54 @@ function ContributionCard({
   );
 }
 
-// ── Finalise ────────────────────────────────────────────────────────────────
+// ── Submission window (§20–§35) ───────────────────────────────────────────
 
-function FinaliseSection({ submission }: { submission: Submission }) {
+function WindowClosedNotice() {
+  return (
+    <Card className="mt-8 flex flex-col items-start gap-3 border-destructive/40 bg-destructive/5 p-6">
+      <div className="grid size-9 place-items-center rounded-lg bg-background">
+        <Lock className="size-4 text-destructive" />
+      </div>
+      <div>
+        <h2 className="text-base font-semibold">The submission window has closed</h2>
+        <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
+          The deadline is set on the server and cannot be extended. This
+          submission can no longer be accepted.
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * The window's only job: GitHub URL in, submission locked — fast. Analysis is
+ * deliberately not started here (§29/§36): the deadline exists so the team
+ * doesn't lose their work, not to babysit a scanner.
+ */
+function SubmissionWindowSection({
+  submission,
+  windowMinutes,
+  windowRemaining,
+  onSubmitted,
+}: {
+  submission: Submission;
+  windowMinutes: number;
+  windowRemaining: number;
+  onSubmitted: () => void;
+}) {
   const confirm = useConfirmDialog();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
+  const githubError = validateGithubUrl(submission.github_url ?? "");
+  const urgent = windowRemaining <= 60;
 
-  async function handleFinalise() {
+  async function handleSubmit() {
     const confirmed = await confirm.ask({
-      title: "Are you sure you want to submit?",
+      title: "Submit your project?",
       message:
-        "After submission, your project details and contribution information will become read-only.",
-      confirmLabel: "Confirm Submission",
-      cancelLabel: "Cancel",
+        "This locks the project, the repository URL and every contribution. The window cannot be reopened afterwards.",
+      confirmLabel: "Submit project",
+      cancelLabel: "Keep editing",
       tone: "warning",
     });
     if (!confirmed) return;
@@ -632,43 +682,60 @@ function FinaliseSection({ submission }: { submission: Submission }) {
     setError(null);
     setIsSubmitting(true);
     try {
-      await finalizeSubmission(submission.session_id);
-      setDone(true);
-      // Reload so the page switches to its read-only state.
-      window.location.reload();
+      // §30 — the only submission path. The database re-checks the window
+      // with its own clock, so a click at 00:00:01 still fails server-side.
+      const result = await lockSubmission(submission.id);
+      if (result.ok) {
+        onSubmitted();
+        window.location.reload();
+      } else {
+        setError("The submission was not accepted.");
+      }
     } catch (err) {
-      setError(friendlyError(err));
+      setError(err instanceof Error ? err.message : "Couldn't submit.");
+    } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <Card className="flex flex-col items-start gap-4 p-6">
-      <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
-        <Send className="size-4" />
-      </div>
-      <div>
-        <h2 className="text-lg font-semibold tracking-[-0.02em]">
-          Final submission
-        </h2>
-        <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
-          Submitting locks the project and every member&rsquo;s contribution. The
-          database refuses further edits, so this cannot be undone.
-        </p>
-      </div>
-
-      {error && <ErrorState title="Couldn't submit" message={error} />}
-      {done && (
-        <p className="text-sm text-stage-report">Submitted. Reloading…</p>
+    <Card
+      className={cn(
+        "flex flex-col items-start gap-4 border-stage-report/50 bg-stage-report/5 p-6",
+        urgent && "border-destructive/50 bg-destructive/5",
       )}
+    >
+      <div className="flex w-full flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold tracking-[-0.02em]">Final GitHub submission</h2>
+          <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted-foreground">
+            You have {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"}. Add or confirm
+            your repository URL below — nothing else can be changed after this.
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="label-mono text-muted-foreground">Time remaining</p>
+          <p
+            className={cn(
+              "font-mono text-3xl font-semibold tabular-nums tracking-tight",
+              urgent ? "text-destructive" : "text-stage-report",
+            )}
+          >
+            {formatCountdown(windowRemaining)}
+          </p>
+        </div>
+      </div>
 
-      <Button onClick={() => void handleFinalise()} disabled={isSubmitting}>
-        {isSubmitting ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <Send className="size-4" />
-        )}
-        Submit Project
+      {githubError && (
+        <p className="text-xs text-destructive">
+          Add a valid GitHub repository URL in the project form below before submitting.
+        </p>
+      )}
+      {error && <ErrorState title="Couldn't submit" message={error} />}
+
+      <Button onClick={() => void handleSubmit()} disabled={isSubmitting || Boolean(githubError)}>
+        {isSubmitting ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+        Submit project
       </Button>
     </Card>
   );

@@ -4,12 +4,22 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useSessionClock } from "@/hooks/use-session-clock";
+import { useFormatEngine } from "@/hooks/use-format-engine";
+import {
+  lockProblemDiscovery,
+  revealWildcard,
+  saveProblemDiscovery,
+  syncSessionPhase,
+  type ProblemDiscovery,
+  type WildcardReveal,
+} from "@/lib/format-engine";
 import { useAsync } from "@/hooks/use-async";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/format";
 import { getCheckpoints, saveCheckpoint } from "@/services/checkpoints";
+import { supabase } from "@/lib/supabase";
 import {
   getHackathonForSession,
   getSession,
@@ -18,8 +28,8 @@ import {
 } from "@/services/sessions";
 import { getTeamRoster } from "@/services/teams";
 import { friendlyError } from "@/services/errors";
-import { Check, Loader2, Users } from "lucide-react";
-import { useState } from "react";
+import { Check, Loader2, Sparkles, Users } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
   CHECKPOINTS,
@@ -62,6 +72,14 @@ export default function Simulation() {
   const [isMutating, setIsMutating] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // The scenario/format engine: brief per hackathon type (§1), server clock,
+  // and the derived phase. Syncs the session through build-expiry on load.
+  const engine = useFormatEngine(sessionId);
+  useEffect(() => {
+    if (sessionId) void syncSessionPhase(sessionId).then(() => engine.refresh());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
   if (!sessionId) {
     return (
       <Shell>
@@ -98,6 +116,13 @@ export default function Simulation() {
 
   const isLive = clock.status === "running";
   const finished = clock.status === "completed" || clock.status === "expired";
+
+  // Server-derived phase (§13): once the build has elapsed the submission
+  // window is the only thing left to do here, so the page says so directly.
+  const inSubmissionWindow = engine.phase === "window";
+  const buildOver = engine.phase === "window" || engine.phase === "closed";
+  const windowMinutes = engine.brief?.clock.github_submission_window_minutes ?? 0;
+  const windowEnabled = engine.brief?.clock.github_submission_window_enabled ?? false;
 
   if (clock.isLoading) {
     return (
@@ -204,10 +229,36 @@ export default function Simulation() {
               </Button>
             </div>
           </Card>
+        ) : inSubmissionWindow ? (
+          // §13.2 — the window is submission-only. The checkpoint panel is
+          // replaced, not merely disabled: there is nothing to edit any more.
+          <Card className="flex flex-col items-start gap-4 border-stage-report/50 bg-stage-report/5 p-8">
+            <h1 className="text-2xl font-semibold tracking-[-0.025em]">Build complete</h1>
+            <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
+              You have {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"} to submit your
+              GitHub repository. This window is for submission only — coding has ended.
+            </p>
+            <Button asChild>
+              <Link to={`/submission/${sessionId}`}>Go to submission</Link>
+            </Button>
+          </Card>
         ) : (
           <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
             <div className="flex flex-col gap-6">
               <ProblemPanel hackathon={hackathon.data} />
+
+              <ProblemDiscoveryPanel
+                sessionId={sessionId}
+                required={engine.brief?.hackathon.problem_discovery_required ?? false}
+                disabled={!isLive}
+              />
+
+              {engine.brief?.wildcard_scenario_id && (
+                <WildcardCard
+                  scenarioId={engine.brief.wildcard_scenario_id}
+                  canReveal={buildOver}
+                />
+              )}
 
               <div>
                 <h2 className="text-lg font-semibold tracking-[-0.02em]">
@@ -284,6 +335,265 @@ export default function Simulation() {
         )}
       </main>
     </Shell>
+  );
+}
+
+// ── Problem discovery (§1.3) ───────────────────────────────────────────────
+
+interface DiscoveryDraft {
+  problem_statement: string;
+  why_it_matters: string;
+  target_users: string;
+  pain_point: string;
+  proposed_solution: string;
+  expected_outcome: string;
+}
+
+const DISCOVERY_FIELDS: {
+  key: keyof DiscoveryDraft;
+  label: string;
+  placeholder: string;
+}[] = [
+  {
+    key: "problem_statement",
+    label: "Identified problem",
+    placeholder: "What problem did you choose to solve?",
+  },
+  {
+    key: "why_it_matters",
+    label: "Why it matters",
+    placeholder: "Who feels this problem, and what does it cost them?",
+  },
+  {
+    key: "target_users",
+    label: "Target users",
+    placeholder: "Who exactly is this for?",
+  },
+  {
+    key: "pain_point",
+    label: "Current pain point",
+    placeholder: "How do they cope today, and why does it fall short?",
+  },
+  {
+    key: "proposed_solution",
+    label: "Proposed solution",
+    placeholder: "What will your team build?",
+  },
+  {
+    key: "expected_outcome",
+    label: "Expected outcome",
+    placeholder: "What should be true when you are done?",
+  },
+];
+
+function ProblemDiscoveryPanel({
+  sessionId,
+  required,
+  disabled,
+}: {
+  sessionId: string;
+  required: boolean;
+  disabled: boolean;
+}) {
+  const [draft, setDraft] = useState<DiscoveryDraft>({
+    problem_statement: "",
+    why_it_matters: "",
+    target_users: "",
+    pain_point: "",
+    proposed_solution: "",
+    expected_outcome: "",
+  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [missing, setMissing] = useState<string[] | null>(null);
+
+  // Load the team's existing draft, if one has been started. RLS scopes the
+  // read to this team, and only the current draft is editable.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from("problem_discoveries")
+        .select(
+          "id, problem_statement, why_it_matters, target_users, pain_point, " +
+            "proposed_solution, expected_outcome, status",
+        )
+        .eq("session_id", sessionId)
+        .neq("status", "locked")
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (!cancelled && data && data.length > 0) {
+        const row = data[0] as unknown as Record<string, string>;
+        setDraft({
+          problem_statement: row.problem_statement ?? "",
+          why_it_matters: row.why_it_matters ?? "",
+          target_users: row.target_users ?? "",
+          pain_point: row.pain_point ?? "",
+          proposed_solution: row.proposed_solution ?? "",
+          expected_outcome: row.expected_outcome ?? "",
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
+
+  async function handleSave() {
+    setIsSaving(true);
+    setError(null);
+    setMissing(null);
+    try {
+      await saveProblemDiscovery(sessionId, {
+        problemStatement: draft.problem_statement,
+        whyItMatters: draft.why_it_matters,
+        targetUsers: draft.target_users,
+        painPoint: draft.pain_point,
+        proposedSolution: draft.proposed_solution,
+        expectedOutcome: draft.expected_outcome,
+      });
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function handleLock() {
+    setError(null);
+    setMissing(null);
+    try {
+      const result = await lockProblemDiscovery(sessionId);
+      if (!result.ok) {
+        setMissing(result.missingFields);
+        return;
+      }
+      setSaved(false);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't lock.");
+    }
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold tracking-[-0.01em]">Problem discovery</h2>
+          <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
+            {required
+              ? "Identify the problem your team will solve. There is no single right answer — what matters is that you can defend the one you chose."
+              : "Optional here — your hackathon does not require a discovered problem, but recording one sharpens the build."}
+          </p>
+        </div>
+        <Sparkles className="size-4 shrink-0 text-muted-foreground" />
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        {DISCOVERY_FIELDS.map((field) => (
+          <div
+            key={field.key}
+            className={cn(
+              "flex flex-col gap-1.5",
+              field.key === "problem_statement" && "sm:col-span-2",
+            )}
+          >
+            <label className="text-xs font-medium text-muted-foreground">{field.label}</label>
+            <Textarea
+              rows={2}
+              disabled={disabled}
+              value={draft[field.key]}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, [field.key]: e.target.value }));
+                setSaved(false);
+              }}
+              placeholder={field.placeholder}
+            />
+          </div>
+        ))}
+      </div>
+
+      {missing && missing.length > 0 && (
+        <p className="mt-3 text-xs text-destructive">
+          Fill in {missing.length} more {missing.length === 1 ? "field" : "fields"} before locking:
+          "" {missing.map((m) => m.replace(/_/g, " ")).join(", ")}.
+        </p>
+      )}
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+      {saved && !error && <p className="mt-3 text-xs text-stage-report">Draft saved.</p>}
+
+      <div className="mt-4 flex justify-end gap-2">
+        <Button size="sm" variant="outline" onClick={() => void handleSave()} disabled={disabled || isSaving}>
+          {isSaving && <Loader2 className="size-3.5 animate-spin" />}
+          Save draft
+        </Button>
+        <Button size="sm" onClick={() => void handleLock()} disabled={disabled}>
+          <Check className="size-3.5" />
+          Lock problem
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+// ── Wildcard reveal (§3.7) ─────────────────────────────────────────────────
+
+function WildcardCard({ scenarioId, canReveal }: { scenarioId: string; canReveal: boolean }) {
+  const [reveal, setReveal] = useState<WildcardReveal | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  async function handleReveal() {
+    setIsLoading(true);
+    setError(null);
+    try {
+      setReveal(await revealWildcard(scenarioId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Not available yet.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  if (reveal) {
+    const payload = reveal.payload as { scenario_text?: string; context?: string } | null;
+    return (
+      <Card className="border-stage-report/40 bg-stage-report/5 p-5">
+        <h2 className="text-sm font-semibold tracking-[-0.01em]">{reveal.title}</h2>
+        <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+          {payload?.scenario_text || "The scenario has been revealed."}
+        </p>
+        {payload?.context && (
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
+            {payload.context}
+          </p>
+        )}
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-dashed p-5">
+      <h2 className="text-sm font-semibold tracking-[-0.01em]">Wildcard scenario</h2>
+      <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
+        {canReveal
+          ? "The build has ended — the wildcard is unlocked."
+          : "This hackathon's scenario is sealed until the build ends. It cannot be viewed early — not by anyone, from any client."}
+      </p>
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+      <Button
+        size="sm"
+        variant="outline"
+        className="mt-4"
+        onClick={() => void handleReveal()}
+        disabled={!canReveal || isLoading}
+      >
+        {isLoading && <Loader2 className="size-3.5 animate-spin" />}
+        {canReveal ? "Reveal scenario" : "Locked until the build ends"}
+      </Button>
+    </Card>
   );
 }
 

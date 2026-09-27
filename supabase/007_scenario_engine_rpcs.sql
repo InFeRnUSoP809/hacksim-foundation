@@ -45,14 +45,24 @@ as $$
     'github_submission_started_at',
       greatest(s.build_ends_at, s.github_submission_started_at),
     'github_submission_ends_at',
-      coalesce(s.github_submission_ends_at, s.build_ends_at + interval '5 minutes'),
+      -- Part 20/23: the window end comes from the session's own snapshot, set
+      -- when the simulation started. When the window is disabled the value is
+      -- null — there is no submission phase to count down to.
+      coalesce(s.github_submission_ends_at,
+               case when s.github_submission_window_enabled
+                     and s.github_submission_window_minutes > 0
+                    then s.build_ends_at + make_interval(mins => s.github_submission_window_minutes)
+               end),
 
     -- Seconds are computed, never decremented by the client.
     'build_seconds_remaining',
-      greatest(0, floor(extract(epoch from (s.build_ends_at - now()))))::bigint,
-    'github_window_seconds_remaining',
+      greatest(0, floor(extract(epoch from (s.build_ends_at - now()))))::bigint,    'github_window_seconds_remaining',
       greatest(0, floor(extract(epoch from (
-        coalesce(s.github_submission_ends_at, s.build_ends_at + interval '5 minutes')
+        coalesce(s.github_submission_ends_at,
+                 case when s.github_submission_window_enabled
+                       and s.github_submission_window_minutes > 0
+                      then s.build_ends_at + make_interval(mins => s.github_submission_window_minutes)
+                 end)
         - now()))))::bigint,
 
     'build_elapsed',
@@ -60,9 +70,16 @@ as $$
     'github_window_open',
       s.build_ends_at <= now()
       and now() < coalesce(s.github_submission_ends_at,
-                           s.build_ends_at + interval '5 minutes'),
+               case when s.github_submission_window_enabled
+                     and s.github_submission_window_minutes > 0
+                    then s.build_ends_at + make_interval(mins => s.github_submission_window_minutes)
+               end),
     'can_edit_build',
-      s.status = 'running' and s.build_ends_at > now()
+      s.status = 'running' and s.build_ends_at > now(),
+
+    -- Part 27 — the UI shows the configured window, not a hardcoded constant.
+    'github_submission_window_enabled', s.github_submission_window_enabled,
+    'github_submission_window_minutes', s.github_submission_window_minutes
   )
   from public.build_sessions s
   where s.id = p_session_id;
@@ -81,9 +98,13 @@ declare
   v_status    text;
   v_build_end timestamptz;
   v_submitted timestamptz;
+  v_window_enabled boolean;
+  v_window_minutes integer;
+  v_window_end     timestamptz;
 begin
-  select status, build_ends_at, submitted_at
-    into v_status, v_build_end, v_submitted
+  select status, build_ends_at, submitted_at,
+         github_submission_window_enabled, github_submission_window_minutes
+    into v_status, v_build_end, v_submitted, v_window_enabled, v_window_minutes
     from public.build_sessions
    where id = p_session_id
    for update;                      -- serialises two callers racing here
@@ -100,6 +121,21 @@ begin
     return v_status;                -- still building
   end if;
 
+  -- Part 25: with the window disabled the build simply expires — no submission
+  -- phase opens, and a late repository is refused.
+  if not v_window_enabled or v_window_minutes is null or v_window_minutes <= 0 then
+    update public.build_sessions
+       set status = 'build_expired',
+           github_submission_started_at = coalesce(github_submission_started_at, v_build_end),
+           updated_at = now()
+     where id = p_session_id;
+    return 'build_expired';
+  end if;
+
+  -- Part 24: the window is build_ends_at plus the snapshotted duration —
+  -- never a constant.
+  v_window_end := v_build_end + make_interval(mins => v_window_minutes);
+
   -- Past the deadline. If they submitted in time, the window is already closed
   -- by the submission; otherwise it is open and then it expires.
   if v_submitted is not null then
@@ -108,12 +144,11 @@ begin
     return 'submitted';
   end if;
 
-  if now() >= v_build_end + interval '5 minutes' then
+  if now() >= v_window_end then
     update public.build_sessions
        set status = 'github_submission_expired',
            github_submission_started_at = coalesce(github_submission_started_at, v_build_end),
-           github_submission_ends_at   = coalesce(github_submission_ends_at,
-                                                  v_build_end + interval '5 minutes'),
+           github_submission_ends_at   = coalesce(github_submission_ends_at, v_window_end),
            updated_at = now()
      where id = p_session_id;
     return 'github_submission_expired';
@@ -124,8 +159,7 @@ begin
          -- §13.3: the window starts at build end, computed once and stored, so
          -- a refresh cannot restart it.
          github_submission_started_at = coalesce(github_submission_started_at, v_build_end),
-         github_submission_ends_at   = coalesce(github_submission_ends_at,
-                                                v_build_end + interval '5 minutes'),
+         github_submission_ends_at   = coalesce(github_submission_ends_at, v_window_end),
          updated_at = now()
    where id = p_session_id;
   return 'build_expired';
@@ -149,13 +183,16 @@ begin
 
   perform public.sync_session_phase(p_session_id);
 
-  -- Only promote to the submission phase if the window is genuinely open.
+  -- Only promote to the submission phase if the window is genuinely open —
+  -- enabled in the snapshot, still inside its duration, and not yet submitted.
   update public.build_sessions
      set status = 'github_submission'
    where id = p_session_id
      and status = 'build_expired'
      and build_ends_at <= now()
-     and now() < build_ends_at + interval '5 minutes'
+     and github_submission_window_enabled
+     and github_submission_window_minutes > 0
+     and now() < build_ends_at + make_interval(mins => github_submission_window_minutes)
      and submitted_at is null;
 
   return (select status from public.build_sessions where id = p_session_id);
@@ -356,7 +393,17 @@ begin
       'ai_assistance_allowed', v_row.ai_assistance_allowed
     ),
     'required_fields', to_jsonb(v_fields),
-    'clock', public.session_clock(p_session_id)
+    'clock', public.session_clock(p_session_id),
+
+    -- §3.7 — the id is all a wildcard card needs to render a reveal button;
+    -- the payload itself stays sealed in hackathon_wildcards until the function
+    -- decides the build has ended.
+    'wildcard_scenario_id', (
+      select sc.id from public.hackathon_scenarios sc
+       where sc.hackathon_id = v_row.hackathon_id and sc.is_wildcard
+       order by sc.created_at
+       limit 1
+    )
   );
 end;
 $$;
@@ -507,7 +554,8 @@ declare
   v_phase text;
 begin
   select sub.id, sub.session_id, sub.team_id, sub.status, sub.github_url,
-         bs.build_ends_at, bs.github_submission_ends_at, bs.submitted_at
+         bs.build_ends_at, bs.github_submission_ends_at, bs.submitted_at,
+         bs.github_submission_window_enabled, bs.github_submission_window_minutes
     into v_sub
     from public.submissions sub
     join public.build_sessions bs on bs.id = sub.session_id
@@ -537,8 +585,18 @@ begin
     raise exception 'The build timer has not finished yet.' using errcode = '42501';
   end if;
 
+  -- Part 25: no window configured means no submission after the build. The
+  -- check is explicit rather than relying on a null comparison, which would
+  -- silently evaluate to "not expired" and accept a late submission.
+  if not v_sub.github_submission_window_enabled
+     or v_sub.github_submission_window_minutes is null
+     or v_sub.github_submission_window_minutes <= 0 then
+    raise exception 'The build has ended and no GitHub submission window is configured.'
+      using errcode = '42501';
+  end if;
+
   if now() >= coalesce(v_sub.github_submission_ends_at,
-                       v_sub.build_ends_at + interval '5 minutes') then
+                       v_sub.build_ends_at + make_interval(mins => v_sub.github_submission_window_minutes)) then
     perform public.sync_session_phase(v_sub.session_id);
     raise exception 'The submission window has closed.' using errcode = '42501';
   end if;

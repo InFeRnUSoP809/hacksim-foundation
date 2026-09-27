@@ -127,6 +127,9 @@ export interface SessionClock {
   build_elapsed: boolean;
   github_window_open: boolean;
   can_edit_build: boolean;
+  /** Part 20 — the session's own snapshot of the configured window. */
+  github_submission_window_enabled: boolean;
+  github_submission_window_minutes: number;
 }
 
 /** §1.4 — what a participant may see about their hackathon, per format. */
@@ -155,6 +158,8 @@ export interface SessionBrief {
   };
   required_fields: RequiredField[];
   clock: SessionClock;
+  /** §3.7 — id only; the payload stays sealed until reveal is permitted. */
+  wildcard_scenario_id: string | null;
 }
 
 export interface ProblemDiscovery {

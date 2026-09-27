@@ -347,6 +347,10 @@ declare
   v_status   text;
   v_existing uuid;
   v_new      uuid;
+  -- Part 23 — the submission window is copied from the hackathon at start.
+  -- Later admin edits must not move an active simulation's deadline.
+  v_window_enabled boolean;
+  v_window_minutes integer;
 begin
   -- 1. authenticated
   if auth.uid() is null then
@@ -364,8 +368,9 @@ begin
   end if;
 
   -- 3/4. hackathon valid, 5. practice currently enabled
-  select simulation_duration_minutes, practice_enabled, status
-    into v_duration, v_enabled, v_status
+  select simulation_duration_minutes, practice_enabled, status,
+         github_submission_window_enabled, github_submission_window_minutes
+    into v_duration, v_enabled, v_status, v_window_enabled, v_window_minutes
   from public.hackathons
   where id = p_hackathon_id;
 
@@ -392,12 +397,15 @@ begin
     raise exception 'Your team already has a simulation in progress.';
   end if;
 
-  -- Timestamps come from the database, never from the client.
+  -- Timestamps come from the database, never from the client. The window
+  -- configuration is snapshotted with them (Part 23).
   insert into public.build_sessions
-    (hackathon_id, team_id, started_by, started_at, ends_at, status)
+    (hackathon_id, team_id, started_by, started_at, ends_at, status,
+     github_submission_window_enabled, github_submission_window_minutes)
   values
     (p_hackathon_id, v_team_id, auth.uid(), now(),
-     now() + make_interval(mins => v_duration), 'running')
+     now() + make_interval(mins => v_duration), 'running',
+     coalesce(v_window_enabled, false), coalesce(v_window_minutes, 5))
   returning id into v_new;
 
   return v_new;

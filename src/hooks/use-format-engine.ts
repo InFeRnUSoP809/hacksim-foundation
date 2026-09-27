@@ -18,9 +18,10 @@ function derivePhase(clock: SessionBrief["clock"], elapsedSeconds: number): Simu
   if (clock.status === "github_submission_expired") return "closed";
 
   const buildOver = clock.build_seconds_remaining - elapsedSeconds <= 0;
-  const windowOpen = clock.github_window_seconds_remaining - elapsedSeconds > 0;
-  if (!buildOver && windowOpen) return "build";
-  if (buildOver && windowOpen) return "window";
+  const windowEnabled = clock.github_submission_window_enabled && clock.github_submission_window_minutes > 0;
+  const windowSecondsLeft = clock.github_window_seconds_remaining - elapsedSeconds;
+  if (!buildOver) return "build";
+  if (windowEnabled && windowSecondsLeft > 0) return "window";
   return "closed";
 }
 
