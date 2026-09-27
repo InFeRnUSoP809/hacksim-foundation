@@ -6,11 +6,177 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 619 lines, self-contained — safe to paste into the Supabase dashboard.
+// 827 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
+
+// _shared/security.ts
+var securityHeaders = {
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+  // `connect-src` allows the Supabase project the app talks to and nothing else,
+  // so a compromised dependency cannot exfiltrate a session to a third origin.
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    // Tailwind injects a stylesheet at runtime
+    "img-src 'self' data: blob:",
+    "font-src 'self' data:",
+    "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'"
+  ].join("; ")
+};
+function withSecurityHeaders(response) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(securityHeaders)) headers.set(key, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+var MAX_BODY_BYTES = 256 * 1024;
+var PayloadTooLarge = class extends Error {
+  constructor(limit) {
+    super("Request body is too large.");
+    this.limit = limit;
+    this.name = "PayloadTooLarge";
+  }
+};
+var COSTLY_ACTIONS = {
+  repository: 10,
+  // GitHub: a real repository is dozens of API calls
+  reanalyze: 10,
+  review: 30,
+  // DeepSeek: several model calls per run
+  "retry-module": 10
+};
+var DEFAULT_WINDOW_MS = 6e4;
+var RateLimiter = class {
+  constructor(now = () => Date.now()) {
+    this.now = now;
+  }
+  buckets = /* @__PURE__ */ new Map();
+  /**
+   * @param action    the expensive operation, e.g. "repository"
+   * @param callerId  the authenticated user id — never a client-supplied value
+   * @param limit     permits per window
+   */
+  check(action, callerId, limit) {
+    const windowMs = DEFAULT_WINDOW_MS;
+    const key = `${action}:${callerId}`;
+    const at = this.now();
+    const bucket = this.buckets.get(key);
+    if (!bucket || bucket.resetAt <= at) {
+      this.buckets.set(key, { count: 1, resetAt: at + windowMs });
+      return { allowed: true, remaining: Math.max(0, limit - 1), retryAfterSeconds: 0, limit };
+    }
+    if (bucket.count >= limit) {
+      return {
+        allowed: false,
+        remaining: 0,
+        retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - at) / 1e3)),
+        limit
+      };
+    }
+    bucket.count += 1;
+    return {
+      allowed: true,
+      // Clamped: a limit of 0 means "not rate limited", and `0 - 1` reporting a
+      // negative allowance would be nonsense to anything reading the header.
+      remaining: Math.max(0, limit - bucket.count),
+      retryAfterSeconds: 0,
+      limit
+    };
+  }
+  /** Reject a request that would exceed a limit, naming the wait. */
+  enforce(action, callerId) {
+    const limit = COSTLY_ACTIONS[action] ?? 0;
+    if (limit === 0) return null;
+    const result = this.check(action, callerId, limit);
+    if (result.allowed) return null;
+    return fail(
+      `Too many requests. Try again in ${result.retryAfterSeconds}s.`,
+      429,
+      { retry_after: result.retryAfterSeconds, limit: result.limit }
+    );
+  }
+  /** Drop expired buckets so a long-lived instance does not accumulate them. */
+  sweep() {
+    const at = this.now();
+    for (const [key, bucket] of this.buckets) {
+      if (bucket.resetAt <= at) this.buckets.delete(key);
+    }
+  }
+};
+var rateLimiter = new RateLimiter();
+var SECRET_PATTERNS = [
+  // Authorization headers, in any casing, with the scheme preserved for context.
+  [/\b(authorization\s*[:=]\s*)(bearer\s+)?[A-Za-z0-9._~+/-]{12,}=*/gi, "$1$2[REDACTED]"],
+  [/\b(bearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, "$1[REDACTED]"],
+  // Provider key shapes, before the generic rule so the label is preserved.
+  [/\b(sk-[A-Za-z0-9_-]{12,})/g, "[REDACTED]"],
+  [/\b(gh[pousr]_[A-Za-z0-9]{16,})/g, "[REDACTED]"],
+  [/\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g, "[REDACTED]"],
+  [/\b(AIza[A-Za-z0-9_-]{20,})/g, "[REDACTED]"],
+  [/\b(xox[abprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]"],
+  [/\b([sr]k_(?:live|test)_[A-Za-z0-9]{12,})/g, "[REDACTED]"],
+  // A URL carrying its own credentials. This one has no label to key off, so
+  // it needs a rule of its own: `postgres://admin:s3cr3t@db/app` appears bare in
+  // a stack trace or an error string and the labelled pattern below would miss
+  // it entirely. The userinfo half goes; the host is kept, because "which host"
+  // is diagnostic and "the password" is not.
+  [/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s:@]+)@/gi, "$1$2:[REDACTED]@"],
+  // PEM blocks: a private key is a multi-line secret that a single-line regex
+  // would otherwise leak a line of.
+  [/-----BEGIN[^-]{0,40}PRIVATE KEY-----[\s\S]*?-----END[^-]{0,40}PRIVATE KEY-----/g, "[REDACTED]"],
+  // Labelled assignments — the last line of defence, so `password = "hunter2"`
+  // is caught even when the value does not match a provider's shape.
+  [
+    /\b((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|connection[_-]?string)\s*[:=]\s*)(['"]?)[^\s'",;}]{8,}\2/gi,
+    "$1[REDACTED]"
+  ]
+];
+function redactSecrets(input) {
+  if (!input) return "";
+  let out = String(input);
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+var safeLog = {
+  info(scope, message, detail) {
+    console.log(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+  },
+  warn(scope, message, detail) {
+    console.warn(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+  },
+  error(scope, message, detail) {
+    console.error(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+  }
+};
+function safeDetail(detail) {
+  if (detail instanceof Error) {
+    return redactSecrets(`${detail.name}: ${detail.message} ${detail.stack ?? ""}`);
+  }
+  try {
+    return redactSecrets(JSON.stringify(detail));
+  } catch {
+    return "[unserialisable]";
+  }
+}
+
+// _shared/http.ts
 var corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -78,13 +244,21 @@ var HttpError = class extends Error {
 };
 function withErrorHandling(handler) {
   return async (req) => {
-    if (req.method === "OPTIONS") return preflight();
+    if (req.method === "OPTIONS") return withSecurityHeaders(preflight());
     try {
-      return await handler(req, new URL(req.url));
+      return withSecurityHeaders(await handler(req, new URL(req.url)));
     } catch (error) {
-      if (error instanceof HttpError) return fail(error.message, error.status);
-      console.error("[hacksim] unhandled error", error);
-      return fail("Something went wrong on the server.", 500);
+      if (error instanceof HttpError) return withSecurityHeaders(fail(error.message, error.status));
+      if (error instanceof PayloadTooLarge) {
+        return withSecurityHeaders(
+          fail(`Request body is too large. The limit is ${error.limit} bytes.`, 413)
+        );
+      }
+      if (error instanceof SyntaxError) {
+        return withSecurityHeaders(fail("Request body must be valid JSON.", 400));
+      }
+      safeLog.error("hacksim", "unhandled error", error);
+      return withSecurityHeaders(fail("Something went wrong on the server.", 500));
     }
   };
 }
@@ -498,6 +672,38 @@ async function cacheAnalytics(url) {
     estimated_cache_savings_usd: savings
   };
 }
+async function auditLog(url) {
+  const days = intParam(url, "days", 30, 1, 365);
+  const limit = intParam(url, "limit", 100, 1, 500);
+  const offset = intParam(url, "offset", 0, 0, 1e6);
+  const entityType = url.searchParams.get("entity_type");
+  let query = db().from("admin_audit_logs").select(
+    "id, created_at, admin_user_id, action, entity_type, entity_id, entity_name, reason, metadata",
+    { count: "exact" }
+  ).gte("created_at", windowStart(days));
+  if (entityType) query = query.eq("entity_type", entityType);
+  const { data, error, count } = await query.order("created_at", { ascending: false }).range(offset, offset + limit - 1);
+  if (error) throw new HttpError("Could not load the audit log.", 400);
+  const rows = data ?? [];
+  const emails = await userEmails(rows.map((r) => r.admin_user_id).filter(Boolean));
+  return {
+    rows: rows.map((row) => ({
+      id: row.id,
+      created_at: row.created_at,
+      admin_user_id: row.admin_user_id ?? null,
+      admin_email: emails.get(row.admin_user_id) ?? null,
+      action: row.action,
+      entity_type: row.entity_type,
+      entity_id: row.entity_id ?? null,
+      entity_name: row.entity_name ?? null,
+      reason: row.reason ?? null,
+      metadata: row.metadata ?? null
+    })),
+    count: count ?? rows.length,
+    limit,
+    offset
+  };
+}
 async function saveBudget(payload) {
   const scope = String(payload.scope ?? "");
   if (!["global", "user", "submission"].includes(scope)) {
@@ -594,6 +800,8 @@ Deno.serve(
           if (!requestId) throw new HttpError("A request id is required.", 400);
           return json(await requestDetail(requestId));
         }
+        case "audit-log":
+          return json(await auditLog(url));
         case "budget-state": {
           const snapshot = await loadBudget(url.searchParams.get("submission_id"));
           return json({

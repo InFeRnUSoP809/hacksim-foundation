@@ -31,6 +31,8 @@ const EMPTY_DRAFT: HackathonDraft = {
   expected_outcome: "",
   evaluation_criteria: "",
   simulation_duration_minutes: 60,
+  github_submission_window_enabled: false,
+  github_submission_window_minutes: 10,
   status: "draft",
 };
 
@@ -279,6 +281,8 @@ function HackathonForm({
           expected_outcome: hackathon.expected_outcome,
           evaluation_criteria: hackathon.evaluation_criteria,
           simulation_duration_minutes: hackathon.simulation_duration_minutes,
+          github_submission_window_enabled: hackathon.github_submission_window_enabled ?? false,
+          github_submission_window_minutes: hackathon.github_submission_window_minutes ?? 10,
           status: hackathon.status,
         }
       : EMPTY_DRAFT,
@@ -422,6 +426,56 @@ function HackathonForm({
               Changing this never affects a simulation that has already
               started.
             </p>
+          </div>
+
+          {/* ── Post-hackathon GitHub submission window (Part 20) ── */}
+          <div className="rounded-lg border border-border p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">Post-hackathon GitHub submission</p>
+                <p className="mt-1 max-w-md text-xs leading-relaxed text-muted-foreground">
+                  After the build ends, teams get this long to submit their
+                  repository. It is submission only — no extra build time — and
+                  each simulation snapshots the value it started with.
+                </p>
+              </div>
+              <label className="flex items-center gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={draft.github_submission_window_enabled}
+                  onChange={(event) =>
+                    set("github_submission_window_enabled", event.target.checked)
+                  }
+                  className="size-4 accent-[var(--brand)]"
+                />
+                Enabled
+              </label>
+            </div>
+
+            {draft.github_submission_window_enabled && (
+              <div className="mt-3 flex flex-col gap-1.5">
+                <Label htmlFor="window-minutes">Submission window (minutes)</Label>
+                <Input
+                  id="window-minutes"
+                  type="number"
+                  min={1}
+                  max={240}
+                  value={draft.github_submission_window_minutes}
+                  onChange={(event) =>
+                    set(
+                      "github_submission_window_minutes",
+                      clamp(Number(event.target.value), 1, 240),
+                    )
+                  }
+                  className="w-32"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Any value from 1 to 240 minutes. The database rejects anything
+                  outside that range, and running simulations keep the window
+                  they were started with.
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-col gap-2">

@@ -1,9 +1,13 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@deno/installer-shell-setup@*": "0.3.4",
     "jsr:@supabase/supabase-js@2": "2.117.2"
   },
   "jsr": {
+    "@deno/installer-shell-setup@0.3.4": {
+      "integrity": "48665d1a737d487cce6874bc97bba70a5aeffa7053aca3f60df93c6fab8963b4"
+    },
     "@supabase/supabase-js@2.117.2": {
       "integrity": "25d69a2a93810fc5a396d40bc55b5a948ed0a44c5a7ed8e2da793c09240e77f1"
     }

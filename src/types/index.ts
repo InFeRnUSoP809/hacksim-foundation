@@ -75,6 +75,9 @@ export interface Hackathon {
   expected_outcome: string;
   evaluation_criteria: string;
   simulation_duration_minutes: number;
+  /** Part 20 — post-build GitHub submission window (admin-configured). */
+  github_submission_window_enabled: boolean;
+  github_submission_window_minutes: number;
   status: HackathonStatus;
   practice_enabled: boolean;
   created_at: string;
