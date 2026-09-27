@@ -66,9 +66,30 @@ export default function Simulation() {
   // When the build ends, the page moves itself to the GitHub submission. The
   // window is short and its only job is the repository URL, so there is no
   // "finish" step to confirm and nothing to do on this view once time is up —
-  // the timer crossing zero is the finish. The ref keeps the redirect a
-  // one-shot even while the phase re-derives every second.
+  // the timer crossing zero is the finish. Two triggers, one guard:
+  //   * the local countdown reaching zero — instant, optimistic, no waiting
+  //     for a server round-trip, taken only when this run's own snapshot says
+  //     a submission window exists;
+  //   * the server-derived phase arriving at "window" — the backstop for a
+  //     page loaded (or refreshed) after the build already ended.
   const redirectedRef = useRef(false);
+  const runHasWindow =
+    (engine.brief?.clock.github_submission_window_enabled ?? false) &&
+    (engine.brief?.clock.github_submission_window_minutes ?? 0) > 0;
+
+  useEffect(() => {
+    if (
+      sessionId &&
+      !redirectedRef.current &&
+      engine.brief &&
+      runHasWindow &&
+      engine.buildRemaining <= 0
+    ) {
+      redirectedRef.current = true;
+      navigate(`/submission/${sessionId}`);
+    }
+  }, [engine.brief, engine.buildRemaining, runHasWindow, sessionId, navigate]);
+
   useEffect(() => {
     if (engine.phase === "window" && sessionId && !redirectedRef.current) {
       redirectedRef.current = true;
@@ -205,7 +226,7 @@ export default function Simulation() {
               {phase === "closed"
                 ? windowEnabled
                   ? "The submission window has closed. Nothing further can be submitted for this run."
-                  : "The build window closed — no submission window was configured for this hackathon."
+                  : "This run has no GitHub upload phase — the submission window was disabled when the run started, so the build simply ended. Runs started after enabling the window will move to the upload automatically."
                 : "Your team finished this run. Your work is saved and ready for submission review."}
             </p>
             <div className="flex gap-3">
