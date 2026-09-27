@@ -141,6 +141,13 @@ export const SESSION_STATUSES = [
   "completed",
   "expired",
   "submitted",
+  // The scenario-engine statuses (006's check constraint). The UI must be able
+  // to render every state the database can produce — an unknown status renders
+  // as a blank pill and reads as a bug.
+  "build_expired",
+  "github_submission",
+  "github_submission_expired",
+  "cancelled",
 ] as const;
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 

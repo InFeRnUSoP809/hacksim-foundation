@@ -9,6 +9,13 @@ const SESSION_TONE: Record<SessionStatus, string> = {
   completed: "border-stage-build/35 bg-stage-build/10 text-stage-build",
   expired: "border-destructive/35 bg-destructive/10 text-destructive",
   submitted: "border-stage-defend/35 bg-stage-defend/10 text-stage-defend",
+  build_expired:
+    "border-destructive/35 bg-destructive/10 text-destructive",
+  github_submission:
+    "border-stage-submit/35 bg-stage-submit/10 text-stage-submit",
+  github_submission_expired:
+    "border-destructive/35 bg-destructive/10 text-destructive",
+  cancelled: "border-border bg-muted text-muted-foreground",
 };
 
 const SESSION_LABEL: Record<SessionStatus, string> = {
@@ -18,6 +25,10 @@ const SESSION_LABEL: Record<SessionStatus, string> = {
   completed: "Completed",
   expired: "Expired",
   submitted: "Submitted",
+  build_expired: "Build expired",
+  github_submission: "GitHub submission",
+  github_submission_expired: "Submission window expired",
+  cancelled: "Cancelled",
 };
 
 const HACKATHON_TONE: Record<HackathonStatus, string> = {

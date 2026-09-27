@@ -143,6 +143,10 @@ alter table public.build_sessions
   add column if not exists build_ends_at timestamptz,
   add column if not exists github_submission_started_at timestamptz,
   add column if not exists github_submission_ends_at timestamptz,
+  -- Written by sync_session_phase and lock_submission (007). The original
+  -- table in 002 never had it, and a missing column would break every phase
+  -- transition with "column does not exist".
+  add column if not exists submitted_at timestamptz,
 
   -- Part 23 — the window configuration is snapshotted when the simulation
   -- starts. If the admin later changes the hackathon's window, running
@@ -258,6 +262,44 @@ begin
   return v_new;
 end;
 $$;
+
+-- Part 30 — one path to `submitted`.
+--
+-- The original `finalize_submission` (003) predates the submission window and
+-- would accept a submission at any time, bypassing the window entirely. It
+-- cannot be re-defined in 003 itself: `create or replace` fails when a
+-- function's return type changes (uuid → jsonb), and 003 may have run long
+-- before this file. Re-creating it here, where the window columns already
+-- exist, turns the legacy endpoint into a thin delegate — old callers get the
+-- same enforcement, the same idempotency, and no side door. The drop is
+-- required rather than `create or replace`: the return type changes from uuid
+-- to jsonb, and Postgres refuses an in-place return-type change.
+drop function if exists public.finalize_submission(uuid);
+
+create or replace function public.finalize_submission(p_session_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_submission_id uuid;
+begin
+  select id into v_submission_id
+    from public.submissions
+   where session_id = p_session_id
+   limit 1;
+
+  if v_submission_id is null then
+    raise exception 'Save a draft before submitting.' using errcode = 'P0002';
+  end if;
+
+  return public.lock_submission(v_submission_id);
+end;
+$$;
+
+-- The drop above removed the inherited grant; restore it explicitly.
+grant execute on function public.finalize_submission(uuid) to authenticated;
 
 
 -- ════════════════════════════════════════════════════════════════════════════
