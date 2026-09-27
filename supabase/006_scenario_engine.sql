@@ -34,6 +34,13 @@ alter table public.hackathons
     check (hackathon_type in ('problem_statement', 'open_innovation', 'theme_based',
                               'industry_scenario', 'government_public_problem',
                               'technology_challenge', 'wildcard', 'custom')),
+  -- The brief a participant reads before the build. 002 gave hackathons only
+  -- `problem_statement`, and 007's session_brief() returns a `description` in
+  -- the payload it builds — so the column has to exist, or the function fails
+  -- to plan with "column h.description does not exist" and the whole brief
+  -- (clock, required fields, wildcard id) goes down with it. Kept separate
+  -- from problem_statement: one is the brief, the other is the task.
+  add column if not exists description text,
   add column if not exists theme text,
   add column if not exists domain text,
   add column if not exists scenario text,
