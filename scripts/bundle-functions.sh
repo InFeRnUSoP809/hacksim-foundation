@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# Build self-contained edge function bundles for dashboard deployment.
+#
+# The Supabase dashboard accepts one file per function, but `analysis/index.ts`
+# and `ai-admin/index.ts` import nine modules from `_shared/`. Pasting either
+# entry point as-is fails immediately with an unresolved import. This inlines
+# every `_shared` module into a single file, so each function can be pasted
+# into the dashboard verbatim.
+#
+# The CLI does this automatically (`supabase functions deploy`); this exists
+# only for deploying through the web UI.
+#
+# Run:  bash scripts/bundle-functions.sh
+#
+# @supabase/supabase-js is left external: the Supabase runtime resolves it, and
+# inlining a client library would bury the actual function under 300 KB of
+# vendored code.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FUNCTIONS="$ROOT/supabase/functions"
+OUT="$FUNCTIONS/bundle"
+mkdir -p "$OUT"
+
+bundle() {
+  local name="$1"
+  # esbuild resolves the entry relative to its own cwd, so the path is absolute
+  # and the working directory is set rather than assumed.
+  local entry="$FUNCTIONS/$name/index.ts"
+
+  (cd "$FUNCTIONS" && npx --yes esbuild "$entry" \
+    --bundle \
+    --format=esm \
+    --platform=neutral \
+    --target=es2022 \
+    --external:@supabase/supabase-js \
+    --outfile="$OUT/$name.ts" \
+    --log-level=warning)
+
+  # A banner so nobody edits a generated file by hand and loses the change.
+  local lines
+  lines=$(wc -l < "$OUT/$name.ts")
+  printf '%s\n' \
+    "// ─────────────────────────────────────────────────────────────────────" \
+    "// GENERATED FILE — do not edit." \
+    "//" \
+    "// Built by scripts/bundle-functions.sh from" \
+    "//   supabase/functions/$name/index.ts" \
+    "// plus supabase/functions/_shared/*.ts" \
+    "//" \
+    "// Edit the sources, then re-run the script. Changes made here are lost." \
+    "// $lines lines, self-contained — safe to paste into the Supabase dashboard." \
+    "// ─────────────────────────────────────────────────────────────────────" \
+    "" > "$OUT/$name.header"
+
+  cat "$OUT/$name.header" "$OUT/$name.ts" > "$OUT/$name.tmp"
+  mv "$OUT/$name.tmp" "$OUT/$name.ts"
+  rm -f "$OUT/$name.header"
+
+  printf '%-12s %s lines  %s\n' "$name" "$(wc -l < "$OUT/$name.ts")" "$OUT/$name.ts"
+}
+
+echo "Bundling edge functions for dashboard deployment…"
+bundle analysis
+bundle ai-admin
+echo
+echo "Done. Paste each file into Supabase → Edge Functions → Deploy a new function."
