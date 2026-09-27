@@ -178,12 +178,6 @@ export default function Simulation() {
       </header>
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-5 py-8 sm:px-8">
-        {actionError && (
-          <div className="mb-6">
-            <ErrorState title="Action failed" message={actionError} />
-          </div>
-        )}
-
         {finished ? (
           <Card className="flex flex-col items-start gap-4 p-8">
             <h1 className="text-2xl font-semibold tracking-[-0.025em]">
