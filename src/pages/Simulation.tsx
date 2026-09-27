@@ -76,6 +76,24 @@ export default function Simulation() {
     }
   }, [engine.phase, sessionId, navigate]);
 
+  // The instant the local countdown crosses zero, have the server advance the
+  // session (build expiry, window open) and refetch the brief. Without this
+  // the server-side state could lag up to one poll interval behind what the
+  // timer shows, and the submission page would re-derive the phase from the
+  // stale snapshot.
+  const zeroSyncedRef = useRef(false);
+  useEffect(() => {
+    if (engine.brief && engine.buildRemaining <= 0 && !zeroSyncedRef.current) {
+      zeroSyncedRef.current = true;
+      if (sessionId) {
+        void syncSessionPhase(sessionId)
+          .then(() => engine.refresh())
+          .catch(() => undefined);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine.brief, engine.buildRemaining, sessionId]);
+
   if (!sessionId) {
     return (
       <Shell>
