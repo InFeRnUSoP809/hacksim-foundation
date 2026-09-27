@@ -64,6 +64,83 @@ export default function ProjectReview() {
   const { id = "" } = useParams<{ id: string }>();
 
   const analysis = useAsync(() => getSubmissionAnalysis(id), [id]);
+  // Stable across renders, so the pipeline effect does not re-run every tick.
+  const reload = analysis.reload;
+
+  const [stage, setStage] = useState<Stage | null>(null);
+  const [pipelineError, setPipelineError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const startedRef = useRef(false);
+
+  // The review builds itself. Opening this page runs the same two steps the
+  // playground runs — scan the repository, then write the review — so a student
+  // never has to know that an analysis has to be kicked off by hand. Both steps
+  // are idempotent: the scan is keyed on the commit, so a second visit finds the
+  // work already done and does nothing.
+  useEffect(() => {
+    const data = analysis.data;
+    if (!data || startedRef.current) return;
+
+    const repoStatus = data.repository?.analysis_status;
+    const reviewStatus = data.review?.status;
+
+    // A scan or review left running by an earlier visit: poll for the result
+    // rather than starting a second one, which would double the GitHub calls
+    // and the AI spend.
+    if (
+      repoStatus === "pending" ||
+      repoStatus === "scanning" ||
+      reviewStatus === "pending" ||
+      reviewStatus === "running"
+    ) {
+      const poll = setInterval(() => reload(), 5000);
+      return () => clearInterval(poll);
+    }
+
+    const scanned = isScanned(repoStatus);
+    if (scanned && isReviewed(reviewStatus)) return;
+
+    // Nothing to read: without a repository URL the scan would only be refused.
+    const hasRepo = Boolean(String(data.submission?.github_url ?? "").trim());
+    if (!hasRepo || !isApiConfigured) return;
+    // A failed scan is never retried automatically — it costs GitHub rate limit
+    // and AI tokens, so it gets an explicit button instead.
+    if (data.repository && !scanned) return;
+
+    startedRef.current = true;
+    let active = true;
+    void (async () => {
+      try {
+        setPipelineError(null);
+        if (!scanned) {
+          setStage("scan");
+          await analyzeRepository(id);
+        }
+        if (!active) return;
+        setStage("review");
+        await runReview(id);
+        if (active) reload();
+      } catch (err) {
+        // Cleared so the effect can start the pipeline again on the next
+        // attempt, which is what the retry button increments.
+        startedRef.current = false;
+        if (active) setPipelineError(friendlyError(err));
+      } finally {
+        if (active) setStage(null);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [analysis.data, id, attempt, reload]);
+
+  /** Re-arms the effect so it starts the pipeline over. */
+  function startNow() {
+    startedRef.current = false;
+    setPipelineError(null);
+    setAttempt((n) => n + 1);
+  }
 
   if (analysis.isLoading) {
     return (
@@ -86,6 +163,9 @@ export default function ProjectReview() {
 
   const data = analysis.data;
   const review = data.review;
+  const hasRepositoryUrl = Boolean(
+    String(data.submission?.github_url ?? "").trim(),
+  );
   const evidence: Evidence[] = data.evidence ?? [];
   const projectMap = data.project_map;
   const brief = data.hackathon as Record<string, string>;
@@ -117,15 +197,39 @@ export default function ProjectReview() {
         </p>
       </div>
 
-      {!data.repository && (
-        <Card className="mt-8 border-dashed p-6">
-          <p className="text-sm font-semibold">No analysis yet</p>
+      {stage && <PipelineProgress stage={stage} />}
+
+      {pipelineError && (
+        <Card className="mt-8 border-destructive/40 bg-destructive/5 p-6">
+          <p className="text-sm font-semibold">The analysis could not finish</p>
           <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Once your repository has been analysed, this page will show how your
-            code relates to the brief.
+            {pipelineError}
+          </p>
+          <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
+            <RefreshCw className="size-3.5" />
+            Try again
+          </Button>
+        </Card>
+      )}
+
+      {!data.repository && !stage && !pipelineError && (
+        <Card className="mt-8 border-dashed p-6">
+          <p className="text-sm font-semibold">
+            {hasRepositoryUrl ? "Starting the analysis" : "No repository to analyse"}
+          </p>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            {hasRepositoryUrl
+              ? "Your repository is read from GitHub and compared against the brief. This normally takes under a minute."
+              : "Add a GitHub repository URL to the submission and this page will build the review from it."}
             {!isApiConfigured &&
               " The analysis edge function has not been configured on this deployment yet."}
           </p>
+          {hasRepositoryUrl && isApiConfigured && (
+            <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
+              <RefreshCw className="size-3.5" />
+              Analyse now
+            </Button>
+          )}
         </Card>
       )}
 
@@ -136,6 +240,12 @@ export default function ProjectReview() {
             {data.repository.error_message ??
               "The repository could not be read from GitHub."}
           </p>
+          {isApiConfigured && (
+            <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
+              <RefreshCw className="size-3.5" />
+              Try again
+            </Button>
+          )}
         </Card>
       )}
 
@@ -295,6 +405,26 @@ export default function ProjectReview() {
         </Link>
       </p>
     </StudentLayout>
+  );
+}
+
+/** Which step the automatic pipeline is on, and what it is doing right now. */
+function PipelineProgress({ stage }: { stage: Stage }) {
+  const copy = STAGE_COPY[stage];
+  return (
+    <Card className="mt-8 border-brand/30 bg-brand/5 p-6">
+      <div className="flex items-center gap-2.5">
+        <Loader2 className="size-4 animate-spin text-brand" />
+        <p className="text-sm font-semibold">{copy.title}</p>
+      </div>
+      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+        {copy.body}
+      </p>
+      <p className="mt-3 text-xs text-muted-foreground">
+        This runs in the background — you can leave this page and come back, and
+        it will pick up where it stopped.
+      </p>
+    </Card>
   );
 }
 
