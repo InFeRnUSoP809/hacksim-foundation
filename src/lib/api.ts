@@ -22,6 +22,7 @@ import type {
   AiUsageRow,
   CacheAnalytics,
   CostForecast,
+  PreflightReport,
   Repository,
   ReviewRunResult,
   SubmissionAnalysis,
@@ -268,4 +269,16 @@ export async function getCostForecast(): Promise<CostForecast> {
 
 export async function getCacheAnalytics(days = 30): Promise<CacheAnalytics> {
   return invoke("ai-admin", { method: "GET", query: { view: "cache-analytics", days: String(days) } });
+}
+
+/**
+ * §77 preflight — can the analysis pipeline actually run?
+ *
+ * This exists because the worst failure mode after a deploy is a silent one: no
+ * secret set, no error thrown, no scan ever starts, and a page that just never
+ * loads. It pokes the real providers instead of reporting whether a variable is
+ * non-empty, so the answer is a fact rather than an assumption.
+ */
+export async function getPreflight(): Promise<PreflightReport> {
+  return invoke("ai-admin", { method: "GET", query: { view: "preflight" } });
 }

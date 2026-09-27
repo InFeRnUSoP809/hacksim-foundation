@@ -14,6 +14,7 @@ import {
   getAiUsage,
   getCacheAnalytics,
   getCostForecast,
+  getPreflight,
   isApiConfigured,
   saveAiBudget,
   saveAiModel,
@@ -23,10 +24,12 @@ import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
+  CircleCheck,
   CircleDollarSign,
   Cpu,
   Gauge,
   Receipt,
+  RefreshCw,
   Save,
   Trash2,
   TrendingUp,
@@ -736,6 +739,7 @@ function BudgetsTab() {
 
 function SettingsTab() {
   const settings = useAsync(() => getAiSettingsPage(), []);
+  const preflight = useAsync(() => getPreflight(), []);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<string | null>(null);
 
@@ -773,6 +777,58 @@ function SettingsTab() {
 
   return (
     <div className="flex flex-col gap-8">
+      <Card
+        className={cn(
+          "p-6",
+          preflight.data && !preflight.data.ok && "border-destructive/40",
+        )}
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <CircleCheck
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                preflight.data?.ok ? "text-brand" : "text-muted-foreground",
+              )}
+            />
+            <div>
+              <p className="text-base font-semibold">Preflight</p>
+              <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted-foreground">
+                Checks the real providers, not just whether a variable is set. A
+                token can be present and still rejected. Costs nothing and sends
+                no AI request.
+              </p>
+            </div>
+          </div>
+          <Button size="sm" variant="outline" onClick={preflight.reload}>
+            <RefreshCw className="size-3.5" />
+            Run checks
+          </Button>
+        </div>
+
+        {preflight.isLoading && <LoadingState label="Running preflight checks" />}
+
+        {preflight.data && (
+          <ul className="mt-5 flex flex-col divide-y divide-border border-t border-border">
+            {preflight.data.checks.map((check) => (
+              <li key={check.name} className="flex items-start gap-3 py-3">
+                {check.ok ? (
+                  <CircleCheck className="mt-0.5 size-4 shrink-0 text-brand" />
+                ) : (
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium capitalize">{check.name}</p>
+                  <p className="mt-0.5 text-sm text-muted-foreground">
+                    {check.detail}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
       <Card
         className={cn(
           "flex flex-wrap items-center justify-between gap-4 p-6",

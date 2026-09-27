@@ -524,3 +524,25 @@ export interface ReviewRunResult {
   modules: ReviewModuleOutcome[];
   error: string | null;
 }
+
+/**
+ * One preflight check. `ok` is the answer to "can the pipeline run right now",
+ * not "is this variable set" — the GitHub check makes a real request, because a
+ * set-but-expired token is indistinguishable from a working one from inside.
+ */
+export interface PreflightCheck {
+  name: string;
+  ok: boolean;
+  detail: string;
+  token_configured?: boolean;
+  key_configured?: boolean;
+  model_priced?: boolean;
+  latency_ms?: number;
+  rate_limit?: { limit?: number; remaining?: number; reset_epoch?: number };
+}
+
+export interface PreflightReport {
+  ok: boolean;
+  checks_passed: string;
+  checks: PreflightCheck[];
+}
