@@ -43,6 +43,26 @@ for (const name of ["analysis", "ai-admin"]) {
   check(`${name}: no unresolved relative imports`, relativeImports.length === 0, relativeImports.join(", "));
   check(`${name}: keeps Deno.serve`, src.includes("Deno.serve("));
   check(`${name}: is self-marked as generated`, src.includes("GENERATED FILE"));
+
+  // The dashboard's bundler rejects any specifier that is not relative or
+  // scheme-prefixed. A bare "@supabase/supabase-js" deploys nowhere, and the
+  // error it produces names the specifier rather than the fix, so this is
+  // asserted on every build.
+  const specs = [...src.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]);
+  const bare = specs.filter(
+    (s) => !/^(\.|\/|npm:|jsr:|https?:)/.test(s),
+  );
+  check(
+    `${name}: every import is relative or scheme-prefixed`,
+    bare.length === 0,
+    bare.join(", "),
+  );
+  check(
+    `${name}: imports supabase-js with an explicit scheme`,
+    specs.some((s) => s.startsWith("npm:@supabase/supabase-js") || s.startsWith("jsr:@supabase/supabase-js")),
+    specs.join(", "),
+  );
+
   // The secret must still be read at runtime, never baked in at build time.
   // esbuild keeps `Deno.env.get(name)` with the name held in a variable, so
   // the assertion looks for the call and the key name separately.

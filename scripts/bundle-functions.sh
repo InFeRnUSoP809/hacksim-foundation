@@ -38,6 +38,32 @@ bundle() {
     --outfile="$OUT/$name.ts" \
     --log-level=warning)
 
+  # The dashboard's bundler rejects a bare specifier. It requires npm:/jsr:/https:
+  # on every import that is not a relative path, so the one external the CLI
+  # resolves from deno.json has to be rewritten here.
+  #
+  #   "Relative import path \"@supabase/supabase-js\" not prefixed with / or ./ or ../"
+  #
+  # Rewriting with sed rather than letting esbuild bundle it: the Supabase
+  # runtime supplies the client, and inlining it would bury the function under
+  # 300 KB of vendored code.
+  sed -i \
+    -e 's#from "@supabase/supabase-js"#from "npm:@supabase/supabase-js@2"#g' \
+    -e "s#from 'npm:@supabase/supabase-js'#from 'npm:@supabase/supabase-js@2'#g" \
+    "$OUT/$name.ts"
+
+  # Fail loudly rather than shipping a bundle the dashboard will reject.
+  # A specifier is bare unless it starts with /, ./, ../ or a URL scheme
+  # (npm:, jsr:, https:, http:).
+  local bare
+  bare=$(grep -nE 'from "[^"]+"' "$OUT/$name.ts" \
+    | grep -vE 'from "(\.|/|npm:|jsr:|https?:)' || true)
+  if [ -n "$bare" ]; then
+    echo "ERROR: $name has import specifiers the dashboard will reject:" >&2
+    echo "$bare" >&2
+    exit 1
+  fi
+
   # A banner so nobody edits a generated file by hand and loses the change.
   local lines
   lines=$(wc -l < "$OUT/$name.ts")

@@ -10,7 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "npm:@supabase/supabase-js@2";
 var corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
