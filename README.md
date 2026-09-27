@@ -70,11 +70,20 @@ Then promote yourself to admin. There is deliberately no self-service path:
 update public.profiles set role = 'admin' where email = 'you@example.com';
 ```
 
-Verify everything landed — this is read-only and creates nothing:
+Verify everything landed — these are read-only and create nothing:
 
 ```bash
-node --experimental-strip-types scripts/check-supabase.mjs
+node --experimental-strip-types scripts/check-supabase.mjs  # schema + RPCs
+node scripts/check-github.mjs                             # GitHub, DeepSeek, quota
+npx deno run --allow-env scripts/smoke-deterministic.ts     # 76 scanner assertions
 ```
+
+`smoke-deterministic.ts` is the only layer that can be fully verified without a
+deploy. It asserts the deterministic guarantees the scanner rests on: URL
+parsing refuses sub-paths and non-GitHub hosts, Spring route extraction joins
+the class-level `@RequestMapping` prefix, dependency parsing survives a
+malformed manifest, secret redaction never echoes a value, and evidence ids are
+stable across runs (which is what makes the AI cache safe).
 
 ### Schema
 

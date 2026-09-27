@@ -321,6 +321,12 @@ const PLACEHOLDER_TOKENS = [
 const SAFE_ASSIGNMENT =
   /(?:process\.env\.|Deno\.env\.|import\.meta\.env\.|os\.environ|getenv\(|env\[)/;
 
+// A connection string pointing at the developer's own machine is the single
+// largest source of false positives in a student repo, and a finding that is
+// always wrong trains people to ignore the real ones.
+const LOCAL_HOST =
+  /\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|host\.docker\.internal)\b/;
+
 /**
  * Redaction takes only the secret *type*. An earlier version kept the
  * surrounding label and leaked the entire value for patterns with no `=` in
@@ -353,6 +359,9 @@ export function scanFileForSecrets(
     const lowered = matched.toLowerCase();
     if (SAFE_ASSIGNMENT.test(matched)) continue;
     if (PLACEHOLDER_TOKENS.some((token) => lowered.includes(token))) continue;
+    if ((type === "connection_string" || type === "credential_url") && LOCAL_HOST.test(matched)) {
+      continue;
+    }
 
     const line = content.slice(0, match.index).split("\n").length;
     seen.add(type);
@@ -496,9 +505,16 @@ function parseRequirementsTxt(content: string): Dependency[] {
       if (name) pushTarget(out, name[1], null, "pypi");
       continue;
     }
-    const specMatch = /^(.*?)(==|>=|~=)(.*)$/.exec(line);
-    if (!specMatch) continue;
-    pushTarget(out, specMatch[1], cleanPythonVersion(specMatch[3]), "pypi");
+    const specMatch = /^(.*?)(==|>=|~=|>|<)(.*)$/.exec(line);
+    if (specMatch) {
+      pushTarget(out, specMatch[1], cleanPythonVersion(specMatch[3]), "pypi");
+      continue;
+    }
+    // A bare, unpinned requirement (`sqlalchemy`) is valid and common. Dropping
+    // it silently would understate what a project depends on.
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^\]]*\])?$/.test(line)) {
+      pushTarget(out, line, null, "pypi");
+    }
   }
   return out;
 }
@@ -676,9 +692,17 @@ const SYMBOL_RULES: Record<string, SymbolRule[]> = {
   ],
   ts: [
     [/^\s*(?:export\s+)?(?:async\s+)?function\s*\*?\s*(\w+)\s*\(/, 1, "function"],
-    [/^\s*(?:export\s+)?class\s+(\w+)/, 1, "class"],
+    [/^\s*(?:export\s+)?(?:abstract\s+)?class\s+(\w+)/, 1, "class"],
     [/^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\(|function)/, 1, "function"],
     [/^\s*(?:export\s+)?(?:interface|type)\s+(\w+)/, 1, "type"],
+    // A class method. Without this, a TypeScript class reports as a bare name
+    // and its whole API is invisible to the review — which is most of what a
+    // hackathon submission actually contains.
+    [
+      /^\s*(?:(?:public|private|protected|readonly|static|override|abstract|async|declare)\s+)*\*?\s*(?:get\s+|set\s+)?(\w+)\s*(?:<[^>()]*>)?\s*\([^;]*\)\s*(?::[^{;]+)?\s*\{/,
+      1,
+      "method",
+    ],
   ],
   ".go": [
     [/^func\s+(?:\([^)]*\)\s*)?(\w+)\s*\(/, 1, "function"],
@@ -795,6 +819,10 @@ export function extractRoutes(path: string, content: string): Route[] {
   const routes: Route[] = [];
   const seen = new Set<string>();
   const extension = extensionOf(path);
+  // A class-level @RequestMapping is a prefix, not an endpoint. Emitting it as
+  // `GET /api/v1` invents a route that does not exist, so it is captured here
+  // and joined onto the method mappings instead.
+  let classPrefix = "";
 
   const add = (method: string, routePath: string, line: number, symbol: string | null, framework: string) => {
     const key = `${method.toUpperCase()} ${routePath}`;
@@ -816,6 +844,17 @@ export function extractRoutes(path: string, content: string): Route[] {
     let m = /^\s*@(app|router|api)\.(get|post|put|patch|delete)\s*\(\s*["']([^"']+)["']/i.exec(line);
     if (m) { add(m[2], m[3], number, null, "FastAPI"); return; }
 
+    m = /@RequestMapping\s*\(\s*(?:value\s*=\s*)?["']?(\/?[\w{}\/-]*)/.exec(line);
+    if (m) {
+      // Distinguish the class-level prefix from a method-level generic
+      // mapping: a class declaration follows within the next few lines.
+      const rest = content.split("\n").slice(index, index + 4).join("\n");
+      if (/\bclass\s+\w+/.test(rest)) {
+        classPrefix = m[1] || "";
+        return;
+      }
+    }
+
     m = /@(\w+)\.route\s*\(\s*["']([^"']+)["']([^)]*)\)/.exec(line);
     if (m) {
       const methods = [...(m[3] ?? "").matchAll(/get|post|put|patch|delete/gi)];
@@ -827,7 +866,14 @@ export function extractRoutes(path: string, content: string): Route[] {
 
     m = /@(Get|Post|Put|Patch|Delete|Request)Mapping\s*\(\s*(?:value\s*=\s*)?["']?(\/?[\w{}\/-]*)/.exec(line);
     if (m) {
-      add(m[1] === "Request" ? "GET" : m[1], m[2] || "/", number, null, "Spring");
+      const own = m[2] || "";
+      // Spring composes the class prefix with the method path. Reporting only
+      // `/users` for a controller mounted at `/api/v1` is a wrong answer, not a
+      // partial one.
+      const joined = classPrefix && !own.startsWith(classPrefix)
+        ? `${classPrefix}${own === "/" ? "" : own}`
+        : own || "/";
+      add(m[1] === "Request" ? "GET" : m[1], joined, number, null, "Spring");
       return;
     }
 
@@ -1076,10 +1122,26 @@ function matchByDependencies(
   const found: Detection[] = [];
   const seen = new Set<string>();
 
+  // Substring matching here is a false-positive machine: `vitest` contains
+  // `vite`, `@nestjs/core` contains `core`, `passport-local` contains
+  // `passport`. A package name matches only on a path-segment boundary.
+  const mentions = (pkg: string, needle: string) => {
+    const n = needle.toLowerCase();
+    let at = pkg.indexOf(n);
+    while (at !== -1) {
+      const before = at === 0 ? "" : pkg[at - 1];
+      const after = pkg[at + n.length] ?? "";
+      const bounded = (c: string) => c === "" || "-_./".includes(c);
+      if (bounded(before) && bounded(after)) return true;
+      at = pkg.indexOf(n, at + 1);
+    }
+    return false;
+  };
+
   for (const [technology, needles] of Object.entries(signals)) {
     for (const needle of needles) {
       for (const [pkg, dependency] of byPackage) {
-        if (!pkg.includes(needle.toLowerCase())) continue;
+        if (!mentions(pkg, needle)) continue;
         if (seen.has(technology)) break;
         seen.add(technology);
         found.push({
