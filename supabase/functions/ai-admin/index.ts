@@ -523,16 +523,35 @@ async function saveModel(payload: Record<string, unknown>) {
     reasoning_mode: payload.reasoning_mode || "off",
   };
 
-  if (fields.is_default) {
-    // Only one default at a time.
-    await db().from("ai_model_configs").update({ is_default: false }).eq("is_default", true);
-  }
-
+  // Write the row first, then demote the others. Clearing first and writing
+  // second is not atomic: if the write fails, the project is left with no
+  // default model at all, and a missing default is a refusal of every AI call
+  // — a single failed save would silently switch the whole system off.
   const id = payload.id ? String(payload.id) : null;
-  const { error } = id
-    ? await db().from("ai_model_configs").update(fields).eq("id", id)
-    : await db().from("ai_model_configs").upsert(fields, { onConflict: "provider,model_name" });
+  const { error, data } = id
+    ? await db().from("ai_model_configs").update(fields).eq("id", id).select("id").single()
+    : await db()
+        .from("ai_model_configs")
+        .upsert(fields, { onConflict: "provider,model_name" })
+        .select("id")
+        .single();
   if (error) throw new HttpError("Could not save the model settings.", 400);
+
+  if (fields.is_default) {
+    const savedId = (data as { id?: string } | null)?.id;
+    // Only one default at a time. Scoped to the row just written, so a
+    // concurrent admin editing a different model is not reverted wholesale.
+    let demote = db().from("ai_model_configs").update({ is_default: false }).eq("is_default", true);
+    if (savedId) demote = demote.neq("id", savedId);
+    const { error: demoteError } = await demote;
+    if (demoteError) {
+      throw new HttpError(
+        "The model was saved but could not be made the only default. Check that no " +
+          "other model is still flagged as default.",
+        400,
+      );
+    }
+  }
 
   return json({ ok: true });
 }

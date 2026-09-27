@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 610 lines, self-contained — safe to paste into the Supabase dashboard.
+// 619 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -542,12 +542,21 @@ async function saveModel(payload) {
     max_output_tokens: Number(payload.max_output_tokens ?? 4e3),
     reasoning_mode: payload.reasoning_mode || "off"
   };
-  if (fields.is_default) {
-    await db().from("ai_model_configs").update({ is_default: false }).eq("is_default", true);
-  }
   const id = payload.id ? String(payload.id) : null;
-  const { error } = id ? await db().from("ai_model_configs").update(fields).eq("id", id) : await db().from("ai_model_configs").upsert(fields, { onConflict: "provider,model_name" });
+  const { error, data } = id ? await db().from("ai_model_configs").update(fields).eq("id", id).select("id").single() : await db().from("ai_model_configs").upsert(fields, { onConflict: "provider,model_name" }).select("id").single();
   if (error) throw new HttpError("Could not save the model settings.", 400);
+  if (fields.is_default) {
+    const savedId = data?.id;
+    let demote = db().from("ai_model_configs").update({ is_default: false }).eq("is_default", true);
+    if (savedId) demote = demote.neq("id", savedId);
+    const { error: demoteError } = await demote;
+    if (demoteError) {
+      throw new HttpError(
+        "The model was saved but could not be made the only default. Check that no other model is still flagged as default.",
+        400
+      );
+    }
+  }
   return json({ ok: true });
 }
 async function setKillSwitch(enabled) {
