@@ -14,7 +14,9 @@ import {
   Timer,
   GitBranch,
   Brain,
+  Database,
   Receipt,
+  ScrollText,
 } from "lucide-react";
 import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
@@ -34,6 +36,8 @@ const ADMIN_NAV = [
   { to: "/admin/repositories", label: "Repositories", icon: GitBranch },
   { to: "/admin/project-reviews", label: "Project Reviews", icon: Brain },
   { to: "/admin/ai", label: "AI Operations", icon: Receipt },
+  { to: "/admin/data-management", label: "Data Management", icon: Database },
+  { to: "/admin/audit-log", label: "Audit Log", icon: ScrollText },
   { to: "/admin/settings", label: "Settings", icon: Settings2 },
 ];
 

@@ -41,6 +41,10 @@ const AdminAI = lazy(() => import("./pages/admin/AdminAI.tsx"));
 const AdminSubmissionAnalysis = lazy(
   () => import("./pages/admin/AdminSubmissionAnalysis.tsx"),
 );
+const AdminDataManagement = lazy(
+  () => import("./pages/admin/AdminDataManagement.tsx"),
+);
+const AdminAuditLog = lazy(() => import("./pages/admin/AdminAuditLog.tsx"));
 const ProjectReview = lazy(() => import("./pages/ProjectReview.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -321,6 +325,22 @@ createRoot(document.getElementById("root")!).render(
                   element={
                     <RequireAdmin>
                       <AdminSettings />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/data-management"
+                  element={
+                    <RequireAdmin>
+                      <AdminDataManagement />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/audit-log"
+                  element={
+                    <RequireAdmin>
+                      <AdminAuditLog />
                     </RequireAdmin>
                   }
                 />

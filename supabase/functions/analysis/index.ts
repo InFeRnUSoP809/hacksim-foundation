@@ -33,6 +33,7 @@ import {
 import { analyzeSubmission, AnalysisStore } from "../_shared/scanner.ts";
 import { runReview } from "../_shared/review.ts";
 import { aiConfigured } from "../_shared/ai.ts";
+import { rateLimiter } from "../_shared/security.ts";
 import type { Evidence, ProjectMap } from "../_shared/github.ts";
 
 async function requireCaller(req: Request): Promise<Caller> {
@@ -70,6 +71,12 @@ async function act(req: Request): Promise<Response> {
   const action = String(body?.action ?? "");
   const submissionId = String(body?.submission_id ?? "");
   if (!submissionId) throw new HttpError("A submission id is required.", 400);
+
+  // §24 — before any expensive work. The limit is per authenticated user, per
+  // action; the key is the caller's own id from their JWT, never a client
+  // field, so rotating accounts does not dodge it either.
+  const limited = rateLimiter.enforce(action, caller.id);
+  if (limited) return limited;
 
   const submission = await loadSubmission(submissionId);
   await requireTeamAccess(submission, caller);

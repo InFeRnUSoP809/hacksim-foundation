@@ -4,7 +4,7 @@
  * Routes:
  *
  *   GET  ?view=overview | usage | errors | budgets | settings | forecast
- *       | cache-analytics | preflight
+ *       | cache-analytics | preflight | audit-log
  *   GET  ?view=request&request_id=…      one request with its cost breakdown
  *   POST {view:"budget", payload}         create or update a budget
  *   POST {view:"budget-delete", budget_id}  delete a budget
@@ -467,6 +467,59 @@ async function cacheAnalytics(url: URL) {
   };
 }
 
+/**
+ * §15.12 — the audit trail, for /admin/audit-log.
+ *
+ * The browser's own token cannot read `admin_audit_logs` (RLS closes it, and
+ * the grants give the anon/authenticated roles nothing on the table), so the
+ * service client does the read here. Rows come back redacted: the writer
+ * already redacted metadata, but this re-applies redaction on the way out so a
+ * future metadata field that forgot the rule still cannot leak a credential
+ * through this endpoint.
+ */
+async function auditLog(url: URL) {
+  const days = intParam(url, "days", 30, 1, 365);
+  const limit = intParam(url, "limit", 100, 1, 500);
+  const offset = intParam(url, "offset", 0, 0, 1_000_000);
+  const entityType = url.searchParams.get("entity_type");
+
+  let query = db()
+    .from("admin_audit_logs")
+    .select(
+      "id, created_at, admin_user_id, action, entity_type, entity_id, entity_name, reason, metadata",
+      { count: "exact" },
+    )
+    .gte("created_at", windowStart(days));
+
+  if (entityType) query = query.eq("entity_type", entityType);
+
+  const { data, error, count } = await query
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
+  if (error) throw new HttpError("Could not load the audit log.", 400);
+
+  const rows = (data ?? []) as unknown as Record<string, unknown>[];
+  const emails = await userEmails(rows.map((r) => r.admin_user_id as string).filter(Boolean));
+
+  return {
+    rows: rows.map((row) => ({
+      id: row.id,
+      created_at: row.created_at,
+      admin_user_id: row.admin_user_id ?? null,
+      admin_email: emails.get(row.admin_user_id as string) ?? null,
+      action: row.action,
+      entity_type: row.entity_type,
+      entity_id: row.entity_id ?? null,
+      entity_name: row.entity_name ?? null,
+      reason: row.reason ?? null,
+      metadata: row.metadata ?? null,
+    })),
+    count: count ?? rows.length,
+    limit,
+    offset,
+  };
+}
+
 // ── Writes ─────────────────────────────────────────────────────────────────
 
 async function saveBudget(payload: Record<string, unknown>) {
@@ -600,6 +653,8 @@ Deno.serve(
           if (!requestId) throw new HttpError("A request id is required.", 400);
           return json(await requestDetail(requestId));
         }
+        case "audit-log":
+          return json(await auditLog(url));
         case "budget-state": {
           // What the gate would see right now, for one submission.
           const snapshot = await loadBudget(url.searchParams.get("submission_id"));
