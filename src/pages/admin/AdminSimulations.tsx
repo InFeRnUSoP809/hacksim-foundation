@@ -5,7 +5,11 @@ import { Card } from "@/components/ui/card";
 import { useSessionClock } from "@/hooks/use-session-clock";
 import { useAsync } from "@/hooks/use-async";
 import { formatDateTime, formatDuration } from "@/lib/format";
-import { listSessionsForAdmin } from "@/services/sessions";
+import {
+  getAdminWindowSnapshot,
+  listSessionsForAdmin,
+  type AdminWindowSnapshot,
+} from "@/services/sessions";
 import { useState } from "react";
 import { ChevronLeft, Timer } from "lucide-react";
 import { isLive } from "@/types";
@@ -126,6 +130,10 @@ function SimulationDetail({
 }) {
   const sessions = useAsync<AdminSessionRow[]>(() => listSessionsForAdmin(), []);
   const clock = useSessionClock(sessionId);
+  const windowInfo = useAsync<AdminWindowSnapshot | null>(
+    () => getAdminWindowSnapshot(sessionId),
+    [sessionId],
+  );
 
   const session = sessions.data?.find((row) => row.id === sessionId);
 
@@ -172,6 +180,40 @@ function SimulationDetail({
           </p>
         </Card>
       </div>
+
+      <Card className="mt-4 p-5">
+        <p className="label-mono text-muted-foreground">
+          Submission window (snapshotted when this run started)
+        </p>
+        {windowInfo.isLoading ? (
+          <p className="mt-2 text-sm text-muted-foreground">Loading…</p>
+        ) : windowInfo.error ? (
+          <p className="mt-2 text-sm text-destructive">{windowInfo.error}</p>
+        ) : windowInfo.data?.github_submission_window_enabled ? (
+          <>
+            <p className="mt-2 text-sm font-medium">
+              Enabled — {windowInfo.data.github_submission_window_minutes}{' '}
+              {(windowInfo.data.github_submission_window_minutes ?? 0) === 1 ? 'minute' : 'minutes'}{' '}
+              after the build end
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              Opens{' '}
+              {(windowInfo.data.build_ends_at ?? windowInfo.data.ends_at) &&
+                formatDateTime(
+                  (windowInfo.data.build_ends_at ?? windowInfo.data.ends_at)!,
+                )}
+              {windowInfo.data.github_submission_ends_at &&
+                ` · closes ${formatDateTime(windowInfo.data.github_submission_ends_at)}`}
+            </p>
+          </>
+        ) : (
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-destructive">
+            Disabled on this session — it expires with no GitHub upload phase.
+            The snapshot was taken at start, so enabling the window on the
+            hackathon now only affects runs started afterwards.
+          </p>
+        )}
+      </Card>
     </AdminLayout>
   );
 }

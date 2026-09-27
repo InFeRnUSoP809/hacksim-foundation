@@ -118,6 +118,40 @@ export async function setSessionStatus(
     throw new Error(friendlyError(error, "Couldn't update the simulation."));
 }
 
+/**
+ * The session's snapshotted submission-window configuration, for the admin
+ * detail view. Reads the row directly (RLS allows admins); the snapshot is
+ * what the run actually uses — the hackathon's live settings may have changed
+ * since the session started.
+ */
+export interface AdminWindowSnapshot {
+  id: string;
+  status: string;
+  build_ends_at: string | null;
+  ends_at: string | null;
+  github_submission_window_enabled: boolean | null;
+  github_submission_window_minutes: number | null;
+  github_submission_ends_at: string | null;
+}
+
+export async function getAdminWindowSnapshot(
+  sessionId: string,
+): Promise<AdminWindowSnapshot | null> {
+  const { data, error } = await supabase
+    .from("build_sessions")
+    .select(
+      "id, status, build_ends_at, ends_at, " +
+        "github_submission_window_enabled, github_submission_window_minutes, " +
+        "github_submission_ends_at",
+    )
+    .eq("id", sessionId)
+    .maybeSingle();
+
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't load the session details."));
+  return (data as AdminWindowSnapshot | null) ?? null;
+}
+
 /** A team's name, for the simulation header. */
 export async function getTeamName(teamId: string): Promise<string> {
   const { data, error } = await supabase
