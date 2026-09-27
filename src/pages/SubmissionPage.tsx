@@ -135,11 +135,16 @@ export default function SubmissionPage() {
               locked={locked}
             />
 
-            {!locked && engine.phase === "window" && (
+            {!locked && engine.phase !== "closed" && (
+              // Two submission phases, one deadline rule: before the build ends
+              // a team that finishes early may submit; after it, only if the
+              // admin-configured window is open. The server enforces the same
+              // deadline in both cases.
               <SubmissionWindowSection
                 submission={current}
+                duringWindow={engine.phase === "window"}
                 windowMinutes={windowMinutes}
-                windowRemaining={engine.windowRemaining}
+                windowRemaining={engine.phase === "window" ? engine.windowRemaining : engine.buildRemaining}
                 onSubmitted={() => submission.reload()}
               />
             )}
@@ -653,11 +658,13 @@ function WindowClosedNotice() {
  */
 function SubmissionWindowSection({
   submission,
+  duringWindow,
   windowMinutes,
   windowRemaining,
   onSubmitted,
 }: {
   submission: Submission;
+  duringWindow: boolean;
   windowMinutes: number;
   windowRemaining: number;
   onSubmitted: () => void;
@@ -666,7 +673,7 @@ function SubmissionWindowSection({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const githubError = validateGithubUrl(submission.github_url ?? "");
-  const urgent = windowRemaining <= 60;
+  const urgent = duringWindow && windowRemaining <= 60;
 
   async function handleSubmit() {
     const confirmed = await confirm.ask({
@@ -707,14 +714,17 @@ function SubmissionWindowSection({
     >
       <div className="flex w-full flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold tracking-[-0.02em]">Final GitHub submission</h2>
+          <h2 className="text-lg font-semibold tracking-[-0.02em]">Final submission</h2>
           <p className="mt-1 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            You have {windowMinutes} {windowMinutes === 1 ? "minute" : "minutes"}. Add or confirm
-            your repository URL below — nothing else can be changed after this.
+            {duringWindow
+              ? `You have ${windowMinutes} ${windowMinutes === 1 ? "minute" : "minutes"} after the build's end. Add or confirm your repository URL below — nothing else can be changed after this.`
+              : "Submitting locks the project, the repository and every contribution. Teams that finish early can submit before the build ends."}
           </p>
         </div>
         <div className="text-right">
-          <p className="label-mono text-muted-foreground">Time remaining</p>
+          <p className="label-mono text-muted-foreground">
+            {duringWindow ? "Time remaining" : "Build time remaining"}
+          </p>
           <p
             className={cn(
               "font-mono text-3xl font-semibold tabular-nums tracking-tight",

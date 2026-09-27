@@ -347,6 +347,7 @@ declare
   v_status   text;
   v_existing uuid;
   v_new      uuid;
+  v_ends_at  timestamptz;
   -- Part 23 — the submission window is copied from the hackathon at start.
   -- Later admin edits must not move an active simulation's deadline.
   v_window_enabled boolean;
@@ -397,14 +398,18 @@ begin
     raise exception 'Your team already has a simulation in progress.';
   end if;
 
-  -- Timestamps come from the database, never from the client. The window
-  -- configuration is snapshotted with them (Part 23).
+  -- One timestamp for both deadline columns: `ends_at` is the original column
+  -- the student UI reads, `build_ends_at` is what 007's timer functions read.
+  -- Both must be written here — 006 makes build_ends_at NOT NULL, and a fresh
+  -- insert that only populated ends_at fails on exactly that constraint.
+  v_ends_at := now() + make_interval(mins => v_duration);
+
   insert into public.build_sessions
-    (hackathon_id, team_id, started_by, started_at, ends_at, status,
+    (hackathon_id, team_id, started_by, started_at, ends_at, build_ends_at, status,
      github_submission_window_enabled, github_submission_window_minutes)
   values
     (p_hackathon_id, v_team_id, auth.uid(), now(),
-     now() + make_interval(mins => v_duration), 'running',
+     v_ends_at, v_ends_at, 'running',
      coalesce(v_window_enabled, false), coalesce(v_window_minutes, 5))
   returning id into v_new;
 

@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useSessionClock } from "@/hooks/use-session-clock";
 import { useFormatEngine } from "@/hooks/use-format-engine";
 import {
+  formatCountdown,
   lockProblemDiscovery,
   revealWildcard,
   saveProblemDiscovery,
@@ -115,12 +116,16 @@ export default function Simulation() {
   }
 
   const isLive = clock.status === "running";
-  const finished = clock.status === "completed" || clock.status === "expired";
 
-  // Server-derived phase (§13): once the build has elapsed the submission
-  // window is the only thing left to do here, so the page says so directly.
-  const inSubmissionWindow = engine.phase === "window";
-  const buildOver = engine.phase === "window" || engine.phase === "closed";
+  // Server-derived phase (§13) drives the page state, not the legacy status
+  // string: `session_state` self-heals an elapsed build to 'expired', which
+  // would otherwise mask the submission window entirely. "window" shows the
+  // submission banner, "closed" and "done" show the end-of-run cards, and
+  // "build" is the working view.
+  const phase = engine.phase;
+  const finished = phase === "closed" || phase === "done";
+  const inSubmissionWindow = phase === "window";
+  const buildOver = phase === "window" || phase === "closed";
   const windowMinutes = engine.brief?.clock.github_submission_window_minutes ?? 0;
   const windowEnabled = engine.brief?.clock.github_submission_window_enabled ?? false;
 
@@ -186,15 +191,19 @@ export default function Simulation() {
               )}
             >
               <p className="label-mono text-muted-foreground">
-                {finished ? "Finished" : "Time remaining"}
+                {finished ? "Finished" : inSubmissionWindow ? "Submission window" : "Time remaining"}
               </p>
               <p
                 className={cn(
                   "font-mono text-2xl font-semibold tracking-tight tabular-nums",
-                  finished ? "text-destructive" : "text-stage-report",
+                  finished || inSubmissionWindow ? "text-destructive" : "text-stage-report",
                 )}
               >
-                {finished ? "00:00:00" : formatDuration(clock.remaining)}
+                {finished
+                  ? "00:00:00"
+                  : inSubmissionWindow
+                    ? formatCountdown(engine.windowRemaining)
+                    : formatDuration(clock.remaining)}
               </p>
             </div>
           </div>
@@ -211,13 +220,13 @@ export default function Simulation() {
         {finished ? (
           <Card className="flex flex-col items-start gap-4 p-8">
             <h1 className="text-2xl font-semibold tracking-[-0.025em]">
-              {clock.status === "expired"
-                ? "Time's Up"
-                : "Simulation Completed"}
+              {phase === "closed" ? "Time's Up" : "Simulation Completed"}
             </h1>
             <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-              {clock.status === "expired"
-                ? "The build window closed and checkpoints are now locked. Submission arrives in the next phase."
+              {phase === "closed"
+                ? windowEnabled
+                  ? "The submission window has closed. Nothing further can be submitted for this run."
+                  : "The build window closed and checkpoints are locked — no submission window was configured."
                 : "Your team finished this run. Everything you recorded during the checkpoints stays here."}
             </p>
             <div className="flex gap-3">

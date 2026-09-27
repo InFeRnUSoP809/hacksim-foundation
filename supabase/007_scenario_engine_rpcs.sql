@@ -550,8 +550,9 @@ security definer
 set search_path = public
 as $$
 declare
-  v_sub   record;
-  v_phase text;
+  v_sub      record;
+  v_phase    text;
+  v_deadline timestamptz;
 begin
   select sub.id, sub.session_id, sub.team_id, sub.status, sub.github_url,
          bs.build_ends_at, bs.github_submission_ends_at, bs.submitted_at,
@@ -579,26 +580,25 @@ begin
       using errcode = '23514';
   end if;
 
-  -- The window is evaluated by the database clock. A late submission is refused
-  -- regardless of what the client believes about time.
-  if v_sub.build_ends_at is null or now() < v_sub.build_ends_at then
-    raise exception 'The build timer has not finished yet.' using errcode = '42501';
+  -- The effective deadline, from the session's own snapshot (Part 20/23):
+  --   window configured  → the window's end
+  --   no window (Part 25) → the build's own end — "cannot submit after the
+  --   build ends" means the build end IS the deadline, so submitting before
+  --   it (finishing early) must stay possible.
+  if v_sub.github_submission_window_enabled
+     and v_sub.github_submission_window_minutes > 0 then
+    v_deadline := coalesce(
+      v_sub.github_submission_ends_at,
+      v_sub.build_ends_at + make_interval(mins => v_sub.github_submission_window_minutes));
+  else
+    v_deadline := v_sub.build_ends_at;
   end if;
 
-  -- Part 25: no window configured means no submission after the build. The
-  -- check is explicit rather than relying on a null comparison, which would
-  -- silently evaluate to "not expired" and accept a late submission.
-  if not v_sub.github_submission_window_enabled
-     or v_sub.github_submission_window_minutes is null
-     or v_sub.github_submission_window_minutes <= 0 then
-    raise exception 'The build has ended and no GitHub submission window is configured.'
-      using errcode = '42501';
-  end if;
-
-  if now() >= coalesce(v_sub.github_submission_ends_at,
-                       v_sub.build_ends_at + make_interval(mins => v_sub.github_submission_window_minutes)) then
+  -- §31 — evaluated on the database clock. A click a second past the deadline
+  -- fails here no matter what any countdown on screen said.
+  if v_deadline is null or now() >= v_deadline then
     perform public.sync_session_phase(v_sub.session_id);
-    raise exception 'The submission window has closed.' using errcode = '42501';
+    raise exception 'The submission deadline has passed.' using errcode = '42501';
   end if;
 
   -- Freeze the record and the session in one transaction (§18).
