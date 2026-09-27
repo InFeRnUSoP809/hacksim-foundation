@@ -14,7 +14,7 @@ export async function getPracticeHackathon(): Promise<Hackathon | null> {
   const { data, error } = await supabase
     .from("hackathons")
     .select(
-      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, status, practice_enabled, created_at, updated_at",
+      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, github_submission_window_enabled, github_submission_window_minutes, status, practice_enabled, created_at, updated_at",
     )
     .eq("practice_enabled", true)
     .eq("status", "active")
@@ -30,7 +30,7 @@ export async function listHackathons(): Promise<Hackathon[]> {
   const { data, error } = await supabase
     .from("hackathons")
     .select(
-      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, status, practice_enabled, created_at, updated_at",
+      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, github_submission_window_enabled, github_submission_window_minutes, status, practice_enabled, created_at, updated_at",
     )
     .order("created_at", { ascending: false });
 
@@ -42,7 +42,7 @@ export async function getHackathon(id: string): Promise<Hackathon | null> {
   const { data, error } = await supabase
     .from("hackathons")
     .select(
-      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, status, practice_enabled, created_at, updated_at",
+      "id, name, problem_statement, requirements, constraints, expected_outcome, evaluation_criteria, simulation_duration_minutes, github_submission_window_enabled, github_submission_window_minutes, status, practice_enabled, created_at, updated_at",
     )
     .eq("id", id)
     .maybeSingle();
