@@ -1,4 +1,7 @@
 .env.local
+# Edge-function secrets staged for `supabase secrets set --env-file`.
+# Never commit this — it holds live GitHub and DeepSeek credentials.
+.env.keys
 node_modules
 dist
 src/convex/_generated
