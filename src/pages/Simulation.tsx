@@ -1,4 +1,3 @@
-import { useConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -14,18 +13,16 @@ import { useAsync } from "@/hooks/use-async";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
-import { formatDuration } from "@/lib/format";
-import {
+import { formatDuration } from "@/lib/format";import {
   getHackathonForSession,
   getSession,
   getTeamName,
-  setSessionStatus,
 } from "@/services/sessions";
 import { getTeamRoster } from "@/services/teams";
-import { friendlyError } from "@/services/errors";
-import { Check, Loader2, Users } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+
+import { Loader2, Users } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router";
 import {
   type BuildSession,
   type Hackathon,
@@ -34,7 +31,7 @@ import {
 
 export default function Simulation() {
   const { sessionId } = useParams<{ sessionId: string }>();
-  const confirm = useConfirmDialog();
+  const navigate = useNavigate();
 
   const clock = useSessionClock(sessionId);
 
@@ -58,9 +55,6 @@ export default function Simulation() {
     [session.data?.team_id],
   );
 
-  const [isMutating, setIsMutating] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
-
   // The scenario/format engine: brief per hackathon type (§1), server clock,
   // and the derived phase. Syncs the session through build-expiry on load.
   const engine = useFormatEngine(sessionId);
@@ -69,6 +63,19 @@ export default function Simulation() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // When the build ends, the page moves itself to the GitHub submission. The
+  // window is short and its only job is the repository URL, so there is no
+  // "finish" step to confirm and nothing to do on this view once time is up —
+  // the timer crossing zero is the finish. The ref keeps the redirect a
+  // one-shot even while the phase re-derives every second.
+  const redirectedRef = useRef(false);
+  useEffect(() => {
+    if (engine.phase === "window" && sessionId && !redirectedRef.current) {
+      redirectedRef.current = true;
+      navigate(`/submission/${sessionId}`);
+    }
+  }, [engine.phase, sessionId, navigate]);
+
   if (!sessionId) {
     return (
       <Shell>
@@ -76,33 +83,6 @@ export default function Simulation() {
       </Shell>
     );
   }
-
-  async function handleFinish() {
-    if (!sessionId) return;
-    setActionError(null);
-
-    const confirmed = await confirm.ask({
-      title: "Finish this simulation?",
-      message: "This ends the run for your whole team. It cannot be undone.",
-      confirmLabel: "Finish simulation",
-      cancelLabel: "Keep working",
-      tone: "warning",
-    });
-    if (!confirmed) return;
-
-    setIsMutating(true);
-    try {
-      await setSessionStatus(sessionId, "completed");
-      await clock.refresh();
-      session.reload();
-    } catch (err) {
-      setActionError(friendlyError(err));
-    } finally {
-      setIsMutating(false);
-    }
-  }
-
-  const isLive = clock.status === "running";
 
   // Server-derived phase (§13) drives the page state, not the legacy status
   // string: `session_state` self-heals an elapsed build to 'expired', which
@@ -281,24 +261,6 @@ export default function Simulation() {
                     ))}
                   </ul>
                 )}
-              </Card>
-
-              <Card className="flex flex-col gap-3 p-5">
-                <h2 className="text-sm font-semibold tracking-[-0.01em]">
-                  Session controls
-                </h2>
-                <Button
-                  variant="outline"
-                  onClick={() => void handleFinish()}
-                  disabled={isMutating || !isLive}
-                >
-                  <Check className="size-4" />
-                  Finish simulation
-                </Button>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  The timer runs on the server clock. Refreshing the page, or
-                  changing your device time, will not extend it.
-                </p>
               </Card>
             </div>
           </div>
