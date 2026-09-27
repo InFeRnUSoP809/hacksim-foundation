@@ -76,12 +76,14 @@ begin
   end if;
 
   -- One disposable team per test, named so cleanup can find it.
+  -- Deliberately NO team_members row: 002 enforces one team per user
+  -- (team_members_one_team_per_user), and the admin almost always already
+  -- belongs to a real team, so joining them here aborts the whole RPC. The
+  -- pipeline never needs it — requireTeamAccess, lock_submission,
+  -- submission_analysis and every RLS read have an is_admin() bypass.
   insert into public.teams (name, created_by)
   values ('ADMIN-PLAYGROUND-' || substr(md5(random()::text), 1, 10), v_admin)
   returning id into v_team_id;
-
-  insert into public.team_members (team_id, user_id, role)
-  values (v_team_id, v_admin, 'Admin');
 
   -- The harness session: born finished, no window, no deadline in the future.
   insert into public.build_sessions (
