@@ -6,12 +6,12 @@ import { Card } from "@/components/ui/card";
 import { useAsync } from "@/hooks/use-async";
 import { useAuth } from "@/hooks/use-auth";
 import { getPracticeHackathon } from "@/services/hackathons";
-import { getMyActiveSession } from "@/services/sessions";
+import { getMyActiveSession, getMySessions, type MySessionRow } from "@/services/sessions";
 import { getMyTeam } from "@/services/teams";
-import { formatDuration, formatMinutes } from "@/lib/format";
-import { ArrowRight, CircleSlash, Clock, FileText, Play, Users } from "lucide-react";
+import { formatDate, formatDuration, formatMinutes } from "@/lib/format";
+import { ArrowRight, CircleSlash, Clock, FileText, History, Play, Users } from "lucide-react";
 import { Link } from "react-router";
-import type { BuildSession, Hackathon, Team } from "@/types";
+import type { BuildSession, Hackathon, SessionStatus, Team } from "@/types";
 
 export default function StudentDashboard() {
   const { profile, user } = useAuth();
@@ -44,8 +44,105 @@ export default function StudentDashboard() {
         ) : (
           <ActivePractice hackathon={hackathon} team={team.data} session={activeSession} />
         )}
+
+        <ParticipationHistory />
       </div>
     </StudentLayout>
+  );
+}
+
+/**
+ * Every hackathon the student has taken part in, newest first.
+ *
+ * Rendered whatever the practice hackathon is doing: turning practice off (or
+ * never having started one) must not hide the runs a student already finished.
+ */
+function ParticipationHistory() {
+  const history = useAsync<MySessionRow[]>(() => getMySessions(), []);
+
+  if (history.isLoading) {
+    return (
+      <section className="mt-12">
+        <LoadingState label="Loading your hackathons" />
+      </section>
+    );
+  }
+
+  const rows = history.data ?? [];
+
+  return (
+    <section className="mt-12">
+      <div className="flex items-center gap-2">
+        <History className="size-4 text-muted-foreground" />
+        <h2 className="text-lg font-semibold tracking-[-0.02em]">
+          Your hackathons
+        </h2>
+      </div>
+
+      {history.error ? (
+        <div className="mt-4">
+          <ErrorState
+            title="Couldn't load your history"
+            message={history.error}
+          />
+        </div>
+      ) : rows.length === 0 ? (
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          Nothing yet. Start a simulation and it will be listed here.
+        </p>
+      ) : (
+        <ul className="mt-4 flex flex-col gap-3">
+          {rows.map((row) => (
+            <HistoryRow key={row.id} row={row} />
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+/** One past run: which hackathon, with the team, and where to pick it up. */
+function HistoryRow({ row }: { row: MySessionRow }) {
+  const live = row.status === "running" || row.status === "break";
+  const reviewed =
+    row.review_status === "completed" || row.review_status === "partial";
+
+  // One destination per row, chosen by how far the run got: a live run goes
+  // back to the simulation, a submitted one to its review, anything else to
+  // the submission page. Nothing to link to when the run ended with no draft.
+  const to = live
+    ? `/simulation/${row.id}`
+    : reviewed && row.submission_id
+      ? `/review/${row.submission_id}`
+      : `/submission/${row.id}`;
+  const cta = live
+    ? "Resume"
+    : reviewed && row.submission_id
+      ? "View review"
+      : row.submission_id
+        ? "Open submission"
+        : null;
+
+  return (
+    <li className="rounded-lg border border-border p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-semibold tracking-[-0.01em]">
+            {row.hackathon_name}
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {row.team_name} · {formatDate(row.started_at)}
+          </p>
+        </div>
+        <SessionStatusPill status={row.status as SessionStatus} />
+      </div>
+
+      {cta && (
+        <Button size="sm" variant="outline" asChild className="mt-4 w-fit">
+          <Link to={to}>{cta}</Link>
+        </Button>
+      )}
+    </li>
   );
 }
 

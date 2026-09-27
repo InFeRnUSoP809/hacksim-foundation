@@ -10,13 +10,45 @@ import {
   RequirementStatusPill,
 } from "@/components/analysis";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { useAsync } from "@/hooks/use-async";
-import { getSubmissionAnalysis, isApiConfigured } from "@/lib/api";
+import {
+  analyzeRepository,
+  getSubmissionAnalysis,
+  isApiConfigured,
+  runReview,
+} from "@/lib/api";
+import { friendlyError } from "@/services/errors";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import type { CoverageRow, Evidence, RequirementItem } from "@/types/analysis";
+
+/** The two steps of the automatic pipeline, in the order they run. */
+type Stage = "scan" | "review";
+
+const STAGE_COPY: Record<Stage, { title: string; body: string }> = {
+  scan: {
+    title: "Reading your repository",
+    body: "Cloning the repository from GitHub, indexing its files and mapping them onto the brief. This is the same pipeline the admin playground runs — nothing here is a preview.",
+  },
+  review: {
+    title: "Writing the review",
+    body: "The repository is mapped. An AI reviewer is now comparing what you built against the challenge and writing what you should be ready to explain.",
+  },
+};
+
+/** A repository is usable once the scan has produced something to read. */
+function isScanned(status: string | undefined): boolean {
+  return status === "completed" || status === "stale";
+}
+
+/** A review is usable once it has produced a verdict, even a partial one. */
+function isReviewed(status: string | undefined): boolean {
+  return status === "completed" || status === "partial";
+}
 
 /**
  * §84 — the student project review.

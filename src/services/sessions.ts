@@ -83,8 +83,7 @@ export async function getSession(
   return (data as BuildSession | null) ?? null;
 }
 
-/** The signed-in student's most recent live session, if there is one. */
-export async function getMyActiveSession(): Promise<BuildSession | null> {
+/** The signed-in student's most recent live session, if there is one. */export async function getMyActiveSession(): Promise<BuildSession | null> {
   const { data, error } = await supabase
     .from("build_sessions")
     .select(
@@ -98,6 +97,36 @@ export async function getMyActiveSession(): Promise<BuildSession | null> {
   if (error) return null;
   const session = data as BuildSession | null;
   return session && isLive(session.status) ? session : null;
+}
+
+/**
+ * Every hackathon the signed-in student has taken part in, newest first.
+ *
+ * Read through the `my_sessions` function rather than a client-side join:
+ * `build_sessions` is team-readable but `hackathons` is not, so joining them
+ * from the browser would come back with a null hackathon name — the one field
+ * this screen exists to show.
+ */
+export interface MySessionRow {
+  id: string;
+  hackathon_id: string;
+  hackathon_name: string;
+  team_id: string;
+  team_name: string;
+  started_at: string;
+  ends_at: string;
+  status: string;
+  submission_id: string | null;
+  submission_status: string | null;
+  github_url: string | null;
+  review_status: string | null;
+}
+
+export async function getMySessions(): Promise<MySessionRow[]> {
+  const { data, error } = await supabase.rpc("my_sessions");
+  if (error)
+    throw new Error(friendlyError(error, "Couldn't load your hackathons."));
+  return (data ?? []) as MySessionRow[];
 }
 
 /**
