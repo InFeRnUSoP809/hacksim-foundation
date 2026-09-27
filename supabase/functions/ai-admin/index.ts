@@ -4,7 +4,7 @@
  * Routes:
  *
  *   GET  ?view=overview | usage | errors | budgets | settings | forecast
- *       | cache-analytics
+ *       | cache-analytics | preflight
  *   GET  ?view=request&request_id=…      one request with its cost breakdown
  *   POST {view:"budget", payload}         create or update a budget
  *   POST {view:"budget-delete", budget_id}  delete a budget
@@ -26,7 +26,7 @@ import {
   requireAdmin,
   withErrorHandling,
 } from "../_shared/http.ts";
-import { budgetLevel, loadBudget, utilization } from "../_shared/ai.ts";
+import { budgetLevel, hasDeepseek, loadBudget, settings, utilization } from "../_shared/ai.ts";
 
 function windowStart(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -290,6 +290,133 @@ async function listBudgets() {
   };
 }
 
+/**
+ * §77 preflight — is the analysis pipeline actually able to run?
+ *
+ * The failure this exists to catch is the quiet one: a function deployed
+ * without its secrets. Nothing throws, no scan ever starts, and the only
+ * symptom is a page that never loads. So this pokes the real providers rather
+ * than reporting whether a variable is non-empty — "the key is set" and "the
+ * key works" are different claims, and only the second one is worth anything.
+ *
+ * GitHub is checked with a real authenticated request, because an invalid or
+ * expired token still *is* a set string. DeepSeek is checked by confirming a
+ * price row exists, because that is the failure a deploy cannot fix: a missing
+ * model is a refusal, not a free tier. The key itself is never sent, never
+ * echoed and never timed — an admin learns whether it works, nothing more.
+ */
+async function preflight() {
+  const s = settings();
+  const checks: Record<string, unknown>[] = [];
+
+  // ── GitHub: one authenticated request, rate-limit headers are the payload ──
+  const started = Date.now();
+  let githubOk = false;
+  let githubDetail = "";
+  const rate: Record<string, number> = {};
+
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "HackSim-Preflight",
+    };
+    if (s.githubToken) headers.Authorization = `Bearer ${s.githubToken}`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), s.githubTimeoutSeconds * 1000);
+    let response: Response;
+    try {
+      response = await fetch(`${s.githubApiBase}/rate_limit`, { headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const read = (name: string) => {
+      const raw = response.headers.get(name);
+      if (raw === null) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    const limit = read("x-ratelimit-limit");
+    const remaining = read("x-ratelimit-remaining");
+    const reset = read("x-ratelimit-reset");
+    if (limit !== null) rate.limit = limit;
+    if (remaining !== null) rate.remaining = remaining;
+    if (reset !== null) rate.reset_epoch = reset;
+
+    githubOk = response.status === 200;
+    if (response.status === 401) {
+      githubDetail = "GitHub rejected the token. It is invalid or expired.";
+    } else if (response.status === 403) {
+      githubDetail = "GitHub refused the request — usually the token lacks access or the IP is blocked.";
+    } else if (!githubOk) {
+      githubDetail = `GitHub answered ${response.status}.`;
+    } else if (!s.githubToken) {
+      githubDetail =
+        "Reachable without a token: only 60 requests/hour, which a real repository exhausts. Add GITHUB_TOKEN.";
+    } else {
+      githubDetail = "Token accepted.";
+    }
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === "AbortError";
+    githubDetail = aborted
+      ? `No answer within ${s.githubTimeoutSeconds}s. Check GITHUB_API_BASE.`
+      : `Could not reach GitHub: ${(error as Error)?.message ?? error}`;
+  }
+
+  checks.push({
+    name: "github",
+    ok: githubOk,
+    detail: githubDetail,
+    token_configured: Boolean(s.githubToken),
+    latency_ms: Date.now() - started,
+    rate_limit: rate,
+  });
+
+  // ── DeepSeek: configuration and pricing, without spending a token ─────────
+  const { data: modelRows } = await db()
+    .from("ai_model_configs")
+    .select("provider, model_name, enabled, is_default")
+    .eq("is_default", true)
+    .limit(1);
+  const model = ((modelRows ?? []) as Record<string, unknown>[])[0];
+
+  checks.push({
+    name: "deepseek",
+    // Configured but unpriced is still broken, so both must hold.
+    ok: hasDeepseek() && Boolean(model),
+    detail: !hasDeepseek()
+      ? "DEEPSEEK_API_KEY is not set. Phase 5 still works; Phase 6 is refused."
+      : !model
+      ? "No default model row. Run supabase/005_model_pricing.sql — a missing model is a refusal, not a default."
+      : `Key present, default model ${model.provider}/${model.model_name}.`,
+    key_configured: hasDeepseek(),
+    model_priced: Boolean(model),
+  });
+
+  const { data: globalBudgets } = await db()
+    .from("ai_budgets")
+    .select("enabled, max_cost_usd")
+    .eq("scope", "global")
+    .limit(1);
+  const globalBudget = ((globalBudgets ?? []) as Record<string, unknown>[])[0];
+  const killSwitchOn = globalBudget ? globalBudget.enabled !== false : true;
+
+  checks.push({
+    name: "kill_switch",
+    ok: killSwitchOn,
+    detail: killSwitchOn ? "AI calls are permitted." : "The kill switch is on: every AI call is rejected.",
+  });
+
+  const configured = checks.filter((c) => c.ok).length;
+  return {
+    ok: checks.every((c) => c.ok),
+    checks_passed: `${configured}/${checks.length}`,
+    checks,
+  };
+}
+
 async function settingsPage() {
   const [{ data: models }, { data: budgets }] = await Promise.all([
     db().from("ai_model_configs").select("*").order("is_default", { ascending: false }),
@@ -443,6 +570,8 @@ Deno.serve(
           return json(await listBudgets());
         case "settings":
           return json(await settingsPage());
+        case "preflight":
+          return json(await preflight());
         case "forecast":
           return json(await forecast());
         case "cache-analytics":
