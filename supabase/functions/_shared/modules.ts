@@ -248,6 +248,60 @@ function truncateJson(payload: unknown, limit: number): string {
 
 const NO_SNIPPETS = "(no relevant code could be retrieved)";
 
+/**
+ * The hackathon brief plus what the team claimed they built.
+ *
+ * Module A gets the long form because it IS the question. The other modules
+ * get the short form: enough to judge whether an implementation choice serves
+ * the stated problem, small enough that four modules carrying it does not
+ * inflate the token bill. Without it a reviewer sees code and no brief, and
+ * can only describe what exists — which is not the same as saying whether it
+ * answers the challenge.
+ */
+function briefContext(
+  requirementMap: RequirementMap,
+  submission: Record<string, unknown> | undefined,
+  length: "full" | "short",
+): string {
+  const submissionRow = submission ?? {};
+  const claims = [
+    `Project: ${(submissionRow.project_name as string) || "(none)"}`,
+    `Description: ${String(submissionRow.project_description ?? "").slice(0, length === "full" ? 900 : 320)}`,
+    `Key features: ${String(submissionRow.key_features ?? "").slice(0, length === "full" ? 900 : 320)}`,
+    `Tech stack claimed: ${String(submissionRow.tech_stack ?? "").slice(0, length === "full" ? 400 : 200)}`,
+  ].join("\n");
+
+  if (length === "short") {
+    const top = (requirementMap.requirements ?? []).slice(0, 6);
+    return `THE CHALLENGE
+${(requirementMap.problem_summary || "").slice(0, 700)}
+
+KEY REQUIREMENTS
+${top.length ? formatItems(top) : "(none listed)"}
+
+WHAT THE TEAM CLAIMED
+${claims}`;
+  }
+
+  return `PROJECT PROBLEM
+${(requirementMap.problem_summary || "").slice(0, 1500)}
+
+REQUIREMENTS
+${formatItems(requirementMap.requirements)}
+
+CONSTRAINTS
+${formatItems(requirementMap.constraints)}
+
+EXPECTED OUTCOME
+${formatItems(requirementMap.expected_outcomes)}
+
+EVALUATION CRITERIA
+${formatItems(requirementMap.evaluation_criteria)}
+
+WHAT THE STUDENT CLAIMED
+${claims}`;
+}
+
 /** Module A. The requirement-aware question — the heart of the product. */
 export function buildAlignmentTask(input: {
   requirementMap: RequirementMap;
@@ -257,7 +311,6 @@ export function buildAlignmentTask(input: {
   submission: Record<string, unknown>;
 }): string {
   const facts = compactEvidence(input.evidence, 120);
-  const submission = input.submission;
   return `Assess whether this submission addresses THIS specific hackathon.
 
 Return JSON:
@@ -286,26 +339,7 @@ Return JSON:
 
 Only include a requirement entry for the requirement ids listed below.
 
-PROJECT PROBLEM
-${(input.requirementMap.problem_summary || "").slice(0, 1500)}
-
-REQUIREMENTS
-${formatItems(input.requirementMap.requirements)}
-
-CONSTRAINTS
-${formatItems(input.requirementMap.constraints)}
-
-EXPECTED OUTCOME
-${formatItems(input.requirementMap.expected_outcomes)}
-
-EVALUATION CRITERIA
-${formatItems(input.requirementMap.evaluation_criteria)}
-
-WHAT THE STUDENT CLAIMED
-Project: ${(submission.project_name as string) || "(none)"}
-Description: ${String(submission.project_description ?? "").slice(0, 900)}
-Key features: ${String(submission.key_features ?? "").slice(0, 900)}
-Tech stack claimed: ${String(submission.tech_stack ?? "").slice(0, 400)}
+${briefContext(input.requirementMap, input.submission, "full")}
 
 PROJECT MAP (deterministic facts)
 ${truncateJson(input.projectMap, 6000)}
@@ -319,6 +353,8 @@ ${input.snippets || NO_SNIPPETS}`;
 
 /** Module B. */
 export function buildArchitectureTask(input: {
+  requirementMap: RequirementMap;
+  submission: Record<string, unknown>;
   projectMap: ProjectMap;
   evidence: Evidence[];
   snippets: string;
@@ -360,6 +396,8 @@ Return JSON:
 Do not invent a technical decision rationale the repository does not show. If the
 reason for a choice is not in the evidence, omit the rationale.
 
+${briefContext(input.requirementMap, input.submission, "short")}
+
 PROJECT MAP
 ${truncateJson(input.projectMap, 5000)}
 
@@ -372,6 +410,8 @@ ${input.snippets || NO_SNIPPETS}`;
 
 /** Module C. Testing and scalability get one call each at most. */
 export function buildQualityTask(input: {
+  requirementMap: RequirementMap;
+  submission: Record<string, unknown>;
   projectMap: ProjectMap;
   evidence: Evidence[];
   snippets: string;
@@ -421,6 +461,8 @@ Return JSON:
 Report only what the evidence supports. A concern you cannot evidence must be
 omitted, not softened.
 
+${briefContext(input.requirementMap, input.submission, "short")}
+
 PROJECT MAP
 ${truncateJson(input.projectMap, 5000)}
 
@@ -434,6 +476,8 @@ ${input.snippets || NO_SNIPPETS}`;
 /** Module D. Per member, and only where a claim is specific enough to check. */
 export function buildContributionTask(input: {
   member: Record<string, unknown>;
+  requirementMap: RequirementMap;
+  submission: Record<string, unknown>;
   projectMap: ProjectMap;
   evidence: Evidence[];
   snippets: string;
@@ -464,6 +508,8 @@ AI tools disclosed: ${String(member.ai_tools_used ?? "(none)").slice(0, 300)}
 
 OTHER TEAM MEMBERS (so you do not attribute their work to this person)
 ${input.otherMembers.join(", ") || "(none)"}
+
+${briefContext(input.requirementMap, input.submission, "short")}
 
 PROJECT MAP
 ${truncateJson(input.projectMap, 3500)}

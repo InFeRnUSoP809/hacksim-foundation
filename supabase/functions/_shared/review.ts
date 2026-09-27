@@ -460,6 +460,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
         promptVersion: M.PROMPT_VERSIONS.architecture,
         taskBuilder: (snippets) =>
           M.buildArchitectureTask({
+            requirementMap, submission: input.submission,
             projectMap: input.projectMap, evidence: input.evidence, snippets,
           }),
         question: "How is this project architected, and what technical decisions does it make?",
@@ -482,7 +483,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
   if (wants(M.MODULE_C)) {
     try {
       const result = await moduleQuality({
-        input, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
+        input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
       });
       outcome.modules.push(result);
       if (result.data.security) results.security = result.data.security;
@@ -502,7 +503,7 @@ export async function runReview(input: ReviewInput): Promise<ReviewOutcome> {
   if (wants(M.MODULE_D)) {
     try {
       const contributionResults = await moduleContributions({
-        input, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
+        input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend,
       });
       outcome.modules.push(...contributionResults);
       if (contributionResults.length) {
@@ -651,8 +652,8 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
   );
 }
 
-async function moduleQuality(args: CommonArgs) {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
+async function moduleQuality(args: CommonArgs & { requirementMap: RequirementMap }) {
+  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
 
   // Security secrets and test counts need no model.
   const securityFacts = M.securityFromEvidence(input.projectMap);
@@ -668,6 +669,7 @@ async function moduleQuality(args: CommonArgs) {
   const response = await call({
     operation: `${M.MODULE_C}.quality`,
     task: M.buildQualityTask({
+      requirementMap, submission: input.submission,
       projectMap: input.projectMap, evidence: input.evidence, snippets: packet.render(),
     }),
     promptVersion: M.PROMPT_VERSIONS.quality,
@@ -781,8 +783,8 @@ async function moduleGeneric(
   return M.moduleResult(args.module, "completed", "ai", data);
 }
 
-async function moduleContributions(args: CommonArgs): Promise<M.ModuleResult[]> {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
+async function moduleContributions(args: CommonArgs & { requirementMap: RequirementMap }): Promise<M.ModuleResult[]> {
+  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
 
   // §41 — only members whose claim is specific enough to check, capped.
   const checkable = input.members
@@ -804,6 +806,7 @@ async function moduleContributions(args: CommonArgs): Promise<M.ModuleResult[]> 
       operation: `${M.MODULE_D}.contribution`,
       task: M.buildContributionTask({
         member: member as unknown as Record<string, unknown>,
+        requirementMap, submission: input.submission,
         projectMap: input.projectMap,
         evidence: input.evidence,
         snippets: packet.render(),

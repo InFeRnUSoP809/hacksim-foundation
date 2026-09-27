@@ -103,9 +103,11 @@ export default function ProjectReview() {
     // Nothing to read: without a repository URL the scan would only be refused.
     const hasRepo = Boolean(String(data.submission?.github_url ?? "").trim());
     if (!hasRepo || !isApiConfigured) return;
-    // A failed scan is never retried automatically — it costs GitHub rate limit
-    // and AI tokens, so it gets an explicit button instead.
+    // A failed scan or review is never retried automatically — it costs GitHub
+    // rate limit and AI tokens, so it gets an explicit button instead. Otherwise
+    // every page visit would quietly re-run a billable review.
     if (data.repository && !scanned) return;
+    if (reviewStatus === "failed") return;
 
     startedRef.current = true;
     let active = true;
@@ -228,6 +230,23 @@ export default function ProjectReview() {
             <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
               <RefreshCw className="size-3.5" />
               Analyse now
+            </Button>
+          )}
+        </Card>
+      )}
+
+      {data.repository && isScanned(data.repository.analysis_status) &&
+        data.review?.status === "failed" && (
+        <Card className="mt-8 border-destructive/40 p-6">
+          <p className="text-sm font-semibold">The AI review could not be written</p>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            The repository was analysed, but the AI review did not finish. Retrying
+            spends AI tokens again, so it only runs when you ask for it.
+          </p>
+          {isApiConfigured && (
+            <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
+              <RefreshCw className="size-3.5" />
+              Retry the review
             </Button>
           )}
         </Card>

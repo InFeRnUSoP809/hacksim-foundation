@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 4998 lines, self-contained — safe to paste into the Supabase dashboard.
+// 5029 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -3380,9 +3380,45 @@ function truncateJson(payload, limit) {
   return text.length <= limit ? text : `${text.slice(0, limit)} \u2026(truncated)`;
 }
 var NO_SNIPPETS = "(no relevant code could be retrieved)";
+function briefContext(requirementMap, submission, length) {
+  const submissionRow = submission ?? {};
+  const claims = [
+    `Project: ${submissionRow.project_name || "(none)"}`,
+    `Description: ${String(submissionRow.project_description ?? "").slice(0, length === "full" ? 900 : 320)}`,
+    `Key features: ${String(submissionRow.key_features ?? "").slice(0, length === "full" ? 900 : 320)}`,
+    `Tech stack claimed: ${String(submissionRow.tech_stack ?? "").slice(0, length === "full" ? 400 : 200)}`
+  ].join("\n");
+  if (length === "short") {
+    const top = (requirementMap.requirements ?? []).slice(0, 6);
+    return `THE CHALLENGE
+${(requirementMap.problem_summary || "").slice(0, 700)}
+
+KEY REQUIREMENTS
+${top.length ? formatItems(top) : "(none listed)"}
+
+WHAT THE TEAM CLAIMED
+${claims}`;
+  }
+  return `PROJECT PROBLEM
+${(requirementMap.problem_summary || "").slice(0, 1500)}
+
+REQUIREMENTS
+${formatItems(requirementMap.requirements)}
+
+CONSTRAINTS
+${formatItems(requirementMap.constraints)}
+
+EXPECTED OUTCOME
+${formatItems(requirementMap.expected_outcomes)}
+
+EVALUATION CRITERIA
+${formatItems(requirementMap.evaluation_criteria)}
+
+WHAT THE STUDENT CLAIMED
+${claims}`;
+}
 function buildAlignmentTask(input) {
   const facts = compactEvidence(input.evidence, 120);
-  const submission = input.submission;
   return `Assess whether this submission addresses THIS specific hackathon.
 
 Return JSON:
@@ -3411,26 +3447,7 @@ Return JSON:
 
 Only include a requirement entry for the requirement ids listed below.
 
-PROJECT PROBLEM
-${(input.requirementMap.problem_summary || "").slice(0, 1500)}
-
-REQUIREMENTS
-${formatItems(input.requirementMap.requirements)}
-
-CONSTRAINTS
-${formatItems(input.requirementMap.constraints)}
-
-EXPECTED OUTCOME
-${formatItems(input.requirementMap.expected_outcomes)}
-
-EVALUATION CRITERIA
-${formatItems(input.requirementMap.evaluation_criteria)}
-
-WHAT THE STUDENT CLAIMED
-Project: ${submission.project_name || "(none)"}
-Description: ${String(submission.project_description ?? "").slice(0, 900)}
-Key features: ${String(submission.key_features ?? "").slice(0, 900)}
-Tech stack claimed: ${String(submission.tech_stack ?? "").slice(0, 400)}
+${briefContext(input.requirementMap, input.submission, "full")}
 
 PROJECT MAP (deterministic facts)
 ${truncateJson(input.projectMap, 6e3)}
@@ -3478,6 +3495,8 @@ Return JSON:
 
 Do not invent a technical decision rationale the repository does not show. If the
 reason for a choice is not in the evidence, omit the rationale.
+
+${briefContext(input.requirementMap, input.submission, "short")}
 
 PROJECT MAP
 ${truncateJson(input.projectMap, 5e3)}
@@ -3534,6 +3553,8 @@ Return JSON:
 Report only what the evidence supports. A concern you cannot evidence must be
 omitted, not softened.
 
+${briefContext(input.requirementMap, input.submission, "short")}
+
 PROJECT MAP
 ${truncateJson(input.projectMap, 5e3)}
 
@@ -3569,6 +3590,8 @@ AI tools disclosed: ${String(member.ai_tools_used ?? "(none)").slice(0, 300)}
 
 OTHER TEAM MEMBERS (so you do not attribute their work to this person)
 ${input.otherMembers.join(", ") || "(none)"}
+
+${briefContext(input.requirementMap, input.submission, "short")}
 
 PROJECT MAP
 ${truncateJson(input.projectMap, 3500)}
@@ -4358,6 +4381,8 @@ async function runReview(input) {
         module: MODULE_B,
         promptVersion: PROMPT_VERSIONS.architecture,
         taskBuilder: (snippets) => buildArchitectureTask({
+          requirementMap,
+          submission: input.submission,
           projectMap: input.projectMap,
           evidence: input.evidence,
           snippets
@@ -4387,6 +4412,7 @@ async function runReview(input) {
     try {
       const result = await moduleQuality({
         input,
+        requirementMap,
         evidenceIds,
         submissionId,
         repositoryIdValue,
@@ -4410,6 +4436,7 @@ async function runReview(input) {
     try {
       const contributionResults = await moduleContributions({
         input,
+        requirementMap,
         evidenceIds,
         submissionId,
         repositoryIdValue,
@@ -4539,7 +4566,7 @@ async function moduleAlignment(args) {
   );
 }
 async function moduleQuality(args) {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
+  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
   const securityFacts = securityFromEvidence(input.projectMap);
   const testingFacts = testingFromEvidence(input.projectMap);
   const packet = buildPacket({
@@ -4551,6 +4578,8 @@ async function moduleQuality(args) {
   const response = await call({
     operation: `${MODULE_C}.quality`,
     task: buildQualityTask({
+      requirementMap,
+      submission: input.submission,
       projectMap: input.projectMap,
       evidence: input.evidence,
       snippets: packet.render()
@@ -4643,7 +4672,7 @@ async function moduleGeneric(args) {
   return moduleResult(args.module, "completed", "ai", data);
 }
 async function moduleContributions(args) {
-  const { input, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
+  const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
   const checkable = input.members.filter((member) => (member.contribution_description ?? "").trim()).slice(0, MAX_MEMBER_MODULES);
   const results = [];
   const otherNames = input.members.map(
@@ -4661,6 +4690,8 @@ async function moduleContributions(args) {
       operation: `${MODULE_D}.contribution`,
       task: buildContributionTask({
         member,
+        requirementMap,
+        submission: input.submission,
         projectMap: input.projectMap,
         evidence: input.evidence,
         snippets: packet.render(),
