@@ -19,7 +19,6 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/lib/format";
-import { getCheckpoints, saveCheckpoint } from "@/services/checkpoints";
 import { supabase } from "@/lib/supabase";
 import {
   getHackathonForSession,
@@ -33,8 +32,6 @@ import { Check, Loader2, Sparkles, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
 import {
-  CHECKPOINTS,
-  type BuildCheckpoint,
   type BuildSession,
   type Hackathon,
   type TeamMemberWithProfile,
@@ -64,10 +61,6 @@ export default function Simulation() {
     () =>
       session.data ? getTeamRoster(session.data.team_id) : Promise.resolve([]),
     [session.data?.team_id],
-  );
-  const checkpoints = useAsync<BuildCheckpoint[]>(
-    () => (sessionId ? getCheckpoints(sessionId) : Promise.resolve([])),
-    [sessionId],
   );
 
   const [isMutating, setIsMutating] = useState(false);
@@ -107,7 +100,6 @@ export default function Simulation() {
       await setSessionStatus(sessionId, "completed");
       await clock.refresh();
       session.reload();
-      checkpoints.reload();
     } catch (err) {
       setActionError(friendlyError(err));
     } finally {
@@ -226,8 +218,8 @@ export default function Simulation() {
               {phase === "closed"
                 ? windowEnabled
                   ? "The submission window has closed. Nothing further can be submitted for this run."
-                  : "The build window closed and checkpoints are locked — no submission window was configured."
-                : "Your team finished this run. Everything you recorded during the checkpoints stays here."}
+                  : "The build window closed — no submission window was configured for this hackathon."
+                : "Your team finished this run. Your work is saved and ready for submission review."}
             </p>
             <div className="flex gap-3">
               <Button variant="outline" asChild>
@@ -268,26 +260,6 @@ export default function Simulation() {
                   canReveal={buildOver}
                 />
               )}
-
-              <div>
-                <h2 className="text-lg font-semibold tracking-[-0.02em]">
-                  Checkpoints
-                </h2>
-                <div className="mt-4 flex flex-col gap-3">
-                  {CHECKPOINTS.map((checkpoint) => (
-                    <CheckpointCard
-                      key={checkpoint.type}
-                      sessionId={sessionId}
-                      checkpoint={checkpoint}
-                      record={checkpoints.data?.find(
-                        (row) => row.checkpoint_type === checkpoint.type,
-                      )}
-                      disabled={!isLive || isMutating}
-                      onSaved={checkpoints.reload}
-                    />
-                  ))}
-                </div>
-              </div>
             </div>
 
             <div className="flex flex-col gap-4">
@@ -680,89 +652,3 @@ function ProblemPanel({ hackathon }: { hackathon: Hackathon | null }) {
 
 // ── Checkpoint ──────────────────────────────────────────────────────────────
 
-function CheckpointCard({
-  sessionId,
-  checkpoint,
-  record,
-  disabled,
-  onSaved,
-}: {
-  sessionId: string;
-  checkpoint: (typeof CHECKPOINTS)[number];
-  record: BuildCheckpoint | undefined;
-  disabled: boolean;
-  onSaved: () => void;
-}) {
-  const [response, setResponse] = useState(record?.response ?? "");
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const done = Boolean(record?.completed_at);
-
-  async function handleSave() {
-    setError(null);
-    setIsSaving(true);
-    try {
-      await saveCheckpoint(sessionId, checkpoint.type, response);
-      onSaved();
-    } catch (err) {
-      setError(friendlyError(err));
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  return (
-    <Card className={cn("p-5", done && "border-stage-report/40")}>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className={cn(
-                "text-sm leading-none",
-                done ? "text-stage-report" : "text-muted-foreground/50",
-              )}
-            >
-              {done ? "✓" : "○"}
-            </span>
-            <h3 className="text-sm font-semibold tracking-[-0.01em]">
-              {checkpoint.label}
-            </h3>
-          </div>
-          <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-            {checkpoint.question}
-          </p>
-        </div>
-        {done && (
-          <span className="label-mono shrink-0 text-stage-report">
-            Complete
-          </span>
-        )}
-      </div>
-
-      <Textarea
-        rows={3}
-        value={response}
-        onChange={(event) => setResponse(event.target.value)}
-        disabled={disabled}
-        placeholder="Keep it short — one or two sentences."
-        className="mt-3"
-        aria-label={checkpoint.question}
-      />
-
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-
-      <div className="mt-3 flex justify-end">
-        <Button
-          size="sm"
-          variant={done ? "outline" : "default"}
-          onClick={() => void handleSave()}
-          disabled={disabled || isSaving || !response.trim()}
-        >
-          {isSaving && <Loader2 className="size-3.5 animate-spin" />}
-          {done ? "Update" : "Save & complete"}
-        </Button>
-      </div>
-    </Card>
-  );
-}
