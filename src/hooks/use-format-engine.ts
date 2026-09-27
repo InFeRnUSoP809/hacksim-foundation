@@ -1,6 +1,6 @@
 import { getSessionBrief, type SessionBrief } from "@/lib/format-engine";
 import { friendlyError } from "@/services/errors";
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 export type SimulationPhase = "build" | "window" | "closed" | "done";
 
@@ -39,10 +39,10 @@ export function useFormatEngine(sessionId: string | undefined) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Re-render once a second so the countdowns move. Nothing else in the hook
-  // recomputes on this tick — the values below are cheap arithmetic off the
-  // last sync.
-  const [, tick] = useReducer((n: number) => n + 1, 0);
+  // The wall clock is state, not something read while rendering, so every
+  // value below is a pure function of the last sync and the last tick. A
+  // once-a-second interval advances it so the countdowns move.
+  const [now, setNow] = useState(0);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
@@ -50,6 +50,7 @@ export function useFormatEngine(sessionId: string | undefined) {
       const data = await getSessionBrief(sessionId);
       setBrief(data);
       setSyncedAt(Date.now());
+      setNow(Date.now());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : friendlyError(err, "Couldn't load the brief."));
@@ -80,11 +81,11 @@ export function useFormatEngine(sessionId: string | undefined) {
   }, [load]);
 
   useEffect(() => {
-    const interval = setInterval(tick, 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
 
-  const elapsed = syncedAt ? Math.max(0, Math.floor((Date.now() - syncedAt) / 1000)) : 0;
+  const elapsed = syncedAt ? Math.max(0, Math.floor((now - syncedAt) / 1000)) : 0;
 
   return {
     brief,

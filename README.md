@@ -62,6 +62,8 @@ is idempotent, so re-running is safe.
 | 6 | `supabase/006_scenario_engine.sql` | **Scenario/format engine.** `hackathon_type` + scenario fields, `hackathon_scenarios`, sealed wildcard payloads, `problem_discoveries`, versioned `project_knowledge`, `member_project_knowledge`, `question_targets`, `submission_claims`, `admin_audit_logs`, soft-delete columns, the build/submission-window timer columns, and the snapshotting `start_build_session`. Run **after** 005 and before 007. |
 | 7 | `supabase/007_scenario_engine_rpcs.sql` | **The enforcement RPCs.** `session_clock`, `sync_session_phase`, `open_github_window`, `reveal_wildcard_scenario`, `session_brief`, `required_fields_for_type`, `save_problem_discovery`, `lock_problem_discovery`, `lock_submission`, `deletion_impact`, `manage_entity`, `write_audit_log`, `redact_secrets`. Backend-authoritative timer, configurable submission window, server-protected wildcards, dependency-aware deletion. |
 | 8 | `supabase/008_admin_playground.sql` | **Admin analysis playground.** `create_admin_playground_submission`, `admin_playground_list`, `admin_playground_reset`. Builds a disposable session → submission harness for any GitHub URL so the scan + review pipeline can be tested without a hackathon. Admin-only; rows are named `ADMIN-PLAYGROUND-%` and cascade away in one call. |
+| 9 | `supabase/009_my_sessions.sql` | `my_sessions()` — the signed-in student's own participation history, joined on the server because `hackathons` is not student-readable. |
+| 10 | `supabase/010_analysis_v3.sql` | **The rebuilt Phase 5+6 schema.** Optional hackathon brief fields, `hackathon_type`, a `config_version` bump trigger, `analysis_snapshots`, the versioned columns on `requirement_evaluations` and `project_reviews`, and the rewritten `submission_analysis()` and `admin_analysis_diagnostics()`. |
 | — | `supabase/seed.sql` | *Optional.* A MediStock practice hackathon at 8 hours |
 
 For Phases 1–4 only, `supabase/00_all_in_one.sql` is the same content as
@@ -78,7 +80,10 @@ Verify everything landed — these are read-only and create nothing:
 ```bash
 node --experimental-strip-types scripts/check-supabase.mjs  # schema + RPCs
 node scripts/check-github.mjs                             # GitHub, DeepSeek, quota
-npx deno run --allow-env scripts/smoke-deterministic.ts     # 76 scanner assertions
+npx tsx scripts/smoke-deterministic.ts                    # 76 scanner assertions
+npx tsx scripts/verify-security.ts                        # 56 security assertions
+npx tsx scripts/regression-analysis.ts                    # 35 analysis assertions
+deno run -A scripts/verify-bundles.ts                     # 25 bundle assertions
 ```
 
 `smoke-deterministic.ts` is the only layer that can be fully verified without a
@@ -197,10 +202,11 @@ the AI cache and budget counters are only trustworthy in one place. Everything
 else in HackSim is a direct Supabase call from the browser, with Postgres as the
 source of truth.
 
-There are two implementations of that server-side layer. **The edge functions are
-the supported path**; the FastAPI service is kept as a runnable reference.
+There is one implementation of that server-side layer: Supabase Edge Functions.
+There is no second server, no API base URL to configure, and nothing for the
+frontend to route around.
 
-### 6.1 Supabase Edge Functions (supported)
+### 6.1 Supabase Edge Functions
 
 ```
 supabase/functions/
@@ -213,21 +219,32 @@ supabase/functions/
     github-api.ts    GitHub REST client (cache, retry, rate limit)
     github.ts        the deterministic scanner (Phase 5)
     scanner.ts       scan orchestration + persistence
+    concepts.ts      a requirement turned into observable concepts
+    context.ts       the hackathon context and its version hash
     requirements.ts  the brief turned into stable REQ/CON/OUT/EVAL ids
+    planner.ts       which dimensions matter here, and the tasks to run
     retrieval.ts     bounded context packets (≤ 6 files, ≤ 120 lines)
-    modules.ts       the four review modules, prompts and validation
+    datasets.ts      dataset profiling, described rather than uploaded
+    semantics.ts     calculations, rules, models, data access, UI
+    deterministic.ts the counts and literals that need no model
+    evidence.ts      the evidence set, citation filtering, conflicts
+    validate.ts      schema + enum + evidence-id validation, one repair
+    diff.ts          what changed between two runs
+    modules.ts       the review prompts, the stable rules, prompt versions
     review.ts        the Phase 6 orchestrator
 ```
 
-Deploy — one command, after `supabase link` and after the secrets exist:
+Deploy — the CLI, after `supabase link` and after the secrets exist:
 
 ```bash
 npx supabase functions deploy analysis ai-admin --use-api
 ```
 
-`--use-api` bundles server-side instead of locally, so it needs no Docker. The
-equivalent in the CLI proper is `supabase functions deploy analysis ai-admin`
-when you have a working Docker daemon.
+`--use-api` bundles server-side instead of locally, so it needs no Docker.
+
+Or paste into the dashboard: `bash scripts/bundle-functions.sh` inlines
+`_shared/` into one file per function, and the result is pasted into
+**Edge Functions → `analysis` → Deploy** with **Verify JWT = ON**.
 
 Secrets go in the dashboard, not in a `.env` file and never in
 `config.toml` — **Project Settings → Edge Functions → Secrets → Add new secret**:
@@ -285,9 +302,10 @@ you may touch.
 | --- | --- | --- |
 | `analysis` | `GET ?submission_id=…` | The full analysis payload |
 | `analysis` | `POST {action:"repository"}` | Run the deterministic scanner (0 AI tokens) |
-| `analysis` | `POST {action:"review", only_module?}` | Run the AI modules |
+| `analysis` | `POST {action:"analyze", only_task?}` | Run the planned analysis; `only_task` re-runs one step |
 | `analysis` | `POST {action:"reanalyze"}` | Force a fresh scan, bypassing the commit cache |
-| `analysis` | `POST {action:"retry-module", module}` | Retry one failed module only |
+| `analysis` | `POST {action:"retry-task", task}` | Retry one failed step only |
+| `analysis` | `POST {action:"diagnostics"}` | Why each conclusion was reached (admin only) |
 | `ai-admin` | `GET ?view=…` | `overview` · `usage` · `errors` · `budgets` · `settings` · `forecast` · `cache-analytics` · `request` · `audit-log` · `preflight` · `budget-state` |
 | `ai-admin` | `POST {view:…}` | `budget` · `budget-delete` · `model` · `kill-switch` |
 
@@ -297,35 +315,6 @@ Optional settings, all with sane defaults: `DEEPSEEK_MODEL`, `DEEPSEEK_BASE_URL`
 
 Without `DEEPSEEK_API_KEY` Phase 5 still runs in full, and Phase 6 is refused
 with an actionable message rather than failing quietly.
-
-### 6.2 FastAPI service (optional reference)
-
-A FastAPI implementation of the same contract lives in `backend/`. It exposes
-`/api/analysis/*` and `/api/ai/*` with the same behaviour, and is useful as a
-local reference, but it is not the deployed path — nothing in the frontend
-depends on it, and there is no `VITE_API_URL` to set.
-
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-Environment (a local `backend/.env`, never committed):
-
-```text
-APP_ENV=development
-SUPABASE_URL=…
-SUPABASE_ANON_KEY=…
-SUPABASE_SERVICE_ROLE_KEY=…   # server-side only
-CORS_ORIGINS=http://localhost:5173
-DEEPSEEK_API_KEY=
-DEEPSEEK_MODEL=deepseek-flash
-GITHUB_TOKEN=            # optional, but without it GitHub allows 60 req/hour
-```
-
-`SUPABASE_SERVICE_ROLE_KEY` is read only by `app/core/security.py`. It is never
-returned to a client and never bundled.
 
 ### Token discipline
 
@@ -357,14 +346,7 @@ supabase/functions/
   ai-admin/       AI operations
   _shared/        http guards, DeepSeek + all env config, GitHub client,
                   scanner, requirements, retrieval, modules, reviewer
-backend/app/      optional FastAPI reference for the same contract
-  routers/        analysis, ai_admin, and the Phase 1–4 routers
-  services/
-    github/       REST client, URL parsing, classification, parsers
-    analysis/     scanner, evidence, project map, retrieval, pipeline
-    ai/           DeepSeek client, cost/budget, modules, reviewer
-scripts/          check-supabase.mjs, generate-icons.mjs
-backend/tests/    deterministic-layer unit tests
+scripts/          bundle + verification + regression scripts
 ```
 
 ---

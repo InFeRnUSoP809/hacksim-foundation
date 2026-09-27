@@ -1,5 +1,4 @@
 import { AdminLayout } from "@/layouts/AdminLayout";
-import { useConfirmDialog } from "@/components/ConfirmDialog";
 import { ErrorState, LoadingState } from "@/components/States";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -29,7 +28,7 @@ import {
 import { formatDate } from "@/lib/format";
 import { supabase } from "@/lib/supabase";
 import { friendlyError } from "@/services/errors";
-import { Archive, Database, Loader2, MoreVertical, RotateCcw, Trash2 } from "lucide-react";
+import { Archive, Database, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
@@ -173,7 +172,6 @@ export default function AdminDataManagement() {
     const { data, error } = await query.order("created_at", { ascending: false }).limit(200);
     if (error) throw new Error(friendlyError(error, `Couldn't load ${section.title.toLowerCase()}.`));
     return ((data ?? []) as unknown as Record<string, unknown>[]).map(section.toRow);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section.table, section.columns, section.title, section.toRow, filter]);
 
   const rows = useAsync<DisplayRow[]>(load, [load]);

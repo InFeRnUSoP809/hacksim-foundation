@@ -1,6 +1,7 @@
 import { AdminLayout } from "@/layouts/AdminLayout";
 import { ErrorState, LoadingState } from "@/components/States";
 import {
+  AiUsagePanel,
   CoverageMatrix,
   DefenseTargetList,
   EvidenceList,
@@ -494,30 +495,17 @@ export default function AdminSubmissionAnalysis() {
         </Section>
 
         {/* ── 12. AI usage (admin only) ──────────────────────── */}
-        {data.ai_usage && (
-          <Section
-            step={12}
-            title="AI usage"
-            icon={CircleDollarSign}
-            note="Admin only. Students never see token counts or cost."
-          >
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <ReviewStat label="Requests" value={data.ai_usage.requests} />
-              <ReviewStat
-                label="Input tokens"
-                value={data.ai_usage.input_tokens.toLocaleString()}
-              />
-              <ReviewStat
-                label="Output tokens"
-                value={data.ai_usage.output_tokens.toLocaleString()}
-              />
-              <ReviewStat
-                label="Cost"
-                value={`$${Number(data.ai_usage.cost_usd).toFixed(4)}`}
-              />
-            </div>
-          </Section>
-        )}
+        <Section
+          step={12}
+          title="AI usage"
+          icon={CircleDollarSign}
+          note="Admin only. Students never see token counts or cost."
+        >
+          <AiUsagePanel
+            usage={data.ai_usage}
+            runs={data.analysis_runs ?? []}
+          />
+        </Section>
       </div>
     </AdminLayout>
   );

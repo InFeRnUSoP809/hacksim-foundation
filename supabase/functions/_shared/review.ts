@@ -51,6 +51,13 @@ import * as V from "./validate.ts";
 import * as P from "./planner.ts";
 import * as RET from "./retrieval.ts";
 import * as DET from "./deterministic.ts";
+import {
+  citedEvidence,
+  diffRuns,
+  type AnalysisDiff,
+  type EvidenceRef,
+  type StoredRun,
+} from "./diff.ts";
 import { buildHackathonContext, type HackathonContext } from "./context.ts";
 import { getRequirementMap, type RequirementMap } from "./requirements.ts";
 import type { DatasetProfile } from "./datasets.ts";
@@ -141,7 +148,7 @@ export interface AnalysisOutcome {
   testing: DET.DeterministicVerdict | E.TestingFacts | null;
   tasks: TaskOutcome[];
   diagnostics: Record<string, unknown>;
-  diff: Record<string, unknown> | null;
+  diff: AnalysisDiff | null;
   totalCostUsd: number;
   totalTokens: number;
   error?: string;
@@ -1025,6 +1032,14 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
   const defenseTargets = buildDefenseTargets(allConclusions, findings, claimListOf(claims));
 
   // ── Persist ───────────────────────────────────────────────────────────
+  // The previous run is read before this one overwrites the live rows, so the
+  // diff below compares two runs rather than a run with itself.
+  const previous = await previousRun(submissionId);
+  const evidenceRefs = citedEvidence(
+    allConclusions,
+    [...evidenceSet.byId.values()],
+  );
+
   const reviewId = await upsertReview({
     submissionId,
     repositoryId,
@@ -1051,11 +1066,15 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
     plan,
     evidence: evidenceSet.byId.size,
     allConclusions,
+    evidenceRefs,
     spend,
   });
 
-  const previous = await previousEvaluations(submissionId);
-  const diff = diffAgainst(previous, allConclusions, commitSha);
+  const diff = diffRuns(previous, {
+    commit_sha: commitSha,
+    conclusions: allConclusions,
+    evidence: evidenceRefs,
+  });
 
   const diagnostics = buildDiagnostics({
     context,
@@ -1871,6 +1890,7 @@ async function saveSnapshot(args: {
   plan: P.AnalysisPlan;
   evidence: number;
   allConclusions: ConclusionRow[];
+  evidenceRefs: EvidenceRef[];
   spend: Spend;
 }): Promise<void> {
   if (!args.submissionId || !args.repositoryId) return;
@@ -1890,6 +1910,7 @@ async function saveSnapshot(args: {
       },
       hackathon_snapshot: args.context.snapshot,
       conclusions: args.allConclusions,
+      evidence_index: args.evidenceRefs,
       evidence_count: args.evidence,
       input_tokens: args.spend.inputTokens,
       output_tokens: args.spend.outputTokens,
@@ -1902,64 +1923,27 @@ async function saveSnapshot(args: {
   }
 }
 
-async function previousEvaluations(
-  submissionId: string | null,
-): Promise<{ requirement_id: string; status: string; commit_sha: string | null }[]> {
-  if (!submissionId) return [];
+/**
+ * The last run that was stored, read before this one is written.
+ *
+ * A snapshot is immutable, which is what makes it usable as the "before" side of
+ * a diff: the live evaluation rows are replaced by the current run, so reading
+ * them afterwards would compare this run with itself.
+ */
+async function previousRun(submissionId: string | null): Promise<StoredRun | null> {
+  if (!submissionId) return null;
   try {
     const { data } = await db()
-      .from("requirement_evaluations")
-      .select("requirement_id, status")
-      .eq("submission_id", submissionId);
-    void data;
-    const { data: snapshots } = await db()
       .from("analysis_snapshots")
-      .select("commit_sha")
+      .select("commit_sha, created_at, conclusions, evidence_index")
       .eq("submission_id", submissionId)
       .order("created_at", { ascending: false })
       .limit(1);
-    const commit = ((snapshots ?? [])[0] as { commit_sha: string } | undefined)?.commit_sha ?? null;
-    return ((data ?? []) as { requirement_id: string; status: string }[]).map((row) => ({
-      requirement_id: row.requirement_id,
-      status: row.status,
-      commit_sha: commit,
-    }));
+    const row = (data ?? [])[0] as StoredRun | undefined;
+    return row ?? null;
   } catch {
-    return [];
+    return null;
   }
-}
-
-/** §45 — what changed since the last run, shown rather than overwritten. */
-function diffAgainst(
-  previous: { requirement_id: string; status: string; commit_sha: string | null }[],
-  current: ConclusionRow[],
-  commitSha: string | null,
-): Record<string, unknown> | null {
-  if (!previous.length) return null;
-  const before = new Map(previous.map((row) => [row.requirement_id, row.status]));
-  const changed: { id: string; from: string; to: string }[] = [];
-  const added: string[] = [];
-  for (const row of current) {
-    const prior = before.get(row.subject_id);
-    if (prior === undefined) {
-      added.push(row.subject_id);
-      continue;
-    }
-    if (prior !== row.status) {
-      changed.push({ id: row.subject_id, from: prior, to: row.status });
-    }
-  }
-  const removed = [...before.keys()].filter(
-    (id) => !current.some((row) => row.subject_id === id),
-  );
-  if (!changed.length && !added.length && !removed.length) return null;
-  return {
-    previous_commit: previous[0]?.commit_sha ?? null,
-    commit: commitSha,
-    changed,
-    added,
-    removed,
-  };
 }
 
 function buildDiagnostics(args: {
@@ -1973,7 +1957,7 @@ function buildDiagnostics(args: {
   coverage: boolean;
   datasetProfiles: DatasetProfile[];
   evidenceCount: number;
-  diff: Record<string, unknown> | null;
+  diff: AnalysisDiff | null;
 }): Record<string, unknown> {
   return {
     hackathon: {

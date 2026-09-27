@@ -407,27 +407,26 @@ export interface ReviewSummary {
   source?: string;
 }
 
-export interface ClaimCheck {
+/** One piece of evidence, as a stored snapshot records it. */
+export interface EvidenceRef {
+  id: string;
   claim: string;
-  status: "supported" | "partially_supported" | "not_evidenced";
-  evidence_ids: string[];
-  files?: string[];
-  symbols?: string[];
-  explanation: string;
+  file?: string | null;
 }
 
-export interface ContributionCheck {
-  user_id: string;
-  member_id: string;
-  status:
-    | "supported_by_repository"
-    | "partially_supported"
-    | "not_yet_verified";
-  confidence: Confidence;
-  evidence_ids: string[];
-  matched_files: string[];
-  matched_symbols: string[];
-  explanation: string;
+/**
+ * §45 — what a re-analysis changed. It compares two runs, so an unchanged
+ * re-analysis produces nothing here rather than an empty "0 changes" panel.
+ */
+export interface AnalysisDiff {
+  previous_commit: string | null;
+  commit: string | null;
+  previous_run_at: string | null;
+  changed: { id: string; kind: string; from: string; to: string }[];
+  added: string[];
+  removed: string[];
+  evidence_added: EvidenceRef[];
+  evidence_removed: EvidenceRef[];
 }
 
 export interface ProjectReview {
@@ -465,13 +464,7 @@ export interface ProjectReview {
   criterion_rows?: RequirementEvaluation[] | null;
   assessment?: ProjectAssessment | null;
   engineering?: EngineeringObservation[] | null;
-  diff?: {
-    previous_commit?: string | null;
-    commit?: string | null;
-    changed: { id: string; from: string; to: string }[];
-    added: string[];
-    removed: string[];
-  } | null;
+  diff?: AnalysisDiff | null;
 }
 
 // ── Defence targets (§50) ──────────────────────────────────────────────────
@@ -492,6 +485,20 @@ export interface DefenseTarget {
 
 // ── The §80 payload ────────────────────────────────────────────────────────
 
+/** One analysis run, with what it cost. Admin only. */
+export interface AnalysisRun {
+  id: string;
+  commit_sha: string | null;
+  created_at: string;
+  analysis_version: string | null;
+  hackathon_version: string | null;
+  evidence_count: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  estimated_cost_usd: number;
+}
+
 export interface SubmissionAnalysis {
   submission: Record<string, unknown>;
   hackathon: Record<string, unknown>;
@@ -504,6 +511,8 @@ export interface SubmissionAnalysis {
   review: ProjectReview | null;
   findings: AiFinding[];
   defense_targets: DefenseTarget[];
+  /** Admin only — one row per analysis run, newest first. */
+  analysis_runs?: AnalysisRun[] | null;
   /** Admin only — a student never receives this key. */
   ai_usage: {
     requests: number;

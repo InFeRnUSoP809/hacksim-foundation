@@ -23,13 +23,17 @@ import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type {
   AiFinding,
+  AnalysisDiff,
+  AnalysisRun,
   Confidence,
   DatasetProfile,
   DefenseTarget,
   Evidence,
+  EvidenceRef,
   ProjectMap,
   RequirementStatus,
   Severity,
+  SubmissionAnalysis,
 } from "@/types/analysis";
 
 // ── Status vocabulary ──────────────────────────────────────────────────────
@@ -837,6 +841,254 @@ export function NoticeState({
       <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
         {message}
       </p>
+    </div>
+  );
+}
+
+// ── Re-analysis (§45) ──────────────────────────────────────────────────────
+
+/** "evidence_found" → "evidence found". The vocabulary is stored snake_case. */
+function words(value: string): string {
+  return value.replace(/_/g, " ");
+}
+
+/**
+ * What a re-analysis changed, in the order a reader cares: conclusions first,
+ * then the evidence behind them.
+ *
+ * Shown only when there is something to say. A re-analysis that found the same
+ * thing produces no diff at all, so there is no "0 changes" panel to explain
+ * away.
+ */
+export function ChangeList({
+  diff,
+  evidence,
+}: {
+  diff: AnalysisDiff;
+  evidence: Evidence[];
+}) {
+  const changes = diff.changed.length + diff.added.length + diff.removed.length;
+  const evidenceChanges =
+    diff.evidence_added.length + diff.evidence_removed.length;
+
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+        {diff.previous_commit && diff.commit && (
+          <span className="font-mono">
+            {diff.previous_commit.slice(0, 7)} → {diff.commit.slice(0, 7)}
+          </span>
+        )}
+        {diff.previous_run_at && (
+          <span>· compared with the run of {formatRunDate(diff.previous_run_at)}</span>
+        )}
+      </div>
+
+      {changes > 0 && (
+        <div className="mt-4">
+          <p className="label-mono text-[10px] text-muted-foreground">
+            What changed
+          </p>
+          <ul className="mt-2 flex flex-col gap-1.5">
+            {diff.changed.map((row) => (
+              <li key={row.id} className="flex flex-wrap items-baseline gap-2 text-sm">
+                <span className="label-mono text-[10px] text-brand">{row.id}</span>
+                <span className="text-muted-foreground line-through decoration-muted-foreground/50">
+                  {words(row.from)}
+                </span>
+                <span aria-hidden className="text-muted-foreground">
+                  →
+                </span>
+                <span className="font-medium">{words(row.to)}</span>
+              </li>
+            ))}
+            {diff.added.map((id) => (
+              <li key={id} className="flex flex-wrap items-baseline gap-2 text-sm">
+                <span className="label-mono text-[10px] text-brand">{id}</span>
+                <span className="font-medium">now checked</span>
+              </li>
+            ))}
+            {diff.removed.map((id) => (
+              <li key={id} className="flex flex-wrap items-baseline gap-2 text-sm">
+                <span className="label-mono text-[10px] text-muted-foreground">
+                  {id}
+                </span>
+                <span className="text-muted-foreground">no longer part of the brief</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {evidenceChanges > 0 && (
+        <div className="mt-4">
+          <p className="label-mono text-[10px] text-muted-foreground">
+            The evidence behind them
+          </p>
+          <EvidenceDelta label="Newly found" items={diff.evidence_added} evidence={evidence} />
+          <EvidenceDelta
+            label="No longer found"
+            items={diff.evidence_removed}
+            evidence={evidence}
+          />
+        </div>
+      )}
+
+      <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+        Only the evidence the conclusions rest on is listed here. Code that was
+        scanned but never cited is not something you were shown, so its arrival
+        is not reported as a change.
+      </p>
+    </Card>
+  );
+}
+
+function EvidenceDelta({
+  label,
+  items,
+  evidence,
+}: {
+  label: string;
+  items: EvidenceRef[];
+  evidence: Evidence[];
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-2">
+      <p className="text-xs font-medium">{label}</p>
+      <ul className="mt-1.5 flex flex-col gap-1.5">
+        {items.slice(0, 12).map((item) => {
+          // Removed evidence is not in the current set, so its stored claim is
+          // the only description of it that still exists.
+          const current = evidence.find((entry) => entry.id === item.id);
+          return (
+            <li key={item.id} className="text-xs leading-relaxed text-muted-foreground">
+              <span className="font-mono text-[10px] text-brand">{item.id}</span>{" "}
+              {current?.claim ?? item.claim}
+              {item.file && (
+                <span className="font-mono text-[10px]"> — {item.file}</span>
+              )}
+            </li>
+          );
+        })}
+        {items.length > 12 && (
+          <li className="text-xs text-muted-foreground">
+            and {items.length - 12} more
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function formatRunDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+// ── AI usage (admin only) ─────────────────────────────────────────────────
+
+/**
+ * What this submission has cost so far, and what each run cost.
+ *
+ * Admin-only on purpose: §84 — a student never sees token counts or cost. The
+ * RPC sends this key to admins only, so a null here means the viewer is not an
+ * admin rather than a rendering bug.
+ */
+export function AiUsagePanel({
+  usage,
+  runs,
+}: {
+  usage: NonNullable<SubmissionAnalysis["ai_usage"]> | null;
+  runs: AnalysisRun[];
+}) {
+  if (!usage) {
+    return (
+      <NoticeState
+        title="No AI usage recorded"
+        message="No model has been called for this submission. The repository analysis alone costs no tokens."
+      />
+    );
+  }
+
+  const cost = Number(usage.cost_usd);
+  const operations = Object.entries(usage.operations ?? {}).sort(
+    (a, b) => b[1] - a[1],
+  );
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MiniStat label="Requests" value={usage.requests} />
+        <MiniStat label="Input tokens" value={usage.input_tokens.toLocaleString()} />
+        <MiniStat label="Output tokens" value={usage.output_tokens.toLocaleString()} />
+        <MiniStat label="Cost" value={`$${cost.toFixed(4)}`} />
+      </div>
+
+      {operations.length > 0 && (
+        <div>
+          <p className="label-mono text-[10px] text-muted-foreground">
+            Calls by task
+          </p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {operations.map(([operation, count]) => (
+              <Badge key={operation} variant="outline" className="text-[11px]">
+                {operation} · {count}
+              </Badge>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {runs.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-sm">
+            <thead>
+              <tr className="border-b border-border text-left">
+                <th className="label-mono px-3 py-2 text-muted-foreground">Run</th>
+                <th className="label-mono px-3 py-2 text-muted-foreground">Commit</th>
+                <th className="label-mono px-3 py-2 text-muted-foreground">Evidence</th>
+                <th className="label-mono px-3 py-2 text-muted-foreground">Tokens</th>
+                <th className="label-mono px-3 py-2 text-muted-foreground">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((run) => (
+                <tr
+                  key={run.id}
+                  className="border-b border-border align-top last:border-0"
+                >
+                  <td className="px-3 py-2.5">
+                    <p>{formatRunDate(run.created_at)}</p>
+                    <p className="mt-0.5 text-[10px] text-muted-foreground">
+                      {run.analysis_version ?? "—"}
+                    </p>
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-[10px]">
+                    {run.commit_sha ? run.commit_sha.slice(0, 8) : "—"}
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-xs tabular-nums">
+                    {run.evidence_count}
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-xs tabular-nums">
+                    {(run.input_tokens + run.output_tokens).toLocaleString()}
+                    {run.cached_tokens > 0 && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">
+                        ({run.cached_tokens.toLocaleString()} cached)
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-xs tabular-nums">
+                    ${Number(run.estimated_cost_usd).toFixed(4)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

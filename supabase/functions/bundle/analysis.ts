@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 9889 lines, self-contained — safe to paste into the Supabase dashboard.
+// 9931 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -7942,6 +7942,71 @@ function inspectionCovers(inspection) {
   };
 }
 
+// _shared/diff.ts
+function citedEvidence(conclusions, known) {
+  const cited = /* @__PURE__ */ new Set();
+  for (const row of conclusions) {
+    for (const id of row.evidence_ids ?? []) cited.add(id);
+  }
+  const out = [];
+  for (const item of known) {
+    if (cited.has(item.id)) {
+      out.push({ id: item.id, claim: item.claim, file: item.file ?? null });
+    }
+  }
+  return out;
+}
+function diffRuns(previous, current) {
+  if (!previous) return null;
+  const before = new Map(
+    (previous.conclusions ?? []).map((row) => [row.subject_id, row])
+  );
+  const after = new Map(
+    current.conclusions.map((row) => [row.subject_id, row])
+  );
+  const changed = [];
+  const added = [];
+  for (const [id, row] of after) {
+    const prior = before.get(id);
+    if (!prior) {
+      added.push(id);
+      continue;
+    }
+    if (prior.status !== row.status) {
+      changed.push({
+        id,
+        kind: row.kind ?? prior.kind ?? "requirement",
+        from: prior.status,
+        to: row.status
+      });
+    }
+  }
+  const removed = [...before.keys()].filter((id) => !after.has(id));
+  const beforeEvidence = new Map(
+    (previous.evidence_index ?? []).map((item) => [item.id, item])
+  );
+  const afterEvidence = new Map(current.evidence.map((item) => [item.id, item]));
+  const evidence_added = current.evidence.filter(
+    (item) => !beforeEvidence.has(item.id)
+  );
+  const evidence_removed = (previous.evidence_index ?? []).filter(
+    (item) => !afterEvidence.has(item.id)
+  );
+  if (!changed.length && !added.length && !removed.length && !evidence_added.length && !evidence_removed.length) {
+    return null;
+  }
+  return {
+    previous_commit: previous.commit_sha ?? null,
+    commit: current.commit_sha,
+    previous_run_at: previous.created_at ?? null,
+    changed,
+    added,
+    removed,
+    evidence_added,
+    evidence_removed
+  };
+}
+
 // _shared/context.ts
 var HACKATHON_TYPES = [
   "problem_statement",
@@ -8917,6 +8982,11 @@ async function runAnalysis(input) {
     });
   }
   const defenseTargets = buildDefenseTargets(allConclusions, findings, claimListOf(claims));
+  const previous = await previousRun(submissionId);
+  const evidenceRefs = citedEvidence(
+    allConclusions,
+    [...evidenceSet.byId.values()]
+  );
   const reviewId = await upsertReview({
     submissionId,
     repositoryId,
@@ -8943,10 +9013,14 @@ async function runAnalysis(input) {
     plan,
     evidence: evidenceSet.byId.size,
     allConclusions,
+    evidenceRefs,
     spend
   });
-  const previous = await previousEvaluations(submissionId);
-  const diff = diffAgainst(previous, allConclusions, commitSha);
+  const diff = diffRuns(previous, {
+    commit_sha: commitSha,
+    conclusions: allConclusions,
+    evidence: evidenceRefs
+  });
   const diagnostics = buildDiagnostics({
     context,
     plan,
@@ -9564,6 +9638,7 @@ async function saveSnapshot(args) {
       },
       hackathon_snapshot: args.context.snapshot,
       conclusions: args.allConclusions,
+      evidence_index: args.evidenceRefs,
       evidence_count: args.evidence,
       input_tokens: args.spend.inputTokens,
       output_tokens: args.spend.outputTokens,
@@ -9575,48 +9650,15 @@ async function saveSnapshot(args) {
     console.warn("[hacksim.analysis] could not save snapshot:", error);
   }
 }
-async function previousEvaluations(submissionId) {
-  if (!submissionId) return [];
+async function previousRun(submissionId) {
+  if (!submissionId) return null;
   try {
-    const { data } = await db().from("requirement_evaluations").select("requirement_id, status").eq("submission_id", submissionId);
-    void data;
-    const { data: snapshots } = await db().from("analysis_snapshots").select("commit_sha").eq("submission_id", submissionId).order("created_at", { ascending: false }).limit(1);
-    const commit = (snapshots ?? [])[0]?.commit_sha ?? null;
-    return (data ?? []).map((row) => ({
-      requirement_id: row.requirement_id,
-      status: row.status,
-      commit_sha: commit
-    }));
+    const { data } = await db().from("analysis_snapshots").select("commit_sha, created_at, conclusions, evidence_index").eq("submission_id", submissionId).order("created_at", { ascending: false }).limit(1);
+    const row = (data ?? [])[0];
+    return row ?? null;
   } catch {
-    return [];
+    return null;
   }
-}
-function diffAgainst(previous, current, commitSha) {
-  if (!previous.length) return null;
-  const before = new Map(previous.map((row) => [row.requirement_id, row.status]));
-  const changed = [];
-  const added = [];
-  for (const row of current) {
-    const prior = before.get(row.subject_id);
-    if (prior === void 0) {
-      added.push(row.subject_id);
-      continue;
-    }
-    if (prior !== row.status) {
-      changed.push({ id: row.subject_id, from: prior, to: row.status });
-    }
-  }
-  const removed = [...before.keys()].filter(
-    (id) => !current.some((row) => row.subject_id === id)
-  );
-  if (!changed.length && !added.length && !removed.length) return null;
-  return {
-    previous_commit: previous[0]?.commit_sha ?? null,
-    commit: commitSha,
-    changed,
-    added,
-    removed
-  };
 }
 function buildDiagnostics(args) {
   return {

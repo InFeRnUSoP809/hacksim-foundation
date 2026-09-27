@@ -146,6 +146,9 @@ create table if not exists public.analysis_snapshots (
   plan                jsonb,
   hackathon_snapshot  jsonb,
   conclusions         jsonb,
+  -- The evidence those conclusions cite, so a re-analysis can say which
+  -- evidence appeared or disappeared without re-reading the old run.
+  evidence_index      jsonb,
   evidence_count      integer not null default 0,
   input_tokens        integer not null default 0,
   output_tokens       integer not null default 0,
@@ -255,6 +258,25 @@ begin
       from public.defense_targets d
       where d.submission_id = p_submission_id
     ),
+    'analysis_runs', case when v_admin then (
+      select coalesce(jsonb_agg(jsonb_build_object(
+               'id', s.id,
+               'commit_sha', s.commit_sha,
+               'created_at', s.created_at,
+               'analysis_version', s.analysis_version,
+               'hackathon_version', s.hackathon_version,
+               'evidence_count', s.evidence_count,
+               'input_tokens', s.input_tokens,
+               'output_tokens', s.output_tokens,
+               'cached_tokens', s.cached_tokens,
+               'estimated_cost_usd', s.estimated_cost_usd
+             ) order by s.created_at desc), '[]'::jsonb)
+      from (
+        select * from public.analysis_snapshots
+        where submission_id = p_submission_id
+        order by created_at desc limit 10
+      ) s
+    ) else null end,
     'ai_usage', case when v_admin then (
       select jsonb_build_object(
         'requests', count(*),

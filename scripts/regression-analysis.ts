@@ -16,7 +16,7 @@
  * than to a template.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, type Dirent } from "node:fs";
 
 const globals = globalThis as unknown as { Deno?: unknown };
 if (!globals.Deno) {
@@ -28,17 +28,18 @@ if (!globals.Deno) {
 }
 
 import { analyseRequirement, groupRequirements, briefVocabulary } from "../supabase/functions/_shared/concepts.ts";
-import { buildRequirementMap } from "../supabase/functions/_shared/requirements.ts";
 import { buildRequirementMap as buildMap } from "../supabase/functions/_shared/requirements.ts";
+
 import { profileDataset, compactDatasetProfile } from "../supabase/functions/_shared/datasets.ts";
 import { analyseSemantics } from "../supabase/functions/_shared/semantics.ts";
 import { buildRetrievalPlan, buildRepoIndex, retrieve } from "../supabase/functions/_shared/retrieval.ts";
-import { buildEvidenceSet, validateFindings, detectConflicts, compactEvidence } from "../supabase/functions/_shared/evidence.ts";
+import { buildEvidenceSet, validateFindings, detectConflicts } from "../supabase/functions/_shared/evidence.ts";
 import { validateConclusions, validateClaims, validateAlignment } from "../supabase/functions/_shared/validate.ts";
 import { deterministicCount, deterministicLiteral, inspectionCovers, NO_VERDICT } from "../supabase/functions/_shared/deterministic.ts";
 import { planAnalysis } from "../supabase/functions/_shared/planner.ts";
 import { looksBinary } from "../supabase/functions/_shared/github.ts";
 import { buildAlignmentTask, buildRequirementsTask, SYSTEM_STABLE, NO_SNIPPETS } from "../supabase/functions/_shared/modules.ts";
+import { citedEvidence, diffRuns } from "../supabase/functions/_shared/diff.ts";
 import { runHarness, loadFixture, mockProvider } from "./lib/harness.ts";
 
 // ── Tiny runner ────────────────────────────────────────────────────────────
@@ -607,6 +608,97 @@ async function main() {
   });
 
   // ══════════════════════════════════════════════════════════════════════════
+  group("D · re-analysis compares two runs (§45)");
+
+  const runA = {
+    commit_sha: "aaaaaaa1111",
+    created_at: "2026-01-01T00:00:00.000Z",
+    conclusions: [
+      { subject_id: "REQ-1", kind: "requirement", status: "not_evidenced", evidence_ids: [] },
+      { subject_id: "REQ-2", kind: "requirement", status: "partial_evidence", evidence_ids: ["EV-001"] },
+    ],
+    evidence_index: [{ id: "EV-001", claim: "reads the order file", file: "orders.ts" }],
+  };
+
+  await test("D1", "a first run has nothing to compare against, so there is no diff", () => {
+    const diff = diffRuns(null, {
+      commit_sha: "aaaaaaa1111",
+      conclusions: runA.conclusions,
+      evidence: runA.evidence_index,
+    });
+    assertEqual(diff, null, "a first run was reported as a change");
+  });
+
+  await test("D2", "a re-run that finds the same thing stays quiet", () => {
+    const diff = diffRuns(runA, {
+      commit_sha: "aaaaaaa1111",
+      conclusions: runA.conclusions,
+      evidence: runA.evidence_index,
+    });
+    assertEqual(diff, null, "an unchanged re-analysis was reported as a change");
+  });
+
+  await test("D3", "a conclusion that moved is reported with both of its statuses", () => {
+    const diff = diffRuns(runA, {
+      commit_sha: "bbbbbbb2222",
+      conclusions: [
+        { subject_id: "REQ-1", kind: "requirement", status: "evidenced", evidence_ids: ["EV-002"] },
+        { subject_id: "REQ-2", kind: "requirement", status: "partial_evidence", evidence_ids: ["EV-001"] },
+      ],
+      evidence: [
+        { id: "EV-001", claim: "reads the order file", file: "orders.ts" },
+        { id: "EV-002", claim: "validates the order total", file: "total.ts" },
+      ],
+    });
+    assert(diff, "a real change produced no diff");
+    assertEqual(diff.changed, [
+      { id: "REQ-1", kind: "requirement", from: "not_evidenced", to: "evidenced" },
+    ], "the moved conclusion was not reported exactly once, with both statuses");
+    assertEqual(diff.previous_commit, "aaaaaaa1111", "the previous commit is missing");
+    assertEqual(diff.commit, "bbbbbbb2222", "the new commit is missing");
+    assertEqual(diff.evidence_added.map((e) => e.id), ["EV-002"], "the new citation was missed");
+    assertEqual(diff.evidence_removed.length, 0, "a still-cited piece of evidence was reported as gone");
+  });
+
+  await test("D4", "a subject entering or leaving the brief is reported as such", () => {
+    const diff = diffRuns(runA, {
+      commit_sha: "bbbbbbb2222",
+      conclusions: [
+        { subject_id: "REQ-2", kind: "requirement", status: "partial_evidence", evidence_ids: ["EV-001"] },
+        { subject_id: "CON-1", kind: "constraint", status: "evidenced", evidence_ids: [] },
+      ],
+      evidence: runA.evidence_index,
+    });
+    assert(diff, "an added and a removed subject produced no diff");
+    assertEqual(diff.added, ["CON-1"], "a newly judged subject was missed");
+    assertEqual(diff.removed, ["REQ-1"], "a subject that left the brief was missed");
+  });
+
+  await test("D5", "only cited evidence is compared; scanned code is not news", () => {
+    const cited = citedEvidence(
+      [{ subject_id: "REQ-2", status: "partial_evidence", evidence_ids: ["EV-001"] }],
+      [
+        { id: "EV-001", claim: "reads the order file", file: "orders.ts" },
+        { id: "EV-009", claim: "a helper exists", file: "helper.ts" },
+      ],
+    );
+    assertEqual(cited.map((e) => e.id), ["EV-001"],
+      "evidence that no conclusion cited was treated as something the reader was shown");
+  });
+
+  await test("D6", "evidence that disappeared keeps the claim it had when it was found", () => {
+    const diff = diffRuns(runA, {
+      commit_sha: "bbbbbbb2222",
+      conclusions: [{ subject_id: "REQ-1", kind: "requirement", status: "not_evidenced", evidence_ids: [] }],
+      evidence: [],
+    });
+    assert(diff, "a removed citation produced no diff");
+    assertEqual(diff.evidence_removed, [
+      { id: "EV-001", claim: "reads the order file", file: "orders.ts" },
+    ], "the removed evidence lost the only description of it that still exists");
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
   group("C · real repositories (§52–§54, §69)");
 
   const medistock = await runHarness({
@@ -751,14 +843,20 @@ async function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
+/** Everything the "cannot come back" scan covers, including the bundle. */
+const GREP_ROOTS = ["supabase/functions", "src", "scripts"];
+
+/**
+ * This file has to name the banned symbols in order to assert they are gone,
+ * so it is the one place they are not looked for.
+ */
+const GREP_SELF = "scripts/regression-analysis.ts";
+
 function grepProject(needle: string): string[] {
-  const roots = ["supabase/functions", "src", "scripts"];
   const out: string[] = [];
-  for (const root of roots) {
+  for (const root of GREP_ROOTS) {
     for (const path of walk(root)) {
-      if (path.includes("/bundle/") && !needle.includes("bundle")) {
-        // still scanned: the bundle must be clean too
-      }
+      if (path === GREP_SELF) continue;
       let text: string;
       try {
         text = readFileSync(path, "utf8");
@@ -772,20 +870,17 @@ function grepProject(needle: string): string[] {
 }
 
 function walk(dir: string, out: string[] = []): string[] {
-  let entries: string[];
+  let entries: Dirent[];
   try {
-    entries = require("node:fs").readdirSync(dir, { withFileTypes: true }) as never;
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return out;
   }
   for (const entry of entries) {
+    if (["node_modules", "_generated", "dist"].includes(entry.name)) continue;
     const full = `${dir}/${entry.name}`;
-    if ((entry as { isDirectory(): boolean }).isDirectory()) {
-      if (["node_modules", "_generated", "dist"].includes(entry.name)) continue;
-      walk(full, out);
-    } else if (/\.(ts|tsx|sql|js|md)$/.test(entry.name)) {
-      out.push(full);
-    }
+    if (entry.isDirectory()) walk(full, out);
+    else if (/\.(ts|tsx|sql|js|md)$/.test(entry.name)) out.push(full);
   }
   return out;
 }

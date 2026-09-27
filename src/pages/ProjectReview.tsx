@@ -2,6 +2,7 @@ import { StudentLayout } from "@/layouts/StudentLayout";
 import { ErrorState, LoadingState } from "@/components/States";
 import {
   AssessmentCard,
+  ChangeList,
   CoverageMatrix,
   DatasetList,
   DefenseTargetList,
@@ -23,7 +24,14 @@ import {
 } from "@/lib/api";
 import { friendlyError } from "@/services/errors";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  GitCompareArrows,
+  Loader2,
+  RefreshCw,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import type {
@@ -199,9 +207,6 @@ export default function ProjectReview() {
   const mismatches = data.findings.filter(
     (finding) => finding.finding_type === "claim_mismatch",
   );
-  const observationFindings = data.findings.filter(
-    (finding) => finding.finding_type === "observation",
-  );
 
   const strengths = data.findings.filter((f) => f.finding_type === "strength");
   const improvements = data.findings.filter(
@@ -324,6 +329,13 @@ export default function ProjectReview() {
           />
         </Card>
       </Block>
+
+      {/* ── §45: only when a re-analysis actually changed something ── */}
+      {review?.diff && (
+        <Block title="What changed since the last analysis" icon={GitCompareArrows}>
+          <ChangeList diff={review.diff} evidence={evidence} />
+        </Block>
+      )}
 
       {/* ── Problem alignment ─────────────────────────────────── */}
       <Block
