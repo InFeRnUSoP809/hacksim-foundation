@@ -4084,7 +4084,7 @@ function section(payload, evidenceIds) {
     if (key !== "evidence_ids") result[key] = value;
   }
   const cited = (record.evidence_ids ?? []).filter((id) => evidenceIds.has(id));
-  if (cited.length) result.evidence_ids = cited.slice(0, 12);
+  result.evidence_ids = cited.slice(0, 12);
   return result;
 }
 function requirementsFromDeterministic(requirements, alignment) {

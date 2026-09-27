@@ -150,12 +150,15 @@ export function EvidenceList({
   evidence,
   className,
 }: {
-  ids: string[];
-  evidence: Evidence[];
+  /** Optional on purpose: a section that cited nothing stores no key at all. */
+  ids?: string[] | null;
+  evidence?: Evidence[] | null;
   className?: string;
 }) {
-  const byId = new Map(evidence.map((item) => [item.id, item]));
-  const found = ids.map((id) => byId.get(id)).filter(Boolean) as Evidence[];
+  const pool = Array.isArray(evidence) ? evidence : [];
+  const cited = Array.isArray(ids) ? ids : [];
+  const byId = new Map(pool.map((item) => [item.id, item]));
+  const found = cited.map((id) => byId.get(id)).filter(Boolean) as Evidence[];
 
   if (found.length === 0) {
     return (
@@ -274,7 +277,7 @@ export function CoverageMatrix({
                 )}
               </td>
               <td className="px-4 py-3">
-                {evaluation && evaluation.evidence_ids.length > 0 ? (
+                {evaluation && (evaluation.evidence_ids ?? []).length > 0 ? (
                   <ul className="flex flex-col gap-1">
                     {evaluation.evidence_ids.slice(0, 4).map((id) => {
                       const item = evidence.find((e) => e.id === id);
@@ -326,11 +329,11 @@ export function FindingsList({
   evidence,
   emptyMessage = "No findings were produced for this submission.",
 }: {
-  findings: AiFinding[];
-  evidence: Evidence[];
+  findings?: AiFinding[] | null;
+  evidence?: Evidence[] | null;
   emptyMessage?: string;
 }) {
-  if (findings.length === 0) {
+  if (!Array.isArray(findings) || findings.length === 0) {
     return <NoticeState title="Nothing to report" message={emptyMessage} />;
   }
 
@@ -371,7 +374,7 @@ export function FindingsList({
                 {finding.suggested_improvement}
               </p>
             )}
-            {finding.files.length > 0 && (
+            {finding.files?.length > 0 && (
               <p className="mt-2.5 font-mono text-[11px] text-muted-foreground">
                 {finding.files.slice(0, 6).join(" · ")}
               </p>
@@ -394,10 +397,10 @@ export function DefenseTargetList({
   targets,
   className,
 }: {
-  targets: DefenseTarget[];
+  targets?: DefenseTarget[] | null;
   className?: string;
 }) {
-  if (targets.length === 0) {
+  if (!Array.isArray(targets) || targets.length === 0) {
     return (
       <NoticeState
         title="Nothing flagged for defence"
@@ -476,9 +479,9 @@ export function ProjectMapSummary({ map }: { map: ProjectMap | null }) {
         />
       )}
 
-      {map.warnings.length > 0 && (
+      {(map.warnings ?? []).length > 0 && (
         <ul className="flex flex-col gap-1.5">
-          {map.warnings.map((warning) => (
+          {(map.warnings ?? []).map((warning) => (
             <li
               key={warning}
               className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"
@@ -507,11 +510,11 @@ export function ProjectMapSummary({ map }: { map: ProjectMap | null }) {
         />
       </div>
 
-      {map.apis.length > 0 && (
+      {(map.apis ?? []).length > 0 && (
         <div>
           <p className="label-mono text-muted-foreground">Endpoints</p>
           <ul className="mt-2 flex flex-col gap-1">
-            {map.apis.slice(0, 12).map((route) => (
+            {(map.apis ?? []).slice(0, 12).map((route) => (
               <li
                 key={`${route.method}-${route.path}-${route.file}`}
                 className="font-mono text-[11px]"

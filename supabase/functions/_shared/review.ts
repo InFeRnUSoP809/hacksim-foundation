@@ -85,7 +85,10 @@ function section(payload: unknown, evidenceIds: Set<string>): Record<string, unk
     if (key !== "evidence_ids") result[key] = value;
   }
   const cited = ((record.evidence_ids as string[]) ?? []).filter((id) => evidenceIds.has(id));
-  if (cited.length) result.evidence_ids = cited.slice(0, 12);
+  // Always present, even when empty. Omitting the key stored JSON with no
+  // evidence_ids at all, and every reader that maps over it then crashed on
+  // undefined — an empty citation list is a normal answer, not a missing field.
+  result.evidence_ids = cited.slice(0, 12);
   return result;
 }
 
