@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 5034 lines, self-contained — safe to paste into the Supabase dashboard.
+// 4983 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -3272,62 +3272,6 @@ when the evidence unambiguously establishes the problem.
 function moduleResult(module, status, source, data, reason = "") {
   return { module, status, source, data, reason };
 }
-var REQUIREMENT_SIGNALS = {
-  auth: ["Supabase Auth", "JWT", "Passport", "NextAuth", "Clerk", "Auth0"],
-  predict: ["TensorFlow", "PyTorch", "scikit-learn", "XGBoost", "OpenAI"],
-  database: ["PostgreSQL", "Supabase", "SQLAlchemy", "Prisma", "MongoDB", "SQL"]
-};
-function signalsFor(text) {
-  const found = [];
-  for (const [keyword, names] of Object.entries(REQUIREMENT_SIGNALS)) {
-    if (text.includes(keyword)) found.push(...names);
-  }
-  return found;
-}
-function alignmentFromEvidence(requirementMap, projectMap) {
-  const requirements = requirementMap.requirements ?? [];
-  if (requirements.length === 0) return null;
-  const stats = projectMap.repository_stats ?? {};
-  const endpoints = (projectMap.apis ?? []).length;
-  const files = stats.file_count ?? 0;
-  const dependencies = Object.values(
-    projectMap.stack?.dependencies_by_category ?? {}
-  ).reduce((sum, list) => sum + list.length, 0);
-  if (endpoints < 2 && files < 15 && dependencies < 5) return null;
-  const detected = new Set(
-    projectMap.authentication?.detected ?? []
-  );
-  const hasDatabase = Boolean(
-    projectMap.database?.technologies?.length
-  );
-  const critical = requirements.filter((r) => r.importance === "critical");
-  const checkable = critical.length ? critical : requirements;
-  const addressed = [];
-  for (const requirement of checkable) {
-    const signals = signalsFor(requirement.text.toLowerCase());
-    if (signals.length && signals.some((signal) => detected.has(signal))) {
-      addressed.push(requirement.id);
-    }
-  }
-  const ratio = checkable.length ? addressed.length / checkable.length : 0;
-  if (ratio === 0) return null;
-  let status;
-  let explanation;
-  if (hasDatabase && ratio < 0.6) {
-    status = "partially_aligned";
-    explanation = `The repository contains a data layer and ${addressed.length} of ${checkable.length} core requirements have a matching detected technology. The rest need code inspection to judge.`;
-  } else if (ratio >= 0.6) {
-    status = "strongly_aligned";
-    explanation = `${addressed.length} of ${checkable.length} core requirements have a matching detected technology in the repository.`;
-  } else if (ratio >= 0.25) {
-    status = "partially_aligned";
-    explanation = `${addressed.length} of ${checkable.length} core requirements have a matching detected technology. The remainder are not evidenced by detection alone.`;
-  } else {
-    status = "weakly_evidenced";
-    explanation = "Detected technologies do not clearly correspond to the stated core requirements. Code inspection is needed to determine coverage.";
-  }
-  return { status, confidence: "medium", addressed_requirement_ids: addressed, explanation };
-}
 function testingFromEvidence(projectMap) {
   const testing = projectMap.testing ?? {};
   const count = Number(testing.test_file_count ?? 0);
@@ -3439,6 +3383,15 @@ Return JSON:
       "explanation": "What in the repository shows this, or why it is not evidenced."
     }
   ],
+  "constraints": [
+    {
+      "constraint_id": "CON-001",
+      "status": "supported|potential_concern|not_evidenced|unable_to_determine",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What shows this constraint is respected, or where it looks broken."
+    }
+  ],
   "summary": {
     "headline": "One sentence.",
     "strengths": ["..."],
@@ -3446,7 +3399,15 @@ Return JSON:
   }
 }
 
-Only include a requirement entry for the requirement ids listed below.
+Only include a requirement entry for the requirement ids listed below, and a
+constraint entry only for the constraint ids listed below.
+
+Judge each one against the problem statement and the code in front of you \u2014 not
+against a checklist of technologies you expect to find. A repository that
+solves the problem with a different stack is aligned; one that carries the
+right stack but does not solve the problem is not. Where the code neither
+answers nor contradicts the item, say "unable_to_determine" rather than
+guessing.
 
 ${briefContext(input.requirementMap, input.submission, "full")}
 
@@ -4088,23 +4049,26 @@ function section(payload, evidenceIds) {
   result.evidence_ids = cited.slice(0, 12);
   return result;
 }
-function requirementsFromDeterministic(requirements, alignment) {
-  const addressed = new Set(alignment.addressed_requirement_ids ?? []);
-  return requirements.map(
-    (requirement) => addressed.has(requirement.id) ? {
-      requirement_id: requirement.id,
-      status: "partial_evidence",
-      confidence: "low",
-      evidence_ids: [],
-      explanation: "A matching technology was detected, but the specific implementation was not inspected for this requirement."
-    } : {
-      requirement_id: requirement.id,
-      status: "unable_to_determine",
-      confidence: "none",
-      evidence_ids: [],
-      explanation: "No matching technology was detected. This does not mean the feature is absent; the repository was not inspected at code level."
-    }
+function validateConstraintRows(raw, requirementMap, evidenceIds) {
+  if (!Array.isArray(raw)) return [];
+  const known = new Set(
+    (requirementMap.constraints ?? []).map((c) => c.id)
   );
+  const rows = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry;
+    const id = String(record.constraint_id ?? "");
+    if (!known.has(id)) continue;
+    rows.push({
+      constraint_id: id,
+      status: oneOf(record.status, CONSTRAINT_STATUSES, "unable_to_determine"),
+      confidence: oneOf(record.confidence, CONFIDENCES, "low"),
+      evidence_ids: (record.evidence_ids ?? []).filter((eid) => evidenceIds.has(eid)).slice(0, 12),
+      explanation: String(record.explanation ?? "").slice(0, 1500)
+    });
+  }
+  return rows;
 }
 function validateRequirementRows(raw, requirements, evidenceIds) {
   if (!Array.isArray(raw)) return [];
@@ -4471,18 +4435,7 @@ async function moduleAlignment(args) {
   const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;
   const requirements = requirementMap.requirements ?? [];
   const out = {};
-  const deterministic = alignmentFromEvidence(requirementMap, input.projectMap);
-  if (deterministic) {
-    out.problem_alignment = deterministic;
-    out.requirements = requirementsFromDeterministic(requirements, deterministic);
-    const addressed = new Set(deterministic.addressed_requirement_ids ?? []);
-    out.summary = {
-      headline: deterministic.explanation,
-      strengths: [],
-      areas_to_clarify: requirements.filter((r) => !addressed.has(r.id)).map((r) => `${r.id} has no matching detected technology`).slice(0, 6),
-      source: "deterministic"
-    };
-  } else {
+  {
     const searchBrief = [
       requirementMap.problem_summary ?? "",
       ...(requirementMap.requirements ?? []).slice(0, 8).map((r) => r.text)
@@ -4514,7 +4467,7 @@ async function moduleAlignment(args) {
       spend
     });
     if (response === null) {
-      return moduleResult(MODULE_A, "skipped", "deterministic", {}, "no_call");
+      return moduleResult(MODULE_A, "skipped", "ai", {}, "no_call");
     }
     const payload = response.parsed ?? {};
     const alignment = payload.problem_alignment ?? {};
@@ -4526,6 +4479,7 @@ async function moduleAlignment(args) {
       source: "ai"
     };
     out.requirements = validateRequirementRows(payload.requirements, requirements, evidenceIds);
+    out.constraints = validateConstraintRows(payload.constraints, requirementMap, evidenceIds);
     const summary = payload.summary ?? {};
     out.summary = {
       headline: String(summary.headline ?? "").slice(0, 300),
@@ -4563,12 +4517,7 @@ async function moduleAlignment(args) {
       out.findings = [...out.findings ?? [], ...mismatches];
     }
   }
-  return moduleResult(
-    MODULE_A,
-    "completed",
-    deterministic ? "deterministic" : "ai",
-    out
-  );
+  return moduleResult(MODULE_A, "completed", "ai", out);
 }
 async function moduleQuality(args) {
   const { input, requirementMap, evidenceIds, submissionId, repositoryIdValue, pricing, spend } = args;

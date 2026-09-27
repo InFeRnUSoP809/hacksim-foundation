@@ -76,108 +76,12 @@ export function moduleResult(
   return { module, status, source, data, reason };
 }
 
-// ── §42 deterministic pre-passes ───────────────────────────────────────────
+// ── §42 deterministic facts ─────────────────────────────────────────────────
+// Only facts that are a count or a lookup live here. Judgement calls belong to
+// the model: the alignment pre-pass that used to sit in this section answered
+// "does this solve the problem?" by matching a three-keyword table against the
+// authentication detectors, and reported every unfamiliar brief as unaligned.
 
-const REQUIREMENT_SIGNALS: Record<string, string[]> = {
-  auth: ["Supabase Auth", "JWT", "Passport", "NextAuth", "Clerk", "Auth0"],
-  predict: ["TensorFlow", "PyTorch", "scikit-learn", "XGBoost", "OpenAI"],
-  database: ["PostgreSQL", "Supabase", "SQLAlchemy", "Prisma", "MongoDB", "SQL"],
-};
-
-function signalsFor(text: string): string[] {
-  const found: string[] = [];
-  for (const [keyword, names] of Object.entries(REQUIREMENT_SIGNALS)) {
-    if (text.includes(keyword)) found.push(...names);
-  }
-  return found;
-}
-
-/**
- * Answer the alignment question without a model when we safely can.
- *
- * The signal table is deliberately small (auth / predict / database) and is
- * matched against the authentication detectors only, so it can genuinely
- * establish alignment for a fraction of briefs and nothing for the rest. That
- * is fine for a hint — it is NOT fine for a verdict, and returning one anyway
- * meant a real, well-matched submission was reported as "weakly evidenced"
- * while the model that could have read the code was never called.
- *
- * So: this returns a result only when detection actually matched something.
- * Anything weaker returns null and falls through to the model, which sees the
- * brief, the team's claims and the code. A thin repository was always meant to
- * fall through; so must an unconvincing one.
- */
-export function alignmentFromEvidence(
-  requirementMap: RequirementMap,
-  projectMap: ProjectMap,
-): Record<string, unknown> | null {
-  const requirements = requirementMap.requirements ?? [];
-  if (requirements.length === 0) return null;
-
-  const stats = projectMap.repository_stats ?? {};
-  const endpoints = (projectMap.apis ?? []).length;
-  const files = stats.file_count ?? 0;
-  const dependencies = Object.values(
-    (projectMap.stack?.dependencies_by_category as Record<string, string[]>) ?? {},
-  ).reduce((sum, list) => sum + list.length, 0);
-
-  // Below this bar the evidence is too thin to conclude anything.
-  if (endpoints < 2 && files < 15 && dependencies < 5) return null;
-
-  const detected = new Set(
-    ((projectMap.authentication as { detected?: string[] })?.detected ?? []) as string[],
-  );
-  const hasDatabase = Boolean(
-    (projectMap.database as { technologies?: string[] })?.technologies?.length,
-  );
-
-  const critical = requirements.filter((r) => r.importance === "critical");
-  const checkable = critical.length ? critical : requirements;
-
-  const addressed: string[] = [];
-  for (const requirement of checkable) {
-    const signals = signalsFor(requirement.text.toLowerCase());
-    if (signals.length && signals.some((signal) => detected.has(signal))) {
-      addressed.push(requirement.id);
-    }
-  }
-
-  const ratio = checkable.length ? addressed.length / checkable.length : 0;
-
-  // Detection found nothing worth reporting. This is not a verdict of "not
-  // aligned" — it is an absence of signal, and only the model can read the code
-  // and decide. See the note above.
-  if (ratio === 0) return null;
-
-  let status: string;
-  let explanation: string;
-  if (hasDatabase && ratio < 0.6) {
-    // A data layer is present and some requirements matched, but not enough to
-    // call it strong. Stated as a partial, never as a mismatch.
-    status = "partially_aligned";
-    explanation =
-      `The repository contains a data layer and ${addressed.length} of ` +
-      `${checkable.length} core requirements have a matching detected ` +
-      "technology. The rest need code inspection to judge.";
-  } else if (ratio >= 0.6) {
-    status = "strongly_aligned";
-    explanation =
-      `${addressed.length} of ${checkable.length} core requirements have a matching ` +
-      "detected technology in the repository.";
-  } else if (ratio >= 0.25) {
-    status = "partially_aligned";
-    explanation =
-      `${addressed.length} of ${checkable.length} core requirements have a matching ` +
-      "detected technology. The remainder are not evidenced by detection alone.";
-  } else {
-    status = "weakly_evidenced";
-    explanation =
-      "Detected technologies do not clearly correspond to the stated core " +
-      "requirements. Code inspection is needed to determine coverage.";
-  }
-
-  return { status, confidence: "medium", addressed_requirement_ids: addressed, explanation };
-}
 
 export interface TestingFacts {
   status: string;
@@ -346,6 +250,15 @@ Return JSON:
       "explanation": "What in the repository shows this, or why it is not evidenced."
     }
   ],
+  "constraints": [
+    {
+      "constraint_id": "CON-001",
+      "status": "supported|potential_concern|not_evidenced|unable_to_determine",
+      "confidence": "high|medium|low|none",
+      "evidence_ids": ["EV-001"],
+      "explanation": "What shows this constraint is respected, or where it looks broken."
+    }
+  ],
   "summary": {
     "headline": "One sentence.",
     "strengths": ["..."],
@@ -353,7 +266,15 @@ Return JSON:
   }
 }
 
-Only include a requirement entry for the requirement ids listed below.
+Only include a requirement entry for the requirement ids listed below, and a
+constraint entry only for the constraint ids listed below.
+
+Judge each one against the problem statement and the code in front of you — not
+against a checklist of technologies you expect to find. A repository that
+solves the problem with a different stack is aligned; one that carries the
+right stack but does not solve the problem is not. Where the code neither
+answers nor contradicts the item, say "unable_to_determine" rather than
+guessing.
 
 ${briefContext(input.requirementMap, input.submission, "full")}
 

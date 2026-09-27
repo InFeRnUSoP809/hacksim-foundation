@@ -92,32 +92,43 @@ function section(payload: unknown, evidenceIds: Set<string>): Record<string, unk
   return result;
 }
 
-function requirementsFromDeterministic(
-  requirements: RequirementEntry[],
-  alignment: Record<string, unknown>,
+/**
+ * Keep only rows for real constraint ids, with real evidence ids.
+ *
+ * The constraint table used to be structurally unanswerable: `rowsFromModule`
+ * has always read `module.data.constraints`, but no prompt ever asked for them,
+ * so every CON row rendered as "not checked" no matter what the model said.
+ */
+function validateConstraintRows(
+  raw: unknown,
+  requirementMap: RequirementMap,
+  evidenceIds: Set<string>,
 ): Record<string, unknown>[] {
-  const addressed = new Set((alignment.addressed_requirement_ids as string[]) ?? []);
-  return requirements.map((requirement) =>
-    addressed.has(requirement.id)
-      ? {
-          requirement_id: requirement.id,
-          status: "partial_evidence",
-          confidence: "low",
-          evidence_ids: [],
-          explanation:
-            "A matching technology was detected, but the specific implementation " +
-            "was not inspected for this requirement.",
-        }
-      : {
-          requirement_id: requirement.id,
-          status: "unable_to_determine",
-          confidence: "none",
-          evidence_ids: [],
-          explanation:
-            "No matching technology was detected. This does not mean the feature " +
-            "is absent; the repository was not inspected at code level.",
-        },
+  if (!Array.isArray(raw)) return [];
+
+  const known = new Set(
+    (requirementMap.constraints ?? []).map((c: { id: string }) => c.id),
   );
+  const rows: Record<string, unknown>[] = [];
+
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const id = String(record.constraint_id ?? "");
+    // §49 — never invent a constraint the brief does not contain.
+    if (!known.has(id)) continue;
+
+    rows.push({
+      constraint_id: id,
+      status: oneOf(record.status, M.CONSTRAINT_STATUSES, "unable_to_determine"),
+      confidence: oneOf(record.confidence, M.CONFIDENCES, "low"),
+      evidence_ids: ((record.evidence_ids as string[]) ?? [])
+        .filter((eid) => evidenceIds.has(eid))
+        .slice(0, 12),
+      explanation: String(record.explanation ?? "").slice(0, 1500),
+    });
+  }
+  return rows;
 }
 
 /** Keep only rows for real requirement ids, with real evidence ids. */
@@ -553,23 +564,14 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
   const requirements = requirementMap.requirements ?? [];
   const out: Record<string, unknown> = {};
 
-  // §42 — deterministic first. Only ask the model when the deterministic pass
-  // could not conclude, which is what keeps a normal project cheap.
-  const deterministic = M.alignmentFromEvidence(requirementMap, input.projectMap);
-  if (deterministic) {
-    out.problem_alignment = deterministic;
-    out.requirements = requirementsFromDeterministic(requirements, deterministic);
-    const addressed = new Set((deterministic.addressed_requirement_ids as string[]) ?? []);
-    out.summary = {
-      headline: deterministic.explanation,
-      strengths: [],
-      areas_to_clarify: requirements
-        .filter((r) => !addressed.has(r.id))
-        .map((r) => `${r.id} has no matching detected technology`)
-        .slice(0, 6),
-      source: "deterministic",
-    };
-  } else {
+  // The model decides. A deterministic pre-pass used to answer this from a
+  // three-keyword signal table matched against the authentication detectors,
+  // which reported "weakly evidenced" for every brief it did not recognise —
+  // including a repository that solved the problem outright — and, by
+  // returning a value, stopped the model from ever reading the code. Alignment
+  // is the one question in this product that cannot be answered by counting
+  // dependencies, so it is asked, every time.
+  {
     // The retriever scores files by the words in `question`. A fixed question
     // searched for "repository/hackathon/requirements", which match every repo
     // equally and so surfaced the same generic code whatever the challenge was.
@@ -610,7 +612,7 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
     });
 
     if (response === null) {
-      return M.moduleResult(M.MODULE_A, "skipped", "deterministic", {}, "no_call");
+      return M.moduleResult(M.MODULE_A, "skipped", "ai", {}, "no_call");
     }
 
     const payload = response.parsed ?? {};
@@ -625,6 +627,7 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
       source: "ai",
     };
     out.requirements = validateRequirementRows(payload.requirements, requirements, evidenceIds);
+    out.constraints = validateConstraintRows(payload.constraints, requirementMap, evidenceIds);
 
     const summary = (payload.summary ?? {}) as Record<string, unknown>;
     out.summary = {
@@ -662,9 +665,7 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
     }
   }
 
-  return M.moduleResult(
-    M.MODULE_A, "completed", deterministic ? "deterministic" : "ai", out,
-  );
+  return M.moduleResult(M.MODULE_A, "completed", "ai", out);
 }
 
 async function moduleQuality(args: CommonArgs & { requirementMap: RequirementMap }) {
