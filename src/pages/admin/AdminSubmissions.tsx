@@ -5,14 +5,13 @@ import { useAsync } from "@/hooks/use-async";
 import { formatDateTime } from "@/lib/format";
 import {
   getSubmissionById,
-  getSubmissionMembers,
   listSubmissionsForAdmin,
 } from "@/services/submissions";
 import type { AdminSubmissionRow } from "@/services/submissions";
 import { ChevronLeft, ExternalLink, FileText } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
-import type { Submission, SubmissionMemberWithProfile } from "@/types";
+import type { Submission } from "@/types";
 
 function statusPill(status: "draft" | "submitted") {
   return status === "submitted"
@@ -148,11 +147,6 @@ function SubmissionDetail({
     () => getSubmissionById(submissionId),
     [submissionId],
   );
-  const members = useAsync<SubmissionMemberWithProfile[]>(
-    () => getSubmissionMembers(submissionId),
-    [submissionId],
-  );
-
   const submission = detail.data;
 
   return (
@@ -258,93 +252,6 @@ function SubmissionDetail({
                 )}
               </div>
             </Card>
-          </div>
-
-          {/* Contributions */}
-          <div className="mt-8">
-            <h2 className="text-lg font-semibold tracking-[-0.02em]">
-              Individual contributions
-            </h2>
-            {members.isLoading ? (
-              <LoadingState label="Loading contributions" />
-            ) : (
-              <div className="mt-4 flex flex-col gap-4">
-                {members.data?.map((member) => (
-                  <Card key={member.id} className="p-6">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="text-[15px] font-semibold tracking-[-0.01em]">
-                          {member.full_name || member.email}
-                        </p>
-                        <p className="label-mono mt-0.5 text-muted-foreground">
-                          {member.team_role}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <p className="label-mono text-muted-foreground">
-                          Contribution
-                        </p>
-                        <p className="mt-1.5 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                          {member.contribution_description || "—"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="label-mono text-muted-foreground">
-                          Responsibilities
-                        </p>
-                        <p className="mt-1.5 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                          {member.planned_responsibilities || "—"}
-                        </p>
-                      </div>
-                    </div>
-
-                    {member.contribution_areas.length > 0 && (
-                      <div className="mt-4">
-                        <p className="label-mono text-muted-foreground">Areas</p>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {member.contribution_areas.map((area) => (
-                            <span
-                              key={area}
-                              className="label-mono rounded border border-border px-2 py-0.5 text-muted-foreground"
-                            >
-                              {area}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="mt-4 rounded-lg border border-border p-4">
-                      <p className="label-mono text-muted-foreground">
-                        AI disclosure
-                      </p>
-                      {member.ai_tools_used ? (
-                        <div className="mt-2">
-                          <p className="text-sm">
-                            <span className="text-muted-foreground">
-                              Tools:{" "}
-                            </span>
-                            {member.ai_tools_used}
-                          </p>
-                          {member.ai_usage_description && (
-                            <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                              {member.ai_usage_description}
-                            </p>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="mt-2 text-sm text-muted-foreground">
-                          No AI tools declared.
-                        </p>
-                      )}
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            )}
           </div>
         </>
       )}
