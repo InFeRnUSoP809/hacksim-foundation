@@ -96,11 +96,14 @@ export async function readJsonBody<T = Record<string, unknown>>(req: Request): P
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new Error("Request body must be valid JSON.");
+    // SyntaxError specifically: withErrorHandling maps it to a 400. A plain
+    // Error here would surface as a 500 and tell a user their malformed body
+    // was our fault.
+    throw new SyntaxError("Request body must be valid JSON.");
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Request body must be a JSON object.");
+    throw new SyntaxError("Request body must be a JSON object.");
   }
   return parsed as T;
 }
@@ -160,7 +163,7 @@ export class RateLimiter {
     const bucket = this.buckets.get(key);
     if (!bucket || bucket.resetAt <= at) {
       this.buckets.set(key, { count: 1, resetAt: at + windowMs });
-      return { allowed: true, remaining: limit - 1, retryAfterSeconds: 0, limit };
+      return { allowed: true, remaining: Math.max(0, limit - 1), retryAfterSeconds: 0, limit };
     }
 
     if (bucket.count >= limit) {
@@ -173,7 +176,14 @@ export class RateLimiter {
     }
 
     bucket.count += 1;
-    return { allowed: true, remaining: limit - bucket.count, retryAfterSeconds: 0, limit };
+    return {
+      allowed: true,
+      // Clamped: a limit of 0 means "not rate limited", and `0 - 1` reporting a
+      // negative allowance would be nonsense to anything reading the header.
+      remaining: Math.max(0, limit - bucket.count),
+      retryAfterSeconds: 0,
+      limit,
+    };
   }
 
   /** Reject a request that would exceed a limit, naming the wait. */
@@ -223,6 +233,12 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   [/\b(AIza[A-Za-z0-9_-]{20,})/g, "[REDACTED]"],
   [/\b(xox[abprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]"],
   [/\b([sr]k_(?:live|test)_[A-Za-z0-9]{12,})/g, "[REDACTED]"],
+  // A URL carrying its own credentials. This one has no label to key off, so
+  // it needs a rule of its own: `postgres://admin:s3cr3t@db/app` appears bare in
+  // a stack trace or an error string and the labelled pattern below would miss
+  // it entirely. The userinfo half goes; the host is kept, because "which host"
+  // is diagnostic and "the password" is not.
+  [/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s:@]+)@/gi, "$1$2:[REDACTED]@"],
   // PEM blocks: a private key is a multi-line secret that a single-line regex
   // would otherwise leak a line of.
   [/-----BEGIN[^-]{0,40}PRIVATE KEY-----[\s\S]*?-----END[^-]{0,40}PRIVATE KEY-----/g, "[REDACTED]"],
