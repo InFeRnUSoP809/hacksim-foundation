@@ -6,7 +6,6 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { useAuth } from "@/hooks/use-auth";
 import { useAsync } from "@/hooks/use-async";
 import { useFormatEngine } from "@/hooks/use-format-engine";
 import { formatCountdown, lockSubmission } from "@/lib/format-engine";
@@ -15,10 +14,8 @@ import { friendlyError } from "@/services/errors";
 import {
   ensureDraft,
   getSubmission,
-  getSubmissionMembers,
   isLocked,
   saveDraft,
-  saveMyContribution,
   validateGithubUrl,
   validateHttpUrl,
 } from "@/services/submissions";
@@ -27,15 +24,12 @@ import { ArrowRight, FileText, Loader2, Lock, Send } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import {
-  CONTRIBUTION_AREAS,
   type BuildSession,
   type Submission,
-  type SubmissionMemberWithProfile,
 } from "@/types";
 
 export default function SubmissionPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
-  const { user } = useAuth();
 
   const session = useAsync<BuildSession | null>(
     () => (sessionId ? getSession(sessionId) : Promise.resolve(null)),
@@ -100,7 +94,7 @@ export default function SubmissionPage() {
             Project submission
           </h1>
           <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            Record what your team built and what each of you contributed.
+            Record what your team built and where to find it.
             Nothing is scored here — this is the record the defence phase will
             use later.
           </p>
@@ -134,12 +128,6 @@ export default function SubmissionPage() {
               submission={current}
               locked={locked}
               onSaved={() => submission.reload()}
-            />
-
-            <ContributionsSection
-              submission={current}
-              currentUserId={user?.id ?? null}
-              locked={locked}
             />
 
             {!locked && engine.phase !== "closed" && (
@@ -356,281 +344,6 @@ function ProjectForm({
             <Button type="submit" disabled={isSaving}>
               {isSaving && <Loader2 className="size-4 animate-spin" />}
               Save draft
-            </Button>
-          </div>
-        )}
-      </form>
-    </Card>
-  );
-}
-
-// ── Contributions ───────────────────────────────────────────────────────────
-
-function ContributionsSection({
-  submission,
-  currentUserId,
-  locked,
-}: {
-  submission: Submission;
-  currentUserId: string | null;
-  locked: boolean;
-}) {
-  const roster = useAsync<SubmissionMemberWithProfile[]>(
-    () => getSubmissionMembers(submission.id),
-    [submission.id],
-  );
-
-  return (
-    <div>
-      <h2 className="text-lg font-semibold tracking-[-0.02em]">
-        Individual contributions
-      </h2>
-      <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-        AI use is not treated as cheating. It is recorded so a later defence
-        phase can check you understand and can defend what you claim to have
-        built.
-      </p>
-
-      {roster.isLoading ? (
-        <LoadingState label="Loading contributions" />
-      ) : roster.error ? (
-        <div className="mt-4">
-          <ErrorState message={roster.error} />
-        </div>
-      ) : (
-        <div className="mt-4 flex flex-col gap-4">
-          {roster.data?.map((member) => (
-            <ContributionCard
-              key={member.id}
-              member={member}
-              isMine={member.user_id === currentUserId}
-              locked={locked}
-              onSaved={roster.reload}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ContributionCard({
-  member,
-  isMine,
-  locked,
-  onSaved,
-}: {
-  member: SubmissionMemberWithProfile;
-  isMine: boolean;
-  locked: boolean;
-  onSaved: () => void;
-}) {
-  const [description, setDescription] = useState(member.contribution_description);
-  const [areas, setAreas] = useState<string[]>(member.contribution_areas);
-  const [responsibilities, setResponsibilities] = useState(
-    member.planned_responsibilities,
-  );
-  const [aiTools, setAiTools] = useState(member.ai_tools_used);
-  const [aiUsage, setAiUsage] = useState(member.ai_usage_description);
-  const [usedAi, setUsedAi] = useState(Boolean(member.ai_tools_used.trim()));
-
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  const editable = isMine && !locked;
-
-  function toggleArea(area: string) {
-    setSaved(false);
-    setAreas((current) =>
-      current.includes(area)
-        ? current.filter((item) => item !== area)
-        : [...current, area],
-    );
-  }
-
-  async function handleSave(event: React.FormEvent) {
-    event.preventDefault();
-    setError(null);
-    setIsSaving(true);
-    try {
-      await saveMyContribution(member.submission_id, {
-        contributionDescription: description,
-        contributionAreas: areas,
-        plannedResponsibilities: responsibilities,
-        aiToolsUsed: usedAi ? aiTools : "",
-        aiUsageDescription: usedAi ? aiUsage : "",
-      });
-      setSaved(true);
-      onSaved();
-    } catch (err) {
-      setError(friendlyError(err));
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  return (
-    <Card className={cn("p-6", isMine && "border-brand/30")}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="text-[15px] font-semibold tracking-[-0.01em]">
-            {member.full_name || member.email}
-          </p>
-          <p className="label-mono mt-0.5 text-muted-foreground">
-            {member.team_role}
-          </p>
-        </div>
-        {!editable && (
-          <span className="label-mono rounded-full border border-border px-2.5 py-1 text-muted-foreground">
-            {locked ? "Locked" : isMine ? "Read only" : "Another member"}
-          </span>
-        )}
-      </div>
-
-      <form onSubmit={handleSave} className="mt-5 flex flex-col gap-5">
-        <div className="flex flex-col gap-2">
-          <Label htmlFor={`contrib-${member.id}`}>
-            Contribution description
-          </Label>
-          <Textarea
-            id={`contrib-${member.id}`}
-            rows={3}
-            disabled={!editable}
-            value={description}
-            onChange={(event) => {
-              setDescription(event.target.value);
-              setSaved(false);
-            }}
-            placeholder="I will build the inventory prediction API."
-          />
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label>Contribution areas</Label>
-          <div className="flex flex-wrap gap-2">
-            {CONTRIBUTION_AREAS.map((area) => {
-              const selected = areas.includes(area);
-              return (
-                <button
-                  key={area}
-                  type="button"
-                  disabled={!editable}
-                  onClick={() => toggleArea(area)}
-                  aria-pressed={selected}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed",
-                    selected
-                      ? "border-brand bg-brand/10 text-brand"
-                      : "border-border text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {area}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <Label htmlFor={`resp-${member.id}`}>
-            Planned responsibilities
-          </Label>
-          <Textarea
-            id={`resp-${member.id}`}
-            rows={2}
-            disabled={!editable}
-            value={responsibilities}
-            onChange={(event) => {
-              setResponsibilities(event.target.value);
-              setSaved(false);
-            }}
-          />
-        </div>
-
-        {/* ── AI disclosure ─────────────────────────────────────── */}
-        <div className="rounded-lg border border-border p-4">
-          <p className="text-sm font-semibold">AI usage disclosure</p>
-          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
-            Did you use AI tools while building this project?
-          </p>
-
-          <div className="mt-3 flex flex-col gap-2">
-            <label className="flex items-center gap-2.5 text-sm">
-              <input
-                type="radio"
-                name={`ai-${member.id}`}
-                checked={!usedAi}
-                disabled={!editable}
-                onChange={() => {
-                  setUsedAi(false);
-                  setSaved(false);
-                }}
-                className="size-4 accent-[var(--brand)]"
-              />
-              No
-            </label>
-            <label className="flex items-center gap-2.5 text-sm">
-              <input
-                type="radio"
-                name={`ai-${member.id}`}
-                checked={usedAi}
-                disabled={!editable}
-                onChange={() => {
-                  setUsedAi(true);
-                  setSaved(false);
-                }}
-                className="size-4 accent-[var(--brand)]"
-              />
-              Yes
-            </label>
-          </div>
-
-          {usedAi && (
-            <div className="mt-4 flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={`tools-${member.id}`}>Which AI tools?</Label>
-                <Input
-                  id={`tools-${member.id}`}
-                  disabled={!editable}
-                  value={aiTools}
-                  onChange={(event) => {
-                    setAiTools(event.target.value);
-                    setSaved(false);
-                  }}
-                  placeholder="Gemini, GitHub Copilot"
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor={`usage-${member.id}`}>
-                  How were they used?
-                </Label>
-                <Textarea
-                  id={`usage-${member.id}`}
-                  rows={2}
-                  disabled={!editable}
-                  value={aiUsage}
-                  onChange={(event) => {
-                    setAiUsage(event.target.value);
-                    setSaved(false);
-                  }}
-                  placeholder="Used AI for debugging and code suggestions."
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {error && <p className="text-xs text-destructive">{error}</p>}
-        {saved && !error && (
-          <p className="text-xs text-stage-report">Saved.</p>
-        )}
-
-        {editable && (
-          <div className="flex justify-end">
-            <Button type="submit" size="sm" variant="outline" disabled={isSaving}>
-              {isSaving && <Loader2 className="size-3.5 animate-spin" />}
-              Save contribution
             </Button>
           </div>
         )}

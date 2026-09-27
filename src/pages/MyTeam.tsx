@@ -221,19 +221,18 @@ function TeamView({
         </div>
       )}
 
-      {/* Contribution lives with the submission, so it is edited there. */}
+      {/* The project record lives with the submission, so it is edited there. */}
       <Card className="mt-8 flex flex-col items-start gap-3 p-6">
         <div className="grid size-9 place-items-center rounded-lg border border-border bg-secondary/50">
           <FileText className="size-4 text-muted-foreground" />
         </div>
         <div>
           <h2 className="text-[15px] font-semibold tracking-[-0.01em]">
-            Your contribution
+            Your project record
           </h2>
           <p className="mt-1.5 max-w-xl text-sm leading-relaxed text-muted-foreground">
-            Each member describes what they built, which areas they covered, and
-            any AI tools they used. It is recorded on the submission, so nobody
-            can change it after the team submits.
+            One record for the whole team: what you built, how it works and the
+            repository it lives in. It is locked the moment your team submits.
           </p>
         </div>
         {session.data ? (

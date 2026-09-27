@@ -180,8 +180,8 @@ function ActivePractice({
                 Submission
               </h3>
               <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">
-                Record your project, links, and each member&rsquo;s
-                contribution. Locked for good once you submit.
+                Record your project and the repository it lives in. Locked for
+                good once you submit.
               </p>
             </div>
           </div>
