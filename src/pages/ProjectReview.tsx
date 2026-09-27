@@ -31,12 +31,12 @@ type Stage = "scan" | "review";
 
 const STAGE_COPY: Record<Stage, { title: string; body: string }> = {
   scan: {
-    title: "Reading your repository",
-    body: "Cloning the repository from GitHub, indexing its files and mapping them onto the brief. This is the same pipeline the admin playground runs — nothing here is a preview.",
+    title: "Analysing your repository",
+    body: "Reading your GitHub repository and matching what it contains against the problem statement and the requirements.",
   },
   review: {
-    title: "Writing the review",
-    body: "The repository is mapped. An AI reviewer is now comparing what you built against the challenge and writing what you should be ready to explain.",
+    title: "Writing your review",
+    body: "Comparing what you built against the problem you were given, and writing what you should be ready to explain.",
   },
 };
 
@@ -224,7 +224,7 @@ export default function ProjectReview() {
               ? "Your repository is read from GitHub and compared against the brief. This normally takes under a minute."
               : "Add a GitHub repository URL to the submission and this page will build the review from it."}
             {!isApiConfigured &&
-              " The analysis edge function has not been configured on this deployment yet."}
+              " Automatic reviews are not switched on for this site yet — ask an admin to set it up."}
           </p>
           {hasRepositoryUrl && isApiConfigured && (
             <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
@@ -240,8 +240,8 @@ export default function ProjectReview() {
         <Card className="mt-8 border-destructive/40 p-6">
           <p className="text-sm font-semibold">The AI review could not be written</p>
           <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-            The repository was analysed, but the AI review did not finish. Retrying
-            spends AI tokens again, so it only runs when you ask for it.
+            The repository was analysed, but the review did not finish. This only
+            runs when you ask for it, so it will not repeat on its own.
           </p>
           {isApiConfigured && (
             <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
@@ -440,8 +440,8 @@ function PipelineProgress({ stage }: { stage: Stage }) {
         {copy.body}
       </p>
       <p className="mt-3 text-xs text-muted-foreground">
-        This runs in the background — you can leave this page and come back, and
-        it will pick up where it stopped.
+        This usually takes under a minute. You can leave this page and come
+        back — it picks up where it stopped.
       </p>
     </Card>
   );
