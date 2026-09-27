@@ -14,11 +14,6 @@
  * function reads them as edge-function secrets, so this verifies the same
  * values you set with `supabase secrets set` — not whatever is deployed.
  */
-import { createClient } from "@supabase/supabase-js";
-
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL?.trim();
-const ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY?.trim();
-
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN?.trim() ?? "";
 const DEEPSEEK_KEY = process.env.DEEPSEEK_API_KEY?.trim() ?? "";
 const GITHUB_API_BASE = process.env.GITHUB_API_BASE?.trim() || "https://api.github.com";
@@ -97,35 +92,23 @@ show(
   DEEPSEEK_KEY ? "present" : "absent — Phase 5 works, Phase 6 is refused with a reason",
 );
 
-if (SUPABASE_URL && ANON_KEY) {
-  const supabase = createClient(SUPABASE_URL, ANON_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const { data, error } = await supabase
-    .from("ai_model_configs")
-    .select("provider, model_name, enabled")
-    .eq("is_default", true)
-    .limit(1);
-
-  if (error) {
-    show("default model priced", false, error.message);
-  } else if (!data?.length) {
-    show(
-      "default model priced",
-      false,
-      "no default row in ai_model_configs — run supabase/005_model_pricing.sql",
-    );
-  } else {
-    const m = data[0];
-    show(
-      "default model priced",
-      m.enabled !== false,
-      `${m.provider}/${m.model_name}${m.enabled === false ? " (disabled — the gate will refuse)" : ""}`,
-    );
-  }
-} else {
-  note("model pricing", "skipped: set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to check it");
-}
+// The pricing row cannot be checked from here, and that is deliberate.
+//
+// §90 closes `ai_model_configs` to every client key: RLS is enabled and the
+// table has no SELECT policy, so the anon key reads zero rows whether or not
+// the row exists. An earlier version of this script queried it anyway and
+// reported "no default row" against a perfectly healthy database — a check
+// that cannot fail correctly is worse than no check.
+//
+// Two ways to actually confirm pricing:
+//   * SQL editor:  select provider, model_name, enabled, is_default
+//                    from public.ai_model_configs;
+//   * GET <supabase-url>/functions/v1/ai-admin?view=preflight
+//     which reads it with the service role and is the check that ships.
+note(
+  "default model priced",
+  "not checkable from here (RLS blocks the anon key by design) — run the SQL above, or use ?view=preflight",
+);
 
 console.log(
   failures === 0
