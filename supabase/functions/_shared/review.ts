@@ -570,8 +570,20 @@ async function moduleAlignment(args: CommonArgs & { requirementMap: RequirementM
       source: "deterministic",
     };
   } else {
+    // The retriever scores files by the words in `question`. A fixed question
+    // searched for "repository/hackathon/requirements", which match every repo
+    // equally and so surfaced the same generic code whatever the challenge was.
+    // Feeding it the brief makes it look for THIS challenge's vocabulary —
+    // inventory, expiry, demand — which is the code that decides alignment.
+    const searchBrief = [
+      requirementMap.problem_summary ?? "",
+      ...(requirementMap.requirements ?? []).slice(0, 8).map((r) => r.text),
+    ]
+      .join(" ")
+      .slice(0, 1500);
+
     const packet = buildPacket({
-      question: "Does this repository implement the hackathon requirements?",
+      question: `Does this repository implement the hackathon requirements? ${searchBrief}`,
       files: input.files,
       chunks: input.chunks,
       category: "api",

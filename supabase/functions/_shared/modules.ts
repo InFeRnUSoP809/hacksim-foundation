@@ -95,9 +95,17 @@ function signalsFor(text: string): string[] {
 /**
  * Answer the alignment question without a model when we safely can.
  *
- * Only returns a result when the repository has substantial evidence. A thin
- * or empty repository is exactly the case that needs interpretation, so it falls
- * through to the model rather than being guessed at.
+ * The signal table is deliberately small (auth / predict / database) and is
+ * matched against the authentication detectors only, so it can genuinely
+ * establish alignment for a fraction of briefs and nothing for the rest. That
+ * is fine for a hint — it is NOT fine for a verdict, and returning one anyway
+ * meant a real, well-matched submission was reported as "weakly evidenced"
+ * while the model that could have read the code was never called.
+ *
+ * So: this returns a result only when detection actually matched something.
+ * Anything weaker returns null and falls through to the model, which sees the
+ * brief, the team's claims and the code. A thin repository was always meant to
+ * fall through; so must an unconvincing one.
  */
 export function alignmentFromEvidence(
   requirementMap: RequirementMap,
@@ -136,13 +144,21 @@ export function alignmentFromEvidence(
 
   const ratio = checkable.length ? addressed.length / checkable.length : 0;
 
+  // Detection found nothing worth reporting. This is not a verdict of "not
+  // aligned" — it is an absence of signal, and only the model can read the code
+  // and decide. See the note above.
+  if (ratio === 0) return null;
+
   let status: string;
   let explanation: string;
-  if (hasDatabase && checkable.some((r) => r.category === "ai_ml")) {
+  if (hasDatabase && ratio < 0.6) {
+    // A data layer is present and some requirements matched, but not enough to
+    // call it strong. Stated as a partial, never as a mismatch.
     status = "partially_aligned";
     explanation =
-      "The repository contains a data layer and a machine-learning dependency, " +
-      "but no direct evidence links a model to the feature.";
+      `The repository contains a data layer and ${addressed.length} of ` +
+      `${checkable.length} core requirements have a matching detected ` +
+      "technology. The rest need code inspection to judge.";
   } else if (ratio >= 0.6) {
     status = "strongly_aligned";
     explanation =

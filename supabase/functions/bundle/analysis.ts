@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 5029 lines, self-contained — safe to paste into the Supabase dashboard.
+// 5034 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -3310,11 +3310,12 @@ function alignmentFromEvidence(requirementMap, projectMap) {
     }
   }
   const ratio = checkable.length ? addressed.length / checkable.length : 0;
+  if (ratio === 0) return null;
   let status;
   let explanation;
-  if (hasDatabase && checkable.some((r) => r.category === "ai_ml")) {
+  if (hasDatabase && ratio < 0.6) {
     status = "partially_aligned";
-    explanation = "The repository contains a data layer and a machine-learning dependency, but no direct evidence links a model to the feature.";
+    explanation = `The repository contains a data layer and ${addressed.length} of ${checkable.length} core requirements have a matching detected technology. The rest need code inspection to judge.`;
   } else if (ratio >= 0.6) {
     status = "strongly_aligned";
     explanation = `${addressed.length} of ${checkable.length} core requirements have a matching detected technology in the repository.`;
@@ -4482,8 +4483,12 @@ async function moduleAlignment(args) {
       source: "deterministic"
     };
   } else {
+    const searchBrief = [
+      requirementMap.problem_summary ?? "",
+      ...(requirementMap.requirements ?? []).slice(0, 8).map((r) => r.text)
+    ].join(" ").slice(0, 1500);
     const packet = buildPacket({
-      question: "Does this repository implement the hackathon requirements?",
+      question: `Does this repository implement the hackathon requirements? ${searchBrief}`,
       files: input.files,
       chunks: input.chunks,
       category: "api"
