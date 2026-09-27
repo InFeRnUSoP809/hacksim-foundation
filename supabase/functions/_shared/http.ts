@@ -10,6 +10,7 @@
  */
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { PayloadTooLarge, safeLog, withSecurityHeaders } from "./security.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -245,18 +246,36 @@ export interface ContributionMember {
   ai_usage_description: string | null;
 }
 
-/** Wraps a handler so thrown HttpErrors become clean JSON responses. */
+/**
+ * Wraps a handler so thrown HttpErrors become clean JSON responses.
+ *
+ * Three cross-cutting concerns are applied here rather than in each handler,
+ * because a rule that lives in one endpoint is a rule the next one forgets:
+ * security headers on every response, a sanitised 500, and a log line that
+ * cannot print a credential (§14.7, §14.8, §26).
+ */
 export function withErrorHandling(
   handler: (req: Request, url: URL) => Response | Promise<Response>,
 ) {
   return async (req: Request): Promise<Response> => {
-    if (req.method === "OPTIONS") return preflight();
+    if (req.method === "OPTIONS") return withSecurityHeaders(preflight());
     try {
-      return await handler(req, new URL(req.url));
+      return withSecurityHeaders(await handler(req, new URL(req.url)));
     } catch (error) {
-      if (error instanceof HttpError) return fail(error.message, error.status);
-      console.error("[hacksim] unhandled error", error);
-      return fail("Something went wrong on the server.", 500);
+      if (error instanceof HttpError) return withSecurityHeaders(fail(error.message, error.status));
+      if (error instanceof PayloadTooLarge) {
+        return withSecurityHeaders(
+          fail(`Request body is too large. The limit is ${error.limit} bytes.`, 413),
+        );
+      }
+      // A 413 from a duplicate Content-Length check, and a malformed body, are
+      // client errors, not server faults. Reporting them as 500 would tell a
+      // user their request was our fault when it was not.
+      if (error instanceof SyntaxError) {
+        return withSecurityHeaders(fail("Request body must be valid JSON.", 400));
+      }
+      safeLog.error("hacksim", "unhandled error", error);
+      return withSecurityHeaders(fail("Something went wrong on the server.", 500));
     }
   };
 }
