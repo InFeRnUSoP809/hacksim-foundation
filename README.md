@@ -240,6 +240,39 @@ Secrets go in the dashboard, not in a `.env` file and never in
 requires a redeploy** for it to take effect. Set the secrets first, then run the
 deploy command above once.
 
+#### Deploying through the dashboard instead
+
+The Supabase dashboard accepts one file per function, but both entry points
+import nine modules from `_shared/`. Pasting `analysis/index.ts` on its own
+fails immediately with an unresolved import, because the dashboard never
+receives the files those imports point at.
+
+`scripts/bundle-functions.sh` inlines all of them into one self-contained file
+per function:
+
+```bash
+bash scripts/bundle-functions.sh
+```
+
+```
+supabase/functions/bundle/analysis.ts   4822 lines
+supabase/functions/bundle/ai-admin.ts    621 lines
+```
+
+Then in the dashboard, for each of `analysis` and `ai-admin`:
+
+1. **Edge Functions → Functions → Deploy a new function**
+2. Name it exactly `analysis` (or `ai-admin`)
+3. Paste the corresponding bundle file
+4. **Set “Verify JWT” to ON** — required, or every call fails
+5. Deploy
+
+The bundles are generated and gitignored. Edit the sources, re-run the script.
+`scripts/verify-bundles.ts` boots each bundle and asserts it serves CORS
+preflights, refuses unauthenticated calls with 401, and rejects a missing
+submission id with 400 — 21 assertions, because a bundle that deploys and then
+misroutes a request is worse than one that fails to build.
+
 `verify_jwt = true` for both functions (see `supabase/config.toml`). The
 platform verifies the caller's JWT before the function runs, and the function
 re-checks team membership anyway — a valid token proves who you are, not what

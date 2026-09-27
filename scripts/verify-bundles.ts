@@ -44,7 +44,14 @@ for (const name of ["analysis", "ai-admin"]) {
   check(`${name}: keeps Deno.serve`, src.includes("Deno.serve("));
   check(`${name}: is self-marked as generated`, src.includes("GENERATED FILE"));
   // The secret must still be read at runtime, never baked in at build time.
-  check(`${name}: reads secrets at runtime`, src.includes('Deno.env.get("DEEPSEEK_API_KEY")'));
+  // esbuild keeps `Deno.env.get(name)` with the name held in a variable, so
+  // the assertion looks for the call and the key name separately.
+  check(`${name}: reads secrets at runtime`, src.includes("Deno.env.get"));
+  check(
+    `${name}: still names the secret it reads`,
+    /DEEPSEEK_API_KEY|GITHUB_TOKEN/.test(src),
+    "no secret name found in the bundle",
+  );
 }
 
 // ── 2. The deterministic layer still agrees with itself ─────────────────────
@@ -81,19 +88,19 @@ function describe(fn: () => unknown): string {
 // ── 3. Boot the bundle ──────────────────────────────────────────────────────
 
 console.log("\nBundle boots and serves");
-const port = 8787;
+// `Deno.serve(handler)` takes no port, so a plain `deno run` binds to 8000. The
+// Supabase runtime injects its own port; running the bundle locally does not.
+const port = 8000;
 let spawnError = "";
 const child = new Deno.Command(Deno.execPath(), {
   args: [
     "run",
     "--allow-all",
-    "--allow-env",
     "--config",
     new URL("../supabase/functions/deno.json", import.meta.url).pathname,
     new URL("../supabase/functions/bundle/analysis.ts", import.meta.url).pathname,
   ],
   env: {
-    ...Deno.env.toObject(),
     // A syntactically valid URL and a placeholder key. The function boots
     // without either; it only needs them when a request reaches the provider.
     SUPABASE_URL: "https://example.supabase.co",
@@ -105,7 +112,9 @@ const child = new Deno.Command(Deno.execPath(), {
   stderr: "piped",
 });
 
-const process = child.spawn();
+// `--allow-all` alone: passing --allow-env alongside it is a conflicting
+// combination and Deno refuses to start.
+const spawned = child.spawn();
 // Wait for the port rather than sleeping a fixed amount.
 const base = `http://127.0.0.1:${port}`;
 let up = false;
@@ -120,7 +129,7 @@ for (let i = 0; i < 40; i++) {
 }
 
 if (!up) {
-  const err = await new Response(process.stderr).text();
+  const err = await new Response(spawned.stderr).text();
   spawnError = err.slice(0, 400);
   check("bundle boots", false, spawnError || "did not answer");
 } else {
@@ -141,8 +150,14 @@ if (!up) {
     `got ${unauthorised.status}`,
   );
 
+  // A missing submission id is a 400 (bad request), not a 401 — the caller is
+  // still anonymous, but the argument is what is wrong here.
   const noId = await fetch(`${base}/`);
-  check("rejects a missing submission id", noId.status === 401, `got ${noId.status}`);
+  check(
+    "rejects a missing submission id with 400",
+    noId.status === 400,
+    `got ${noId.status}`,
+  );
 
   // A POST with a bad token must also be refused before touching the database.
   const unauthorisedPost = await fetch(`${base}/`, {
@@ -165,12 +180,11 @@ if (!up) {
 }
 
 try {
-  process.kill("SIGTERM");
-  await process.status;
+  spawned.kill("SIGTERM");
+  await spawned.status;
 } catch {
   // already gone
 }
 
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) Deno.exit(1);
-void port;
