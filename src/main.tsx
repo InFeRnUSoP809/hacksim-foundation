@@ -45,6 +45,7 @@ const AdminDataManagement = lazy(
   () => import("./pages/admin/AdminDataManagement.tsx"),
 );
 const AdminAuditLog = lazy(() => import("./pages/admin/AdminAuditLog.tsx"));
+const AdminPlayground = lazy(() => import("./pages/admin/AdminPlayground.tsx"));
 const ProjectReview = lazy(() => import("./pages/ProjectReview.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
@@ -341,6 +342,14 @@ createRoot(document.getElementById("root")!).render(
                   element={
                     <RequireAdmin>
                       <AdminAuditLog />
+                    </RequireAdmin>
+                  }
+                />
+                <Route
+                  path="/admin/playground"
+                  element={
+                    <RequireAdmin>
+                      <AdminPlayground />
                     </RequireAdmin>
                   }
                 />
