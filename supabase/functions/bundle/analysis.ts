@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 9931 lines, self-contained — safe to paste into the Supabase dashboard.
+// 9943 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -8434,6 +8434,7 @@ async function runAnalysis(input) {
   const submissionId = input.submission.id ?? null;
   const repositoryId = input.repository.repository_id ?? input.repository.id ?? null;
   const commitSha = input.repository.analyzed_commit_sha ?? null;
+  await markReviewRunning(submissionId, repositoryId);
   const hackathonId = String(input.hackathon.id ?? "");
   const requirementMap = await getRequirementMap(hackathonId, input.hackathon);
   const context = await buildHackathonContext(
@@ -9496,6 +9497,17 @@ function buildDefenseTargets(conclusions, findings, claims) {
   }
   void claims;
   return targets.slice(0, 20);
+}
+async function markReviewRunning(submissionId, repositoryId) {
+  if (!submissionId || !repositoryId) return;
+  try {
+    await db().from("project_reviews").upsert(
+      { submission_id: submissionId, repository_id: repositoryId, status: "running" },
+      { onConflict: "submission_id,repository_id" }
+    );
+  } catch (error) {
+    console.warn("[hacksim.analysis] could not mark the review running:", error);
+  }
 }
 async function upsertReview(args) {
   if (!args.submissionId || !args.repositoryId) return null;

@@ -216,6 +216,9 @@ begin
     'review', (
       select jsonb_build_object(
         'id', pr.id, 'status', pr.status, 'summary', pr.summary,
+        -- The client reads this to tell a run still going from one that was
+        -- killed part-way, which look identical from the status alone.
+        'updated_at', pr.updated_at,
         'problem_alignment', pr.problem_alignment,
         'requirements', pr.requirements,
         'constraints', pr.constraints,

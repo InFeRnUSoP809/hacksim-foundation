@@ -66,6 +66,28 @@ function isReviewed(status: string | undefined): boolean {
 }
 
 /**
+ * A run records when it started and rewrites the row when it finishes, so a
+ * review still sitting on "running" this long after it was written was killed
+ * rather than slow. The platform's longest function timeout is well under this.
+ */
+const RUN_STALE_MS = 15 * 60_000;
+
+/**
+ * Missing or unparseable timestamps are treated as "still going", not as failed.
+ * Guessing wrong in that direction only leaves the page polling; the other way
+ * round would tell a running analysis it had died and invite a second, billable
+ * attempt on top of the first.
+ */
+function isStaleRun(
+  review: { updated_at?: string | null } | null | undefined,
+): boolean {
+  if (!review?.updated_at) return false;
+  const started = Date.parse(review.updated_at);
+  if (Number.isNaN(started)) return false;
+  return Date.now() - started > RUN_STALE_MS;
+}
+
+/**
  * §84 — the student project review.
  *
  * Deliberately absent (§84): AI tokens, AI cost, internal prompts, admin
@@ -108,6 +130,11 @@ export default function ProjectReview() {
       reviewStatus === "pending" ||
       reviewStatus === "running"
     ) {
+      // A run that is cut short — by the function's own time limit — leaves the
+      // row "running" with nothing behind it. Poll while it is still fresh, then
+      // stop. This branch always returns: falling through would start a second
+      // billable run on top of the one that never finished.
+      if (isStaleRun(data.review)) return;
       const poll = setInterval(() => reload(), 5000);
       return () => clearInterval(poll);
     }
@@ -180,6 +207,12 @@ export default function ProjectReview() {
 
   const data = analysis.data;
   const review = data.review;
+  // Derived rather than stored: a review left "running" past the cutoff is a
+  // run that was killed, not one still going. Retrying rewrites the row, so
+  // this clears itself.
+  const runStalled =
+    (review?.status === "running" || review?.status === "pending") &&
+    isStaleRun(review);
   const hasRepositoryUrl = Boolean(
     String(data.submission?.github_url ?? "").trim(),
   );
@@ -227,6 +260,21 @@ export default function ProjectReview() {
       </div>
 
       {stage && <PipelineProgress stage={stage} />}
+
+      {runStalled && (
+        <Card className="mt-8 border-stage-submit/40 bg-stage-submit/5 p-6">
+          <p className="text-sm font-semibold">The analysis stopped before it finished</p>
+          <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            The run was cut short part-way through, so there is nothing to show
+            yet. Reading the repository is free; running the review again uses
+            the AI budget, so it waits for you rather than repeating itself.
+          </p>
+          <Button size="sm" variant="outline" className="mt-4" onClick={startNow}>
+            <RefreshCw className="size-3.5" />
+            Run it again
+          </Button>
+        </Card>
+      )}
 
       {pipelineError && (
         <Card className="mt-8 border-destructive/40 bg-destructive/5 p-6">

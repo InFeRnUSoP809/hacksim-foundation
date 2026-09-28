@@ -287,6 +287,19 @@ Then in the dashboard, for each of `analysis` and `ai-admin`:
 4. **Set “Verify JWT” to ON** — required, or every call fails
 5. Deploy
 
+The review is one long request: it clones the repository, reads the files and
+then makes every AI call in a single invocation. Supabase kills a function that
+outlives its timeout, and a killed run has spent the tokens without producing a
+review. **Raise the function's timeout** (Edge Functions → `analysis` → Timeout)
+if a review is being cut off part-way — the default is well under what a large
+repository needs. `retry-task` runs a single task per invocation for when the
+whole pipeline will not fit in one go.
+
+A run marks itself `running` before it starts, so a review that is killed stays
+visible instead of vanishing. The review page stops polling after 15 minutes of
+`running` and offers a retry rather than looping, because a second run is billed
+against the same AI budget.
+
 The bundles are generated and gitignored. Edit the sources, re-run the script.
 `scripts/verify-bundles.ts` boots each bundle and asserts it serves CORS
 preflights, refuses unauthenticated calls with 401, and rejects a missing

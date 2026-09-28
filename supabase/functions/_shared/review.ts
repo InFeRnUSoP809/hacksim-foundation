@@ -408,6 +408,12 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
     ((input.repository.repository_id as string) ?? (input.repository.id as string)) ?? null;
   const commitSha = (input.repository.analyzed_commit_sha as string) ?? null;
 
+  // Claim the run before doing any of it. The review row is only written as
+  // "completed" at the very end, so without this a run that is killed part-way
+  // — by the function timeout, say — leaves no row at all, and the page cannot
+  // tell "in progress" from "never started" and fires a second billable run.
+  await markReviewRunning(submissionId, repositoryId);
+
   const hackathonId = String(input.hackathon.id ?? "");
   const requirementMap: RequirementMap = await getRequirementMap(hackathonId, input.hackathon);
   const context = await buildHackathonContext(
@@ -1699,6 +1705,30 @@ function buildDefenseTargets(
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────
+
+/**
+ * Records that a run has started, so an interrupted one is still visible.
+ *
+ * Deliberately minimal: the full payload is written by `upsertReview` when the
+ * run finishes, and this row is updated in place by it. Warn-only, because a
+ * run that cannot record its own start should still be allowed to finish.
+ */
+async function markReviewRunning(
+  submissionId: string | null,
+  repositoryId: string | null,
+): Promise<void> {
+  if (!submissionId || !repositoryId) return;
+  try {
+    await db()
+      .from("project_reviews")
+      .upsert(
+        { submission_id: submissionId, repository_id: repositoryId, status: "running" },
+        { onConflict: "submission_id,repository_id" },
+      );
+  } catch (error) {
+    console.warn("[hacksim.analysis] could not mark the review running:", error);
+  }
+}
 
 async function upsertReview(args: {
   submissionId: string | null;
