@@ -15,7 +15,7 @@
  * grows without any extra tooling.
  */
 
-const VERSION = "v2";
+const VERSION = "v3";
 const SHELL_CACHE = `hacksim-shell-${VERSION}`;
 const ASSET_CACHE = `hacksim-assets-${VERSION}`;
 
@@ -49,6 +49,15 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("message", (event) => {
   if (event.data === "SKIP_WAITING") self.skipWaiting();
 });
+
+/** True for the module URLs a Vite dev server serves, which are never HTML. */
+function isModuleRequest(url) {
+  return (
+    url.pathname.startsWith("/src/") ||
+    url.pathname.startsWith("/@") ||
+    /\.(js|jsx|ts|tsx|mjs)$/.test(url.pathname)
+  );
+}
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
@@ -93,7 +102,16 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(request).then((cached) => cached || caches.match("/index.html"))),
+        .catch(() =>
+          // A dev module URL must never be answered with a cached HTML page.
+          // The module loader reports that as "Failed to fetch dynamically
+          // imported module", which blames the source file for what is really
+          // an unreachable server. Fail honestly instead; the navigation
+          // fallback above still covers genuine offline use.
+          isModuleRequest(url)
+            ? Response.error()
+            : caches.match(request).then((cached) => cached || caches.match("/index.html")),
+        ),
     );
     return;
   }
