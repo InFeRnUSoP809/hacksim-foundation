@@ -1044,6 +1044,12 @@ export function AiUsagePanel({
 
       {runs.length > 0 && (
         <div className="overflow-x-auto">
+          <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+            The totals above cover every call ever made for this submission. The
+            table lists only runs that reached the end and wrote a snapshot, so a
+            run that was cut short appears in the totals and not in the table —
+            its tokens were still spent.
+          </p>
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-border text-left">

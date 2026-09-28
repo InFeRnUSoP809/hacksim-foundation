@@ -30,6 +30,7 @@ import {
   GitCompareArrows,
   Loader2,
   RefreshCw,
+  Sparkles,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
@@ -368,6 +369,49 @@ export default function ProjectReview() {
           />
         </Card>
       </Block>
+
+      {/* ── The review's own summary: what the run concluded, in words ── */}
+      {review?.summary && (
+        <Block title="Your review" icon={Sparkles}>
+          <Card className="p-5">
+            <p className="text-sm leading-relaxed">{review.summary.headline}</p>
+            {review.summary.strengths.length > 0 && (
+              <div className="mt-4">
+                <p className="label-mono text-[10px] text-muted-foreground">
+                  What it found strong
+                </p>
+                <ul className="mt-1.5 flex flex-col gap-1">
+                  {review.summary.strengths.map((item) => (
+                    <li
+                      key={item}
+                      className="text-sm leading-relaxed text-muted-foreground"
+                    >
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {review.summary.areas_to_clarify.length > 0 && (
+              <div className="mt-4">
+                <p className="label-mono text-[10px] text-muted-foreground">
+                  What to be ready to explain
+                </p>
+                <ul className="mt-1.5 flex flex-col gap-1">
+                  {review.summary.areas_to_clarify.map((item) => (
+                    <li
+                      key={item}
+                      className="text-sm leading-relaxed text-muted-foreground"
+                    >
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </Card>
+        </Block>
+      )}
 
       {/* ── §45: only when a re-analysis actually changed something ── */}
       {review?.diff && (
