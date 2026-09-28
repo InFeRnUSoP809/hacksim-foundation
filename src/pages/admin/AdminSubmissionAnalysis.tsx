@@ -2,6 +2,7 @@ import { AdminLayout } from "@/layouts/AdminLayout";
 import { ErrorState, LoadingState } from "@/components/States";
 import {
   AiUsagePanel,
+  AssessmentCard,
   CoverageMatrix,
   DefenseTargetList,
   EvidenceList,
@@ -413,20 +414,18 @@ export default function AdminSubmissionAnalysis() {
 
         {/* ── 9. AI project review ────────────────────────────── */}
         <Section step={9} title="AI project review" icon={Brain}>
-          {review?.summary ? (
+          {/* Gated on the review existing, not on `summary`: the rebuilt
+              pipeline writes `assessment` and never writes `summary`, so
+              keying off it reported "No review yet" for every successful run. */}
+          {review ? (
             <Card className="p-5">
-              <p className="text-sm leading-relaxed">
-                {review.summary.headline}
-              </p>
-              {review.summary.strengths.length > 0 && (
-                <List label="Strengths" items={review.summary.strengths} />
-              )}
-              {review.summary.areas_to_clarify.length > 0 && (
-                <List
-                  label="Areas to clarify"
-                  items={review.summary.areas_to_clarify}
-                />
-              )}
+              <AssessmentCard
+                assessment={review.assessment ?? null}
+                evidence={evidence}
+                strengths={review.assessment?.strengths ?? []}
+                gaps={review.assessment?.gaps ?? []}
+                uncertainties={review.assessment?.uncertainties ?? []}
+              />
             </Card>
           ) : (
             <NoticeState
@@ -561,24 +560,6 @@ function Field({ label, value }: { label: string; value: string }) {
     <div>
       <dt className="label-mono text-[10px] text-muted-foreground">{label}</dt>
       <dd className="mt-1 break-all text-sm">{value}</dd>
-    </div>
-  );
-}
-
-function List({ label, items }: { label: string; items: string[] }) {
-  return (
-    <div className="mt-3">
-      <p className="label-mono text-[10px] text-muted-foreground">{label}</p>
-      <ul className="mt-1.5 flex flex-col gap-1">
-        {items.map((item) => (
-          <li key={item} className="flex gap-2 text-sm leading-relaxed">
-            <span aria-hidden className="text-muted-foreground">
-              ·
-            </span>
-            {item}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
