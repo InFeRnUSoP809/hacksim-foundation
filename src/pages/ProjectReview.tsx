@@ -3,7 +3,6 @@ import { ErrorState, LoadingState } from "@/components/States";
 import {
   AssessmentCard,
   ChangeList,
-  CoverageMatrix,
   DatasetList,
   DefenseTargetList,
   DimensionList,
@@ -35,7 +34,6 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import type {
-  CoverageRow,
   Evidence,
   RequirementEvaluation,
   RequirementItem,
@@ -220,18 +218,11 @@ export default function ProjectReview() {
   const projectMap = data.project_map;
   const brief = data.hackathon as Record<string, string>;
 
-  // Rows come from whatever the analysis actually wrote, so a conclusion can
-  // never appear here that the review does not hold.
-  const requirements = (data.requirement_map?.requirements ??
-    []) as RequirementItem[];
-  const evaluations = (data.requirements ?? []) as RequirementEvaluation[];
-  const rowFor = (id: string) =>
-    evaluations.find((row) => row.requirement_id === id) ?? null;
-
-  const coverage: CoverageRow[] = requirements.map((requirement) => ({
-    requirement,
-    evaluation: rowFor(requirement.id),
-  }));
+  // Requirement coverage was removed from this page. It joined the brief's
+  // requirement list against the last run's conclusions, and the brief can be
+  // edited in admin without the run being repeated — so the matrix kept showing
+  // requirements that no longer existed. The constraints, outcomes and criteria
+  // below read the same cached brief; see the note in the PR description.
 
   const constraintRows = (review?.constraint_rows ?? []) as RequirementEvaluation[];
   const outcomeRows = (review?.outcome_rows ?? []) as RequirementEvaluation[];
@@ -415,11 +406,6 @@ export default function ProjectReview() {
             message="Your team's review has not been run."
           />
         )}
-      </Block>
-
-      {/* ── Requirement coverage ──────────────────────────────── */}
-      <Block title="Requirement coverage">
-        <CoverageMatrix rows={coverage} evidence={evidence} />
       </Block>
 
       {/* ── Where the description and the repository differ ──── */}
