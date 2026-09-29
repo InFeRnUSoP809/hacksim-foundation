@@ -6,35 +6,25 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 9943 lines, self-contained — safe to paste into the Supabase dashboard.
+// 11517 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
-// _shared/http.ts
-import { createClient } from "npm:@supabase/supabase-js@2";
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 
 // _shared/security.ts
-var securityHeaders = {
-  "X-Content-Type-Options": "nosniff",
-  "X-Frame-Options": "DENY",
-  "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
-  "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
-  // `connect-src` allows the Supabase project the app talks to and nothing else,
-  // so a compromised dependency cannot exfiltrate a session to a third origin.
-  "Content-Security-Policy": [
-    "default-src 'self'",
-    "script-src 'self'",
-    "style-src 'self' 'unsafe-inline'",
-    // Tailwind injects a stylesheet at runtime
-    "img-src 'self' data: blob:",
-    "font-src 'self' data:",
-    "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
-    "frame-ancestors 'none'",
-    "base-uri 'self'",
-    "form-action 'self'",
-    "object-src 'none'"
-  ].join("; ")
-};
 function withSecurityHeaders(response) {
   const headers = new Headers(response.headers);
   for (const [key, value] of Object.entries(securityHeaders)) headers.set(key, value);
@@ -44,108 +34,6 @@ function withSecurityHeaders(response) {
     headers
   });
 }
-var MAX_BODY_BYTES = 256 * 1024;
-var PayloadTooLarge = class extends Error {
-  constructor(limit) {
-    super("Request body is too large.");
-    this.limit = limit;
-    this.name = "PayloadTooLarge";
-  }
-};
-var COSTLY_ACTIONS = {
-  repository: 10,
-  // GitHub: a real repository is dozens of API calls
-  reanalyze: 10,
-  review: 30,
-  // DeepSeek: several model calls per run
-  "retry-module": 10
-};
-var DEFAULT_WINDOW_MS = 6e4;
-var RateLimiter = class {
-  constructor(now = () => Date.now()) {
-    this.now = now;
-  }
-  buckets = /* @__PURE__ */ new Map();
-  /**
-   * @param action    the expensive operation, e.g. "repository"
-   * @param callerId  the authenticated user id — never a client-supplied value
-   * @param limit     permits per window
-   */
-  check(action, callerId, limit) {
-    const windowMs = DEFAULT_WINDOW_MS;
-    const key = `${action}:${callerId}`;
-    const at = this.now();
-    const bucket = this.buckets.get(key);
-    if (!bucket || bucket.resetAt <= at) {
-      this.buckets.set(key, { count: 1, resetAt: at + windowMs });
-      return { allowed: true, remaining: Math.max(0, limit - 1), retryAfterSeconds: 0, limit };
-    }
-    if (bucket.count >= limit) {
-      return {
-        allowed: false,
-        remaining: 0,
-        retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - at) / 1e3)),
-        limit
-      };
-    }
-    bucket.count += 1;
-    return {
-      allowed: true,
-      // Clamped: a limit of 0 means "not rate limited", and `0 - 1` reporting a
-      // negative allowance would be nonsense to anything reading the header.
-      remaining: Math.max(0, limit - bucket.count),
-      retryAfterSeconds: 0,
-      limit
-    };
-  }
-  /** Reject a request that would exceed a limit, naming the wait. */
-  enforce(action, callerId) {
-    const limit = COSTLY_ACTIONS[action] ?? 0;
-    if (limit === 0) return null;
-    const result = this.check(action, callerId, limit);
-    if (result.allowed) return null;
-    return fail(
-      `Too many requests. Try again in ${result.retryAfterSeconds}s.`,
-      429,
-      { retry_after: result.retryAfterSeconds, limit: result.limit }
-    );
-  }
-  /** Drop expired buckets so a long-lived instance does not accumulate them. */
-  sweep() {
-    const at = this.now();
-    for (const [key, bucket] of this.buckets) {
-      if (bucket.resetAt <= at) this.buckets.delete(key);
-    }
-  }
-};
-var rateLimiter = new RateLimiter();
-var SECRET_PATTERNS = [
-  // Authorization headers, in any casing, with the scheme preserved for context.
-  [/\b(authorization\s*[:=]\s*)(bearer\s+)?[A-Za-z0-9._~+/-]{12,}=*/gi, "$1$2[REDACTED]"],
-  [/\b(bearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, "$1[REDACTED]"],
-  // Provider key shapes, before the generic rule so the label is preserved.
-  [/\b(sk-[A-Za-z0-9_-]{12,})/g, "[REDACTED]"],
-  [/\b(gh[pousr]_[A-Za-z0-9]{16,})/g, "[REDACTED]"],
-  [/\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g, "[REDACTED]"],
-  [/\b(AIza[A-Za-z0-9_-]{20,})/g, "[REDACTED]"],
-  [/\b(xox[abprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]"],
-  [/\b([sr]k_(?:live|test)_[A-Za-z0-9]{12,})/g, "[REDACTED]"],
-  // A URL carrying its own credentials. This one has no label to key off, so
-  // it needs a rule of its own: `postgres://admin:s3cr3t@db/app` appears bare in
-  // a stack trace or an error string and the labelled pattern below would miss
-  // it entirely. The userinfo half goes; the host is kept, because "which host"
-  // is diagnostic and "the password" is not.
-  [/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s:@]+)@/gi, "$1$2:[REDACTED]@"],
-  // PEM blocks: a private key is a multi-line secret that a single-line regex
-  // would otherwise leak a line of.
-  [/-----BEGIN[^-]{0,40}PRIVATE KEY-----[\s\S]*?-----END[^-]{0,40}PRIVATE KEY-----/g, "[REDACTED]"],
-  // Labelled assignments — the last line of defence, so `password = "hunter2"`
-  // is caught even when the value does not match a provider's shape.
-  [
-    /\b((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|connection[_-]?string)\s*[:=]\s*)(['"]?)[^\s'",;}]{8,}\2/gi,
-    "$1[REDACTED]"
-  ]
-];
 function redactSecrets(input) {
   if (!input) return "";
   let out = String(input);
@@ -154,17 +42,6 @@ function redactSecrets(input) {
   }
   return out;
 }
-var safeLog = {
-  info(scope, message, detail) {
-    console.log(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
-  },
-  warn(scope, message, detail) {
-    console.warn(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
-  },
-  error(scope, message, detail) {
-    console.error(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
-  }
-};
 function safeDetail(detail) {
   if (detail instanceof Error) {
     return redactSecrets(`${detail.name}: ${detail.message} ${detail.stack ?? ""}`);
@@ -175,13 +52,168 @@ function safeDetail(detail) {
     return "[unserialisable]";
   }
 }
+var securityHeaders, MAX_BODY_BYTES, PayloadTooLarge, COSTLY_ACTIONS, DEFAULT_WINDOW_MS, RateLimiter, rateLimiter, SECRET_PATTERNS, safeLog;
+var init_security = __esm({
+  "_shared/security.ts"() {
+    init_http();
+    securityHeaders = {
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Permissions-Policy": "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+      "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+      // `connect-src` allows the Supabase project the app talks to and nothing else,
+      // so a compromised dependency cannot exfiltrate a session to a third origin.
+      "Content-Security-Policy": [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        // Tailwind injects a stylesheet at runtime
+        "img-src 'self' data: blob:",
+        "font-src 'self' data:",
+        "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "object-src 'none'"
+      ].join("; ")
+    };
+    MAX_BODY_BYTES = 256 * 1024;
+    PayloadTooLarge = class extends Error {
+      constructor(limit) {
+        super("Request body is too large.");
+        this.limit = limit;
+        this.name = "PayloadTooLarge";
+      }
+      limit;
+    };
+    COSTLY_ACTIONS = {
+      repository: 10,
+      // GitHub: a real repository is dozens of API calls
+      reanalyze: 10,
+      review: 30,
+      // DeepSeek: several model calls per run
+      "retry-module": 10
+    };
+    DEFAULT_WINDOW_MS = 6e4;
+    RateLimiter = class {
+      constructor(now = () => Date.now()) {
+        this.now = now;
+      }
+      now;
+      buckets = /* @__PURE__ */ new Map();
+      /**
+       * @param action    the expensive operation, e.g. "repository"
+       * @param callerId  the authenticated user id — never a client-supplied value
+       * @param limit     permits per window
+       */
+      check(action, callerId, limit) {
+        const windowMs = DEFAULT_WINDOW_MS;
+        const key = `${action}:${callerId}`;
+        const at = this.now();
+        const bucket = this.buckets.get(key);
+        if (!bucket || bucket.resetAt <= at) {
+          this.buckets.set(key, { count: 1, resetAt: at + windowMs });
+          return { allowed: true, remaining: Math.max(0, limit - 1), retryAfterSeconds: 0, limit };
+        }
+        if (bucket.count >= limit) {
+          return {
+            allowed: false,
+            remaining: 0,
+            retryAfterSeconds: Math.max(1, Math.ceil((bucket.resetAt - at) / 1e3)),
+            limit
+          };
+        }
+        bucket.count += 1;
+        return {
+          allowed: true,
+          // Clamped: a limit of 0 means "not rate limited", and `0 - 1` reporting a
+          // negative allowance would be nonsense to anything reading the header.
+          remaining: Math.max(0, limit - bucket.count),
+          retryAfterSeconds: 0,
+          limit
+        };
+      }
+      /** Reject a request that would exceed a limit, naming the wait. */
+      enforce(action, callerId) {
+        const limit = COSTLY_ACTIONS[action] ?? 0;
+        if (limit === 0) return null;
+        const result = this.check(action, callerId, limit);
+        if (result.allowed) return null;
+        return fail(
+          `Too many requests. Try again in ${result.retryAfterSeconds}s.`,
+          429,
+          { retry_after: result.retryAfterSeconds, limit: result.limit }
+        );
+      }
+      /** Drop expired buckets so a long-lived instance does not accumulate them. */
+      sweep() {
+        const at = this.now();
+        for (const [key, bucket] of this.buckets) {
+          if (bucket.resetAt <= at) this.buckets.delete(key);
+        }
+      }
+    };
+    rateLimiter = new RateLimiter();
+    SECRET_PATTERNS = [
+      // Authorization headers, in any casing, with the scheme preserved for context.
+      [/\b(authorization\s*[:=]\s*)(bearer\s+)?[A-Za-z0-9._~+/-]{12,}=*/gi, "$1$2[REDACTED]"],
+      [/\b(bearer\s+)[A-Za-z0-9._~+/-]{12,}=*/gi, "$1[REDACTED]"],
+      // Provider key shapes, before the generic rule so the label is preserved.
+      [/\b(sk-[A-Za-z0-9_-]{12,})/g, "[REDACTED]"],
+      [/\b(gh[pousr]_[A-Za-z0-9]{16,})/g, "[REDACTED]"],
+      [/\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g, "[REDACTED]"],
+      [/\b(AIza[A-Za-z0-9_-]{20,})/g, "[REDACTED]"],
+      [/\b(xox[abprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]"],
+      [/\b([sr]k_(?:live|test)_[A-Za-z0-9]{12,})/g, "[REDACTED]"],
+      // A URL carrying its own credentials. This one has no label to key off, so
+      // it needs a rule of its own: `postgres://admin:s3cr3t@db/app` appears bare in
+      // a stack trace or an error string and the labelled pattern below would miss
+      // it entirely. The userinfo half goes; the host is kept, because "which host"
+      // is diagnostic and "the password" is not.
+      [/\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s:@]+)@/gi, "$1$2:[REDACTED]@"],
+      // PEM blocks: a private key is a multi-line secret that a single-line regex
+      // would otherwise leak a line of.
+      [/-----BEGIN[^-]{0,40}PRIVATE KEY-----[\s\S]*?-----END[^-]{0,40}PRIVATE KEY-----/g, "[REDACTED]"],
+      // Labelled assignments — the last line of defence, so `password = "hunter2"`
+      // is caught even when the value does not match a provider's shape.
+      [
+        /\b((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|private[_-]?key|connection[_-]?string)\s*[:=]\s*)(['"]?)[^\s'",;}]{8,}\2/gi,
+        "$1[REDACTED]"
+      ]
+    ];
+    safeLog = {
+      info(scope, message, detail) {
+        console.log(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+      },
+      warn(scope, message, detail) {
+        console.warn(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+      },
+      error(scope, message, detail) {
+        console.error(`[${scope}] ${redactSecrets(message)}`, detail ? safeDetail(detail) : "");
+      }
+    };
+  }
+});
 
 // _shared/http.ts
-var corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS"
-};
+var http_exports = {};
+__export(http_exports, {
+  HttpError: () => HttpError,
+  corsHeaders: () => corsHeaders,
+  db: () => db,
+  fail: () => fail,
+  getCaller: () => getCaller,
+  json: () => json,
+  loadHackathon: () => loadHackathon,
+  loadMembers: () => loadMembers,
+  loadSubmission: () => loadSubmission,
+  preflight: () => preflight,
+  requireAdmin: () => requireAdmin,
+  requireTeamAccess: () => requireTeamAccess,
+  withErrorHandling: () => withErrorHandling
+});
+import { createClient } from "npm:@supabase/supabase-js@2";
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -199,7 +231,6 @@ function requireEnv(name) {
   if (!value) throw new Error(`${name} is not set on the edge function.`);
   return value;
 }
-var serviceClient = null;
 function db() {
   if (!serviceClient) {
     serviceClient = createClient(
@@ -210,7 +241,6 @@ function db() {
   }
   return serviceClient;
 }
-var callerCache = null;
 async function getCaller(req) {
   const header = req.headers.get("Authorization") ?? "";
   const token = header.replace(/^Bearer\s+/i, "").trim();
@@ -228,13 +258,13 @@ async function getCaller(req) {
   callerCache = { token, caller };
   return caller;
 }
-var HttpError = class extends Error {
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-    this.name = "HttpError";
+function requireAdmin(caller) {
+  if (!caller) throw new HttpError("Invalid or expired session.", 401);
+  if (caller.role !== "admin") {
+    throw new HttpError("You are not authorized to perform this action.", 403);
   }
-};
+  return caller;
+}
 async function loadSubmission(submissionId) {
   const { data, error } = await db().from("submissions").select(
     "id, session_id, hackathon_id, team_id, project_name, project_description, github_url, live_demo_url, tech_stack, key_features, status"
@@ -258,6 +288,27 @@ async function loadHackathon(hackathonId) {
   if (!data) throw new HttpError("That hackathon was not found.", 404);
   return data;
 }
+async function loadMembers(submissionId) {
+  const { data: raw } = await db().from("submission_members").select(
+    "id, user_id, contribution_description, contribution_areas, planned_responsibilities, ai_tools_used, ai_usage_description"
+  ).eq("submission_id", submissionId).order("created_at");
+  const members = raw ?? [];
+  if (members.length === 0) return [];
+  const { data: rawProfiles } = await db().from("profiles").select("id, full_name, email").in(
+    "id",
+    members.map((m) => m.user_id).filter((id) => Boolean(id))
+  );
+  const profiles = rawProfiles ?? [];
+  const byId = new Map(profiles.map((p) => [p.id, p]));
+  return members.map((member) => {
+    const profile = byId.get(member.user_id);
+    return {
+      ...member,
+      full_name: profile?.full_name ?? null,
+      email: profile?.email ?? null
+    };
+  });
+}
 function withErrorHandling(handler) {
   return async (req) => {
     if (req.method === "OPTIONS") return withSecurityHeaders(preflight());
@@ -278,8 +329,36 @@ function withErrorHandling(handler) {
     }
   };
 }
+var corsHeaders, serviceClient, callerCache, HttpError;
+var init_http = __esm({
+  "_shared/http.ts"() {
+    init_security();
+    corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+      "Access-Control-Allow-Methods": "POST, GET, OPTIONS"
+    };
+    serviceClient = null;
+    callerCache = null;
+    HttpError = class extends Error {
+      constructor(message, status = 400) {
+        super(message);
+        this.status = status;
+        this.name = "HttpError";
+      }
+      status;
+    };
+  }
+});
+
+// analysis/index.ts
+init_http();
+
+// _shared/scanner.ts
+init_http();
 
 // _shared/ai.ts
+init_http();
 function num(name, fallback) {
   const raw = Deno.env.get(name);
   if (!raw) return fallback;
@@ -335,6 +414,7 @@ var AIError = class extends Error {
     this.code = code;
     this.name = "AIError";
   }
+  code;
 };
 function parseJson(content) {
   if (!content) return null;
@@ -505,11 +585,11 @@ async function completeJson(input) {
   return response;
 }
 async function loadPricing() {
-  const service = db();
-  const { data } = await service.from("ai_model_configs").select("*").eq("enabled", true).eq("is_default", true).limit(1);
+  const service2 = db();
+  const { data } = await service2.from("ai_model_configs").select("*").eq("enabled", true).eq("is_default", true).limit(1);
   let rows = data ?? [];
   if (rows.length === 0) {
-    const fallback = await service.from("ai_model_configs").select("*").eq("enabled", true).order("created_at").limit(1);
+    const fallback = await service2.from("ai_model_configs").select("*").eq("enabled", true).order("created_at").limit(1);
     rows = fallback.data ?? [];
   }
   if (rows.length === 0) return null;
@@ -2427,6 +2507,8 @@ var GitHubError = class extends Error {
     this.statusCode = statusCode;
     this.name = "GitHubError";
   }
+  code;
+  statusCode;
 };
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var GitHubClient = class {
@@ -5571,8 +5653,8 @@ var AnalysisStore = class {
   }
   /** Inventory rows are rewritten wholesale; a re-scan supersedes them. */
   async writeFiles(repositoryId, files) {
-    const service = this.service;
-    await service.from("repository_files").delete().eq("repository_id", repositoryId);
+    const service2 = this.service;
+    await service2.from("repository_files").delete().eq("repository_id", repositoryId);
     const rows = files.map((record) => ({
       repository_id: repositoryId,
       path: record.path,
@@ -5588,7 +5670,7 @@ var AnalysisStore = class {
       sha: record.sha
     }));
     for (let start = 0; start < rows.length; start += 500) {
-      const { error } = await service.from("repository_files").upsert(rows.slice(start, start + 500), { onConflict: "repository_id,path" });
+      const { error } = await service2.from("repository_files").upsert(rows.slice(start, start + 500), { onConflict: "repository_id,path" });
       if (error) {
         console.warn("[hacksim.analysis] could not write file rows:", error.message);
         return;
@@ -5597,15 +5679,15 @@ var AnalysisStore = class {
   }
   /** Chunks reference a file id, so they are written after the files. */
   async writeChunks(repositoryId, chunks) {
-    const service = this.service;
-    const { data: fileRows } = await service.from("repository_files").select("id, path").eq("repository_id", repositoryId);
+    const service2 = this.service;
+    const { data: fileRows } = await service2.from("repository_files").select("id, path").eq("repository_id", repositoryId);
     const idByPath = new Map(
       (fileRows ?? []).map((row) => [
         row.path,
         row.id
       ])
     );
-    await service.from("code_chunks").delete().eq("repository_id", repositoryId);
+    await service2.from("code_chunks").delete().eq("repository_id", repositoryId);
     const rows = chunks.map((chunk) => {
       const fileId = idByPath.get(chunk.file_path);
       if (!fileId) return null;
@@ -5623,7 +5705,7 @@ var AnalysisStore = class {
       };
     }).filter((row) => row !== null);
     for (let start = 0; start < rows.length; start += 400) {
-      const { error } = await service.from("code_chunks").upsert(rows.slice(start, start + 400), { onConflict: "file_id,chunk_index" });
+      const { error } = await service2.from("code_chunks").upsert(rows.slice(start, start + 400), { onConflict: "file_id,chunk_index" });
       if (error) {
         console.warn("[hacksim.analysis] could not write chunk rows:", error.message);
         return;
@@ -5724,6 +5806,9 @@ async function analyzeSubmission(submissionId, githubUrl) {
     evidence_count: result.evidence.length
   };
 }
+
+// _shared/review.ts
+init_http();
 
 // _shared/evidence.ts
 var FINDING_TYPES = [
@@ -8112,6 +8197,7 @@ async function buildHackathonContext(hackathon, requirementMap, submission) {
 }
 
 // _shared/requirements.ts
+init_http();
 var IMPORTANCE_KEYWORDS = [
   ["critical", ["must", "required", "requirement", "core", "essential", "need to", "has to"]],
   ["important", ["should", "provide", "expose", "surface", "support"]],
@@ -9511,7 +9597,7 @@ async function markReviewRunning(submissionId, repositoryId) {
 }
 async function upsertReview(args) {
   if (!args.submissionId || !args.repositoryId) return null;
-  const service = db();
+  const service2 = db();
   const byKind = (kind) => args.allConclusions.filter((row) => row.kind === kind);
   const payload = {
     submission_id: args.submissionId,
@@ -9545,14 +9631,14 @@ async function upsertReview(args) {
   if (args.implementation) payload.implementation = args.implementation;
   if (args.testing) payload.testing = args.testing;
   try {
-    const { data: existing } = await service.from("project_reviews").select("id").eq("submission_id", args.submissionId).eq("repository_id", args.repositoryId).limit(1);
+    const { data: existing } = await service2.from("project_reviews").select("id").eq("submission_id", args.submissionId).eq("repository_id", args.repositoryId).limit(1);
     const row = (existing ?? [])[0];
     if (row) {
-      const { error: error2 } = await service.from("project_reviews").update(payload).eq("id", row.id);
+      const { error: error2 } = await service2.from("project_reviews").update(payload).eq("id", row.id);
       if (error2) throw error2;
       return row.id;
     }
-    const { data, error } = await service.from("project_reviews").insert(payload).select("id").single();
+    const { data, error } = await service2.from("project_reviews").insert(payload).select("id").single();
     if (error || !data) throw error ?? new Error("no row");
     return data.id;
   } catch (error) {
@@ -9582,12 +9668,12 @@ async function replaceRequirementEvaluations(submissionId, conclusions) {
   }));
   if (!rows.length) return;
   try {
-    const service = db();
-    const { data: existing } = await service.from("requirement_evaluations").select("id").eq("submission_id", submissionId);
+    const service2 = db();
+    const { data: existing } = await service2.from("requirement_evaluations").select("id").eq("submission_id", submissionId);
     if ((existing ?? []).length) {
-      await service.from("requirement_evaluations").delete().eq("submission_id", submissionId);
+      await service2.from("requirement_evaluations").delete().eq("submission_id", submissionId);
     }
-    const { error } = await service.from("requirement_evaluations").upsert(rows, { onConflict: "submission_id,requirement_id" });
+    const { error } = await service2.from("requirement_evaluations").upsert(rows, { onConflict: "submission_id,requirement_id" });
     if (error) throw error;
   } catch (error) {
     console.warn("[hacksim.analysis] could not persist evaluations:", error);
@@ -9609,10 +9695,10 @@ async function replaceFindings(reviewId, findings) {
     confidence: finding.confidence
   }));
   try {
-    const service = db();
-    await service.from("project_review_findings").delete().eq("project_review_id", reviewId);
+    const service2 = db();
+    await service2.from("project_review_findings").delete().eq("project_review_id", reviewId);
     if (rows.length) {
-      const { error } = await service.from("project_review_findings").insert(rows);
+      const { error } = await service2.from("project_review_findings").insert(rows);
       if (error) throw error;
     }
   } catch (error) {
@@ -9622,10 +9708,10 @@ async function replaceFindings(reviewId, findings) {
 async function replaceDefenseTargets(submissionId, targets) {
   if (!submissionId) return;
   try {
-    const service = db();
-    await service.from("defense_targets").delete().eq("submission_id", submissionId);
+    const service2 = db();
+    await service2.from("defense_targets").delete().eq("submission_id", submissionId);
     if (targets.length) {
-      const { error } = await service.from("defense_targets").insert(targets.map((target) => ({ submission_id: submissionId, ...target })));
+      const { error } = await service2.from("defense_targets").insert(targets.map((target) => ({ submission_id: submissionId, ...target })));
       if (error) throw error;
     }
   } catch (error) {
@@ -9759,7 +9845,1483 @@ function failure(context, plan, base) {
   };
 }
 
+// _shared/v2/engine.ts
+init_http();
+
+// _shared/v2/content.ts
+function contentByPath(chunks) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const chunk of chunks) {
+    const path = chunk.file_path;
+    const list = grouped.get(path) ?? [];
+    list.push({ start: Number(chunk.start_line ?? 0), content: chunk.content });
+    grouped.set(path, list);
+  }
+  const out = /* @__PURE__ */ new Map();
+  for (const [path, list] of grouped) {
+    list.sort((a, b) => a.start - b.start);
+    out.set(path, list.map((row) => row.content).join("\n"));
+  }
+  return out;
+}
+function attachContent(files, byPath) {
+  return files.map((file) => ({
+    ...file,
+    content: byPath.get(file.path) ?? ""
+  }));
+}
+
+// _shared/v2/discover.ts
+var GENERATED_HINTS = [
+  "/dist/",
+  "/build/",
+  "/.next/",
+  "/coverage/",
+  ".min.js",
+  ".min.css",
+  ".map",
+  "/generated/",
+  "__generated__"
+];
+var V2_CATEGORY_MAP = {
+  source: "source",
+  component: "frontend",
+  api: "api",
+  model: "model",
+  schema: "schema",
+  database: "database",
+  config: "configuration",
+  dependency: "dependency",
+  documentation: "documentation",
+  test: "test",
+  dataset: "dataset",
+  asset: "asset",
+  unknown: "unknown"
+};
+function mapCategory(legacy, path) {
+  const lower = path.toLowerCase();
+  if (lower.includes("supabase/functions") || lower.includes("edge-functions")) {
+    return "backend";
+  }
+  if (lower.includes("migration") || lower.endsWith(".sql") && lower.includes("migrate")) {
+    return "migration";
+  }
+  if (lower.includes("prompt") || lower.endsWith(".prompt.md")) return "prompt";
+  if (lower.includes("deploy") || lower === "dockerfile") return "deployment";
+  return V2_CATEGORY_MAP[legacy] ?? "unknown";
+}
+function looksGenerated(path) {
+  const lower = path.toLowerCase();
+  return GENERATED_HINTS.some((hint) => lower.includes(hint));
+}
+function buildFileInventory(treeEntries, contentByPath2) {
+  return treeEntries.map((entry) => {
+    const path = entry.path;
+    const ignored = isIgnored(path) || isSensitive(path);
+    const binary = [".png", ".jpg", ".pdf", ".zip", ".ico", ".woff"].some(
+      (ext) => path.toLowerCase().endsWith(ext)
+    );
+    const category = mapCategory(categoryOf(path, binary), path);
+    const generated = looksGenerated(path);
+    return {
+      path,
+      sizeBytes: Number(entry.size ?? 0),
+      extension: extensionOf(path),
+      language: languageOf(path),
+      category,
+      importanceScore: 0,
+      reasons: [],
+      ignored,
+      generated,
+      binary,
+      sensitive: isSensitive(path),
+      contentHash: null
+    };
+  });
+}
+function scoreImportance(files, inDegree, routeFiles, entryFiles) {
+  return files.map((file) => {
+    if (file.ignored || file.generated) {
+      return { ...file, importanceScore: 0, reasons: ["ignored_or_generated"] };
+    }
+    let score = 0.2;
+    const reasons = [];
+    const indeg = inDegree.get(file.path) ?? 0;
+    if (indeg >= 5) {
+      score += 0.35;
+      reasons.push("high_in_degree");
+    } else if (indeg >= 2) {
+      score += 0.15;
+      reasons.push("imported_by_others");
+    }
+    if (entryFiles.has(file.path)) {
+      score += 0.25;
+      reasons.push("entry_point");
+    }
+    if (routeFiles.has(file.path)) {
+      score += 0.2;
+      reasons.push("route_handler");
+    }
+    if (["api", "backend", "database", "model"].includes(file.category)) {
+      score += 0.1;
+      reasons.push("core_category");
+    }
+    if (file.category === "test") score += 0.05;
+    if (file.category === "documentation") score -= 0.15;
+    if (file.category === "dependency") score -= 0.2;
+    score = Math.max(0, Math.min(1, score));
+    return { ...file, importanceScore: Number(score.toFixed(4)), reasons };
+  });
+}
+function entryPointCandidates(paths) {
+  const names = /* @__PURE__ */ new Set([
+    "main.py",
+    "app.py",
+    "index.ts",
+    "index.js",
+    "main.ts",
+    "main.go",
+    "server.ts",
+    "server.js",
+    "manage.py",
+    "wsgi.py",
+    "asgi.py"
+  ]);
+  const out = /* @__PURE__ */ new Set();
+  for (const path of paths) {
+    const base = basenameOf(path).toLowerCase();
+    if (names.has(base)) out.add(path);
+    if (path.includes("supabase/functions/") && base === "index.ts") out.add(path);
+  }
+  return out;
+}
+
+// _shared/v2/hash.ts
+async function sha256Hex2(text2) {
+  const data = new TextEncoder().encode(text2);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function snippetHash(excerpt) {
+  return sha256Hex2(excerpt.trim().slice(0, 4e3));
+}
+async function packetHash(parts) {
+  return sha256Hex2(parts.join("\n---\n"));
+}
+
+// _shared/v2/evidence.ts
+var evidenceCounter = 0;
+function nextId() {
+  evidenceCounter += 1;
+  return `EV-${String(evidenceCounter).padStart(3, "0")}`;
+}
+function resetEvidenceCounter() {
+  evidenceCounter = 0;
+}
+var WEAK_ONLY = /* @__PURE__ */ new Set([
+  "dependency_installed",
+  "framework_detected",
+  "readme_claim",
+  "filename_signal",
+  "route_exists_only"
+]);
+async function compileEvidence(files, relationships) {
+  const items = [];
+  for (const file of files) {
+    if (file.ignored || !file.content) continue;
+    const { symbols: fileSymbols } = extractSymbols(file.path, file.content);
+    const symbolLines = fileSymbols.map((s) => ({
+      name: s.name,
+      symbol_type: s.symbol_type,
+      line: s.line
+    }));
+    const semantics = analyseSemantics(file.path, file.content, symbolLines);
+    const groups = [
+      ...semantics.calculations,
+      ...semantics.rules,
+      ...semantics.models,
+      ...semantics.dataAccess,
+      ...semantics.ui
+    ];
+    for (const finding of groups) {
+      items.push({
+        evidenceId: nextId(),
+        level: "implementation",
+        evidenceType: "behavior",
+        claim: finding.claim,
+        filePath: file.path,
+        symbolName: finding.symbol,
+        startLine: finding.line,
+        endLine: Number(finding.lines.split("-").pop()) || finding.line,
+        snippetHash: await snippetHash(finding.excerpt),
+        snippetExcerpt: finding.excerpt.slice(0, 500),
+        confidence: "high"
+      });
+    }
+  }
+  for (const rel of relationships) {
+    if (rel.relationship === "routes_to") {
+      const path = String(rel.detail?.path ?? "");
+      items.push({
+        evidenceId: nextId(),
+        level: "structural",
+        evidenceType: "route",
+        claim: `HTTP route declared: ${rel.detail?.method ?? "?"} ${path}`,
+        filePath: rel.sourceFile,
+        symbolName: rel.detail?.handler ?? null,
+        startLine: rel.sourceLines ? Number(rel.sourceLines) : null,
+        endLine: null,
+        snippetHash: null,
+        snippetExcerpt: null,
+        confidence: rel.confidence,
+        detail: { ...rel.detail, not_implementation_proof: true }
+      });
+    } else if ([
+      "calls_api",
+      "calls_ai_provider",
+      "loads_prompt",
+      "parses_response",
+      "persists_result",
+      "reads_database",
+      "calls"
+    ].includes(rel.relationship)) {
+      items.push({
+        evidenceId: nextId(),
+        level: rel.relationship === "calls" ? "relationship" : "relationship",
+        evidenceType: rel.relationship,
+        claim: `${rel.relationship} in ${rel.sourceFile}`,
+        filePath: rel.sourceFile,
+        symbolName: null,
+        startLine: rel.sourceLines ? Number(rel.sourceLines) : null,
+        endLine: null,
+        snippetHash: null,
+        snippetExcerpt: null,
+        confidence: rel.confidence,
+        detail: rel.detail
+      });
+    }
+  }
+  for (const file of files.filter((f) => f.category === "dependency" && !f.ignored)) {
+    items.push({
+      evidenceId: nextId(),
+      level: "metadata",
+      evidenceType: "dependency_manifest",
+      claim: `Dependency manifest present: ${file.path}`,
+      filePath: file.path,
+      symbolName: null,
+      startLine: null,
+      endLine: null,
+      snippetHash: null,
+      snippetExcerpt: null,
+      confidence: "low",
+      detail: { weak_signal: true, type: WEAK_ONLY.has("dependency_installed") ? "dependency_installed" : "context" }
+    });
+  }
+  return items;
+}
+function implementationEvidence(items) {
+  return items.filter(
+    (e) => e.level === "implementation" || e.level === "relationship" || e.level === "workflow"
+  );
+}
+
+// _shared/v2/graph.ts
+var IMPORT_RE = /(?:import\s+(?:[\w*{}\s,]+)\s+from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\)|from\s+['"]([^'"]+)['"]\s+import)/gm;
+var CALL_RE = /\b([A-Za-z_$][\w$]*)\s*\(/g;
+var FETCH_RE = /(?:fetch|axios\.(?:get|post|put|delete|patch)|supabase\.(?:from|rpc|functions\.invoke))\s*\(\s*['"`]([^'"`]+)['"`]/gi;
+var DB_RE = /\b(?:SELECT|INSERT|UPDATE|DELETE|FROM|INTO)\b|\.(?:from|insert|update|delete|upsert|rpc)\s*\(/gi;
+var AI_PROVIDER_RE = /\b(?:openai|deepseek|anthropic|cohere|ollama|chat\.completions|completions\.create)\b/i;
+var PROMPT_LOAD_RE = /\b(?:prompt|systemPrompt|getPrompt|loadPrompt)\b/i;
+var PARSE_JSON_RE = /\b(?:JSON\.parse|parseJson|z\.object|safeParse)\b/;
+var PERSIST_RE = /\b(?:insert|upsert|update|save|persist)\b/i;
+function resolveImport(fromPath, spec, allPaths) {
+  if (spec.startsWith(".")) {
+    const baseParts = fromPath.split("/").slice(0, -1);
+    const specParts = spec.split("/");
+    const merged = [...baseParts];
+    for (const part of specParts) {
+      if (part === ".") continue;
+      if (part === "..") merged.pop();
+      else merged.push(part);
+    }
+    const candidates = [
+      merged.join("/"),
+      `${merged.join("/")}.ts`,
+      `${merged.join("/")}.tsx`,
+      `${merged.join("/")}.js`,
+      `${merged.join("/")}/index.ts`
+    ];
+    for (const c of candidates) {
+      if (allPaths.has(c)) return c;
+    }
+    return null;
+  }
+  return null;
+}
+function lineOf(content, index) {
+  return content.slice(0, index).split("\n").length;
+}
+function nearestSymbol(symbols, filePath, line) {
+  const inFile = symbols.filter((s) => s.filePath === filePath);
+  let best = null;
+  for (const sym of inFile) {
+    if (sym.startLine <= line && sym.endLine >= line) {
+      if (!best || sym.endLine - sym.startLine < best.endLine - best.startLine) best = sym;
+    }
+  }
+  return best?.symbolKey;
+}
+function buildRelationshipGraph(files, symbols) {
+  const relationships = [];
+  const inDegree = /* @__PURE__ */ new Map();
+  const routeFiles = /* @__PURE__ */ new Set();
+  const pathSet = new Set(files.map((f) => f.path));
+  for (const file of files) {
+    if (file.ignored || !file.content) continue;
+    let match;
+    IMPORT_RE.lastIndex = 0;
+    while ((match = IMPORT_RE.exec(file.content)) !== null) {
+      const spec = match[1] ?? match[2] ?? match[3];
+      if (!spec) continue;
+      const target = resolveImport(file.path, spec, pathSet);
+      if (target) {
+        relationships.push({
+          relationship: "imports",
+          confidence: "high",
+          sourceFile: file.path,
+          targetFile: target,
+          sourceLines: String(lineOf(file.content, match.index))
+        });
+        inDegree.set(target, (inDegree.get(target) ?? 0) + 1);
+      }
+    }
+    const routes = extractRoutes(file.path, file.content);
+    for (const route of routes) {
+      routeFiles.add(file.path);
+      const handlerKey = nearestSymbol(symbols, file.path, route.line);
+      relationships.push({
+        relationship: "routes_to",
+        confidence: route.symbol ? "high" : "medium",
+        sourceFile: file.path,
+        sourceSymbolKey: handlerKey,
+        sourceLines: `${route.line}`,
+        detail: {
+          method: route.method,
+          path: route.path,
+          handler: route.symbol ?? null,
+          handler_unresolved: !route.symbol
+        }
+      });
+    }
+    FETCH_RE.lastIndex = 0;
+    while ((match = FETCH_RE.exec(file.content)) !== null) {
+      const url = match[1];
+      relationships.push({
+        relationship: "calls_api",
+        confidence: "medium",
+        sourceFile: file.path,
+        sourceSymbolKey: nearestSymbol(symbols, file.path, lineOf(file.content, match.index)),
+        sourceLines: String(lineOf(file.content, match.index)),
+        detail: { target: url }
+      });
+    }
+    if (DB_RE.test(file.content)) {
+      relationships.push({
+        relationship: "reads_database",
+        confidence: "medium",
+        sourceFile: file.path,
+        sourceLines: "1",
+        detail: { note: "database access pattern detected in file" }
+      });
+    }
+    if (AI_PROVIDER_RE.test(file.content)) {
+      relationships.push({
+        relationship: "calls_ai_provider",
+        confidence: "medium",
+        sourceFile: file.path,
+        sourceLines: "1"
+      });
+    }
+    if (PROMPT_LOAD_RE.test(file.content)) {
+      relationships.push({
+        relationship: "loads_prompt",
+        confidence: "medium",
+        sourceFile: file.path,
+        sourceLines: "1"
+      });
+    }
+    if (PARSE_JSON_RE.test(file.content)) {
+      relationships.push({
+        relationship: "parses_response",
+        confidence: "medium",
+        sourceFile: file.path,
+        sourceLines: "1"
+      });
+    }
+    if (PERSIST_RE.test(file.content)) {
+      relationships.push({
+        relationship: "persists_result",
+        confidence: "low",
+        sourceFile: file.path,
+        sourceLines: "1"
+      });
+    }
+    const fileSymbols = symbols.filter((s) => s.filePath === file.path);
+    const names = new Map(fileSymbols.map((s) => [s.name, s.symbolKey]));
+    CALL_RE.lastIndex = 0;
+    while ((match = CALL_RE.exec(file.content)) !== null) {
+      const callee = match[1];
+      const targetKey = names.get(callee);
+      if (!targetKey) continue;
+      const callerKey = nearestSymbol(symbols, file.path, lineOf(file.content, match.index));
+      if (!callerKey || callerKey === targetKey) continue;
+      relationships.push({
+        relationship: "calls",
+        confidence: "medium",
+        sourceSymbolKey: callerKey,
+        targetSymbolKey: targetKey,
+        sourceFile: file.path,
+        sourceLines: String(lineOf(file.content, match.index))
+      });
+    }
+  }
+  return { relationships, inDegree, routeFiles };
+}
+
+// _shared/v2/requirement-map.ts
+function seedTerms(text2) {
+  return text2.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 3).slice(0, 12);
+}
+function scoreRequirement(text2, impl, features) {
+  const terms = seedTerms(text2);
+  const matched = impl.filter((e) => {
+    const blob = `${e.claim} ${e.filePath ?? ""} ${e.symbolName ?? ""}`.toLowerCase();
+    return terms.some((t) => blob.includes(t));
+  });
+  const workflows = features.filter(
+    (f) => f.name.toLowerCase().split(/\s+/).some((w) => terms.includes(w)) || matched.some((m) => f.evidenceIds.includes(m.evidenceId))
+  );
+  if (matched.length >= 2 && workflows.length >= 1) {
+    return {
+      evidenceIds: matched.slice(0, 8).map((m) => m.evidenceId),
+      workflowIds: workflows.slice(0, 2).map((w) => w.featureKey),
+      status: "partially_confirmed",
+      confidence: "medium",
+      explanation: "Implementation and workflow evidence connected to requirement keywords; AI verification required for confirmation."
+    };
+  }
+  if (matched.length >= 1) {
+    return {
+      evidenceIds: matched.slice(0, 6).map((m) => m.evidenceId),
+      workflowIds: workflows.slice(0, 1).map((w) => w.featureKey),
+      status: "weakly_evidenced",
+      confidence: "low",
+      explanation: "Some implementation evidence matches requirement themes; insufficient workflow proof without verification."
+    };
+  }
+  return {
+    evidenceIds: [],
+    workflowIds: [],
+    status: "unable_to_determine",
+    confidence: "low",
+    explanation: "No implementation evidence strongly linked to this requirement from deterministic mapping."
+  };
+}
+function mapRequirements(requirementMap, evidence, features) {
+  const impl = implementationEvidence(evidence);
+  const rows = [];
+  for (const req of requirementMap.requirements ?? []) {
+    const scored = scoreRequirement(req.text, impl, features);
+    rows.push({
+      requirementId: req.id,
+      kind: "requirement",
+      status: scored.status,
+      confidence: scored.status === "partially_confirmed" ? "medium" : "low",
+      explanation: scored.explanation,
+      uncertainties: scored.status === "unable_to_determine" ? ["Insufficient deterministic linkage; verification may add evidence."] : [],
+      evidenceIds: scored.evidenceIds,
+      workflowIds: scored.workflowIds
+    });
+  }
+  return rows;
+}
+function mapClaims(claims, evidence, features) {
+  const impl = implementationEvidence(evidence);
+  return claims.filter(Boolean).map((claim) => {
+    const scored = scoreRequirement(claim, impl, features);
+    return {
+      claimText: claim,
+      status: scored.status,
+      confidence: scored.confidence ?? "low",
+      explanation: scored.explanation,
+      evidenceIds: scored.evidenceIds,
+      chainKeys: scored.workflowIds.map((w) => `chain-${w}`)
+    };
+  });
+}
+
+// _shared/v2/persist.ts
+init_http();
+var service = () => db();
+async function createAnalysisRun(input) {
+  const { data, error } = await service().from("analysis_runs").insert({
+    submission_id: input.submissionId,
+    repository_id: input.repositoryId,
+    commit_sha: input.commitSha,
+    normalized_repo_url: input.normalizedUrl,
+    owner: input.owner,
+    repo_name: input.repoName,
+    default_branch: input.defaultBranch,
+    scanner_version: input.scannerVersion,
+    analysis_version: input.analysisVersion,
+    prompt_version: input.promptVersion,
+    status: "queued",
+    progress_stage: "queued",
+    progress_percent: 0
+  }).select("id").single();
+  if (error || !data) throw new Error("Could not create analysis run.");
+  const runId = data.id;
+  await service().from("submissions").update({ latest_analysis_run_id: runId }).eq("id", input.submissionId);
+  return runId;
+}
+async function findCachedRun(submissionId, commitSha, scannerVersion, analysisVersion) {
+  const { data } = await service().from("analysis_runs").select("id").eq("submission_id", submissionId).eq("commit_sha", commitSha).eq("scanner_version", scannerVersion).eq("analysis_version", analysisVersion).in("status", ["completed", "partial"]).limit(1);
+  return data?.[0]?.id ?? null;
+}
+async function updateRunStatus(runId, status, extra) {
+  await service().from("analysis_runs").update({
+    status,
+    progress_stage: status,
+    updated_at: (/* @__PURE__ */ new Date()).toISOString(),
+    ...extra ?? {}
+  }).eq("id", runId);
+}
+async function logStage(runId, stage, message, metrics) {
+  await service().from("v2_analysis_stage_events").insert({
+    analysis_run_id: runId,
+    stage,
+    message: message ?? null,
+    metrics: metrics ?? {}
+  });
+}
+async function persistSnapshot(runId, meta) {
+  await service().from("repository_snapshots").upsert({
+    analysis_run_id: runId,
+    normalized_url: String(meta.normalized_url ?? ""),
+    owner: String(meta.owner ?? ""),
+    repo_name: String(meta.repo_name ?? ""),
+    default_branch: meta.default_branch,
+    commit_sha: String(meta.commit_sha ?? ""),
+    is_private: meta.is_private,
+    primary_language: meta.primary_language,
+    file_count: Number(meta.file_count ?? 0),
+    metadata: meta,
+    completed_at: (/* @__PURE__ */ new Date()).toISOString()
+  }, { onConflict: "analysis_run_id" });
+}
+async function persistEngineArtifacts(runId, ctx) {
+  const svc = service();
+  await svc.from("v2_repository_files").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_evidence_items").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_repository_symbols").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_code_relationships").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_feature_candidates").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_evidence_chains").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_requirement_links").delete().eq("analysis_run_id", runId);
+  await svc.from("v2_claim_verifications").delete().eq("analysis_run_id", runId);
+  const fileRows = ctx.files.map((f) => ({
+    analysis_run_id: runId,
+    path: f.path,
+    size_bytes: f.sizeBytes,
+    extension: f.extension,
+    language: f.language,
+    category: f.category,
+    importance_score: f.importanceScore,
+    importance_reasons: f.reasons,
+    ignored: f.ignored,
+    generated: f.generated,
+    binary: f.binary,
+    sensitive: f.sensitive,
+    content_hash: f.contentHash,
+    structurally_indexed: !f.ignored,
+    functionally_inspected: Boolean(f.content) && !f.ignored && f.importanceScore >= 0.35,
+    sent_to_ai: false
+  }));
+  for (let i = 0; i < fileRows.length; i += 400) {
+    await svc.from("v2_repository_files").insert(fileRows.slice(i, i + 400));
+  }
+  const { data: insertedFiles } = await svc.from("v2_repository_files").select("id, path").eq("analysis_run_id", runId);
+  const fileIdByPath = new Map((insertedFiles ?? []).map((r) => [r.path, r.id]));
+  const symbolRows = ctx.symbols.map((s) => ({
+    analysis_run_id: runId,
+    file_id: fileIdByPath.get(s.filePath),
+    symbol_key: s.symbolKey,
+    name: s.name,
+    symbol_type: s.symbolType,
+    language: s.language,
+    start_line: s.startLine,
+    end_line: s.endLine,
+    signature: s.signature,
+    parent_symbol: s.parentSymbol,
+    importance: s.importance,
+    uncertain: s.uncertain
+  })).filter((r) => r.file_id);
+  for (let i = 0; i < symbolRows.length; i += 400) {
+    await svc.from("v2_repository_symbols").insert(symbolRows.slice(i, i + 400));
+  }
+  const relRows = ctx.relationships.map((r) => ({
+    analysis_run_id: runId,
+    relationship_type: r.relationship,
+    confidence: r.confidence,
+    source_file: r.sourceFile,
+    source_lines: r.sourceLines ?? null,
+    source_file_id: fileIdByPath.get(r.sourceFile) ?? null,
+    target_file_id: r.targetFile ? fileIdByPath.get(r.targetFile) ?? null : null,
+    detail: r.detail ?? {}
+  }));
+  for (let i = 0; i < relRows.length; i += 400) {
+    await svc.from("v2_code_relationships").insert(relRows.slice(i, i + 400));
+  }
+  const evidenceRows = ctx.evidence.map((e) => ({
+    analysis_run_id: runId,
+    evidence_id: e.evidenceId,
+    level: e.level,
+    evidence_type: e.evidenceType,
+    claim: e.claim,
+    file_path: e.filePath,
+    symbol_name: e.symbolName,
+    start_line: e.startLine,
+    end_line: e.endLine,
+    snippet_hash: e.snippetHash,
+    snippet_excerpt: e.snippetExcerpt,
+    confidence: e.confidence,
+    detail: e.detail ?? {}
+  }));
+  for (let i = 0; i < evidenceRows.length; i += 400) {
+    await svc.from("v2_evidence_items").insert(evidenceRows.slice(i, i + 400));
+  }
+  for (const feature of ctx.features) {
+    await svc.from("v2_feature_candidates").insert({
+      analysis_run_id: runId,
+      feature_key: feature.featureKey,
+      name: feature.name,
+      workflow: feature.workflow,
+      entry_symbol_ids: [],
+      symbol_ids: [],
+      relationship_ids: [],
+      evidence_ids: feature.evidenceIds,
+      confidence: feature.confidence
+    });
+  }
+  for (const chain of ctx.chains) {
+    await svc.from("v2_evidence_chains").insert({
+      analysis_run_id: runId,
+      chain_key: chain.chainKey,
+      name: chain.name,
+      ordered_evidence_ids: chain.orderedEvidenceIds
+    });
+  }
+  for (const req of ctx.requirements) {
+    await svc.from("v2_requirement_links").insert({
+      analysis_run_id: runId,
+      requirement_id: req.requirementId,
+      kind: req.kind,
+      status: req.status,
+      confidence: req.confidence,
+      explanation: req.explanation,
+      uncertainties: req.uncertainties,
+      evidence_ids: req.evidenceIds,
+      workflow_ids: req.workflowIds
+    });
+  }
+  for (const claim of ctx.claims) {
+    await svc.from("v2_claim_verifications").insert({
+      analysis_run_id: runId,
+      claim_text: claim.claimText,
+      status: claim.status,
+      confidence: claim.confidence,
+      explanation: claim.explanation,
+      evidence_ids: claim.evidenceIds,
+      chain_keys: claim.chainKeys
+    });
+  }
+  for (const vr of ctx.verificationResults) {
+    const { data: reqRow } = await svc.from("v2_verification_requests").insert({
+      analysis_run_id: runId,
+      operation: vr.operation,
+      model: "deepseek",
+      prompt_version: "verify-v1",
+      packet_hash: vr.packet.packetHash,
+      evidence_hash: vr.evidenceHash,
+      subject_ids: vr.subjectIds,
+      verification_round: 1,
+      input_tokens: vr.inputTokens,
+      output_tokens: vr.outputTokens,
+      cached_tokens: vr.cachedTokens,
+      total_tokens: vr.inputTokens + vr.outputTokens,
+      duration_ms: vr.durationMs,
+      cache_hit: vr.cacheHit,
+      status: vr.status
+    }).select("id").single();
+    if (reqRow && vr.verdict) {
+      await svc.from("v2_verification_results").insert({
+        request_id: reqRow.id,
+        verdict: vr.verdict.verdict,
+        confidence: vr.verdict.confidence,
+        verification_level: vr.verdict.verification_level,
+        summary: vr.verdict.summary,
+        supporting_evidence_ids: vr.verdict.supporting_evidence_ids,
+        missing_links: vr.verdict.missing_links,
+        contradictions: vr.verdict.contradictions,
+        additional_files_needed: vr.verdict.additional_files_needed,
+        runtime_verified: vr.verdict.runtime_verified,
+        verification_complete: vr.verdict.verification_complete,
+        raw_payload: vr.verdict
+      });
+    }
+  }
+  await svc.from("v2_analysis_coverage").upsert({
+    analysis_run_id: runId,
+    ...ctx.coverage,
+    files_sent_to_ai: ctx.filesSentToAi
+  }, { onConflict: "analysis_run_id" });
+  await svc.from("v2_analysis_summaries").upsert({
+    analysis_run_id: runId,
+    headline: String(ctx.summary.headline ?? ""),
+    implementation_summary: String(ctx.summary.implementation_summary ?? ""),
+    strong_points: ctx.summary.strong_points ?? [],
+    uncertainties: ctx.summary.uncertainties ?? [],
+    defense_questions: ctx.summary.defense_questions ?? []
+  }, { onConflict: "analysis_run_id" });
+}
+
+// _shared/v2/versions.ts
+var V2_SCANNER_VERSION = "v2-1";
+var V2_ANALYSIS_VERSION = "v2";
+var V2_PROMPT_VERSION = "verify-v1";
+var V2_DEFAULT_BUDGET = {
+  maxInputTokens: 6e3,
+  maxSourceBytes: 12e4,
+  maxFiles: 24,
+  maxSymbols: 40,
+  maxRelationships: 80,
+  smallVerificationTokens: 2e3
+};
+var V2_STAGE_PROGRESS = {
+  queued: 0,
+  discovering_repository: 5,
+  scanning_repository: 15,
+  building_code_graph: 35,
+  discovering_features: 50,
+  mapping_requirements: 60,
+  verifying: 75,
+  validating: 88,
+  finalizing: 95,
+  completed: 100,
+  partial: 100,
+  failed: 100
+};
+
+// _shared/v2/retrieval.ts
+function estimateTokens(text2) {
+  return Math.ceil(text2.length / 4);
+}
+async function buildEvidencePacket(input) {
+  const budget = input.budget ?? V2_DEFAULT_BUDGET;
+  const byId = new Map(input.evidence.map((e) => [e.evidenceId, e]));
+  const selected = new Set(input.seedEvidenceIds);
+  for (const rel of input.relationships) {
+    if (selected.size >= budget.maxSymbols) break;
+    for (const ev of input.evidence) {
+      if (ev.filePath === rel.sourceFile) selected.add(ev.evidenceId);
+    }
+  }
+  if (input.missingLink) {
+    const needle = input.missingLink.toLowerCase();
+    for (const rel of input.relationships) {
+      const blob = JSON.stringify(rel.detail ?? {}).toLowerCase();
+      if (blob.includes(needle) || rel.sourceFile.toLowerCase().includes(needle)) {
+        for (const ev of input.evidence) {
+          if (ev.filePath === rel.sourceFile) selected.add(ev.evidenceId);
+        }
+      }
+    }
+  }
+  const snippets = [];
+  let bytes = 0;
+  let tokens = 0;
+  const fileSet = /* @__PURE__ */ new Set();
+  for (const id of selected) {
+    const ev = byId.get(id);
+    if (!ev) continue;
+    const excerpt = ev.snippetExcerpt ?? "";
+    const piece = `${ev.claim}
+${excerpt}`;
+    const nextTokens = tokens + estimateTokens(piece);
+    const nextBytes = bytes + piece.length;
+    if (nextTokens > budget.maxInputTokens || nextBytes > budget.maxSourceBytes) break;
+    if (ev.filePath) fileSet.add(ev.filePath);
+    if (fileSet.size > budget.maxFiles) break;
+    snippets.push({
+      evidenceId: id,
+      file: ev.filePath ?? "",
+      lines: ev.startLine ? `${ev.startLine}-${ev.endLine ?? ev.startLine}` : "",
+      excerpt: excerpt.slice(0, 800)
+    });
+    tokens = nextTokens;
+    bytes = nextBytes;
+  }
+  const relSlice = input.relationships.filter((r) => r.sourceFile && fileSet.has(r.sourceFile)).slice(0, budget.maxRelationships);
+  const graphSummary = relSlice.map((r) => `${r.relationship}: ${r.sourceFile}${r.targetFile ? ` \u2192 ${r.targetFile}` : ""}`).join("\n");
+  const hash = await packetHash([
+    input.subjectIds.join(","),
+    snippets.map((s) => s.evidenceId).join(","),
+    graphSummary
+  ]);
+  return {
+    subjectIds: input.subjectIds,
+    evidenceIds: snippets.map((s) => s.evidenceId),
+    snippets,
+    relationships: relSlice,
+    graphSummary,
+    tokenEstimate: tokens + estimateTokens(graphSummary),
+    packetHash: hash
+  };
+}
+
+// _shared/v2/symbols.ts
+function symbolKey(filePath, name, startLine) {
+  return `${filePath}::${name}@${startLine}`;
+}
+function indexSymbols(files) {
+  const symbols = [];
+  for (const file of files) {
+    if (file.ignored || !file.content || file.binary) continue;
+    const { symbols: extracted } = extractSymbols(file.path, file.content);
+    for (const sym of extracted) {
+      symbols.push({
+        symbolKey: symbolKey(file.path, sym.name, sym.line),
+        filePath: file.path,
+        name: sym.name,
+        symbolType: sym.symbol_type,
+        language: file.language,
+        startLine: sym.line,
+        endLine: sym.line + 30,
+        signature: sym.signature ?? null,
+        parentSymbol: null,
+        importance: file.importanceScore,
+        uncertain: false
+      });
+    }
+    if (file.category === "api" || file.path.includes("functions/")) {
+      const serveMatch = file.content.match(/Deno\.serve\s*\(/);
+      if (serveMatch) {
+        const line = file.content.slice(0, serveMatch.index).split("\n").length;
+        symbols.push({
+          symbolKey: symbolKey(file.path, "Deno.serve", line),
+          filePath: file.path,
+          name: "Deno.serve",
+          symbolType: "handler",
+          language: file.language,
+          startLine: line,
+          endLine: line + 40,
+          signature: "Deno.serve(...)",
+          parentSymbol: null,
+          importance: Math.max(file.importanceScore, 0.7),
+          uncertain: false
+        });
+      }
+    }
+  }
+  return symbols;
+}
+
+// _shared/v2/validate-ai.ts
+function validateVerifierOutput(raw, evidence, filePaths) {
+  const errors = [];
+  const allowedVerdicts = /* @__PURE__ */ new Set([
+    "confirmed",
+    "partially_confirmed",
+    "weakly_evidenced",
+    "not_evidenced",
+    "unable_to_determine",
+    "contradicted"
+  ]);
+  const verdict = String(raw.verdict ?? "");
+  if (!allowedVerdicts.has(verdict)) errors.push("invalid_verdict");
+  const supporting = raw.supporting_evidence_ids ?? [];
+  const evidenceIds = new Set(evidence.map((e) => e.evidenceId));
+  for (const id of supporting) {
+    if (!evidenceIds.has(id)) errors.push(`unknown_evidence_id:${id}`);
+  }
+  const additional = raw.additional_files_needed ?? [];
+  for (const path of additional) {
+    if (path && !filePaths.has(path)) errors.push(`unknown_file:${path}`);
+  }
+  if (verdict === "confirmed" && supporting.length === 0) {
+    errors.push("confirmed_without_evidence");
+  }
+  const weakOnly = supporting.every((id) => {
+    const ev = evidence.find((e) => e.evidenceId === id);
+    return ev?.level === "metadata" || ev?.level === "structural";
+  });
+  if (verdict === "confirmed" && weakOnly && supporting.length > 0) {
+    errors.push("confirmed_on_weak_evidence_only");
+  }
+  if (errors.length) return { ok: false, errors };
+  return {
+    ok: true,
+    errors: [],
+    verdict: {
+      verdict,
+      confidence: String(raw.confidence ?? "medium"),
+      verification_level: String(raw.verification_level ?? "source_reviewed"),
+      summary: String(raw.summary ?? "").slice(0, 2e3),
+      supporting_evidence_ids: supporting,
+      missing_links: raw.missing_links ?? [],
+      contradictions: raw.contradictions ?? [],
+      additional_files_needed: additional,
+      runtime_verified: Boolean(raw.runtime_verified),
+      verification_complete: raw.verification_complete !== false
+    }
+  };
+}
+
+// _shared/v2/verifier.ts
+var SYSTEM_PROMPT = `You are HackSim's repository verification engine.
+Use only supplied evidence.
+Never invent files, functions, APIs, behavior, architecture, or runtime behavior.
+Technology presence is not proof. Dependencies are not proof. Filenames are not proof.
+README claims are not proof. A route is not proof of complete implementation.
+Static source code does not prove runtime behavior.
+Every conclusion must cite evidence IDs.
+If evidence is insufficient, return unable_to_determine and identify missing_links.
+Return strict JSON with keys: verdict, confidence, verification_level, summary, supporting_evidence_ids, missing_links, contradictions, additional_files_needed, runtime_verified, verification_complete.`;
+async function evidenceHash(ids) {
+  return sha256Hex2(ids.sort().join(","));
+}
+async function runVerificationGroup(input) {
+  const start = Date.now();
+  const evHash = await evidenceHash(input.packet.evidenceIds);
+  const cacheKey = await packetHash([
+    input.runId,
+    input.operation,
+    input.subjectIds.join(","),
+    evHash,
+    input.packet.packetHash,
+    V2_PROMPT_VERSION
+  ]);
+  if (input.cacheLookup) {
+    const cached2 = await input.cacheLookup(cacheKey);
+    if (cached2) {
+      return {
+        operation: input.operation,
+        subjectIds: input.subjectIds,
+        packet: input.packet,
+        verdict: cached2,
+        validationErrors: [],
+        cacheHit: true,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        durationMs: Date.now() - start,
+        status: "cache_hit",
+        evidenceHash: evHash
+      };
+    }
+  }
+  if (!aiConfigured()) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: {
+        verdict: "unable_to_determine",
+        confidence: "low",
+        verification_level: "ai_disabled",
+        summary: "AI verification is not configured on this deployment.",
+        supporting_evidence_ids: [],
+        missing_links: ["ai_verification_unavailable"],
+        contradictions: [],
+        additional_files_needed: [],
+        runtime_verified: false,
+        verification_complete: false
+      },
+      validationErrors: [],
+      cacheHit: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "ai_disabled",
+      evidenceHash: evHash
+    };
+  }
+  const userPayload = {
+    operation: input.operation,
+    subjects: input.subjectIds,
+    label: input.subjectLabel,
+    hackathon_context: input.hackathonContext.slice(0, 4e3),
+    evidence_snippets: input.packet.snippets,
+    graph_summary: input.packet.graphSummary,
+    uncertainties: []
+  };
+  let raw;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cachedTokens = 0;
+  try {
+    const response = await completeJson({
+      systemStable: SYSTEM_PROMPT,
+      contextStable: JSON.stringify(userPayload).slice(0, 12e3),
+      task: "Return strict JSON verifying whether supplied evidence supports the subjects. Use only evidence IDs provided. Schema: verdict, confidence, verification_level, summary, supporting_evidence_ids, missing_links, contradictions, additional_files_needed, runtime_verified, verification_complete.",
+      promptVersion: V2_PROMPT_VERSION,
+      maxOutputTokens: 1800
+    });
+    raw = response.parsed ?? {};
+    inputTokens = response.inputTokens;
+    outputTokens = response.outputTokens;
+    cachedTokens = response.cachedTokens ?? 0;
+  } catch (error) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: null,
+      validationErrors: [error.message],
+      cacheHit: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "provider_error",
+      evidenceHash: evHash
+    };
+  }
+  const validated = validateVerifierOutput(raw, input.evidence, input.filePaths);
+  if (!validated.ok || !validated.verdict) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: null,
+      validationErrors: validated.errors,
+      cacheHit: false,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      durationMs: Date.now() - start,
+      status: "verification_failed",
+      evidenceHash: evHash
+    };
+  }
+  if (input.cacheStore) await input.cacheStore(cacheKey, validated.verdict);
+  return {
+    operation: input.operation,
+    subjectIds: input.subjectIds,
+    packet: input.packet,
+    verdict: validated.verdict,
+    validationErrors: [],
+    cacheHit: false,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    durationMs: Date.now() - start,
+    status: "completed",
+    evidenceHash: evHash
+  };
+}
+
+// _shared/v2/workflows.ts
+var FLOW_ORDER = [
+  "loads_prompt",
+  "calls_ai_provider",
+  "parses_response",
+  "persists_result",
+  "calls_api",
+  "routes_to",
+  "reads_database",
+  "calls"
+];
+function discoverFeatureWorkflows(relationships, evidence) {
+  const features = [];
+  const byFile = /* @__PURE__ */ new Map();
+  for (const rel of relationships) {
+    const list = byFile.get(rel.sourceFile) ?? [];
+    list.push(rel);
+    byFile.set(rel.sourceFile, list);
+  }
+  const aiFiles = [...byFile.entries()].filter(
+    ([, rels]) => rels.some((r) => r.relationship === "calls_ai_provider")
+  );
+  if (aiFiles.length) {
+    const workflow = [];
+    const evidenceIds = [];
+    for (const step of FLOW_ORDER) {
+      for (const [, rels] of aiFiles) {
+        const hit = rels.find((r) => r.relationship === step);
+        if (!hit) continue;
+        const ev = evidence.find(
+          (e) => e.filePath === hit.sourceFile && e.evidenceType === step
+        );
+        workflow.push({ step, evidenceId: ev?.evidenceId });
+        if (ev) evidenceIds.push(ev.evidenceId);
+      }
+    }
+    features.push({
+      featureKey: "ai-analysis-pipeline",
+      name: "AI analysis pipeline",
+      workflow,
+      entrySymbolKeys: [],
+      symbolKeys: [],
+      evidenceIds: [...new Set(evidenceIds)],
+      confidence: workflow.length >= 3 ? "high" : workflow.length >= 2 ? "medium" : "low"
+    });
+  }
+  const apiCalls = relationships.filter((r) => r.relationship === "calls_api");
+  const routes = relationships.filter((r) => r.relationship === "routes_to");
+  if (apiCalls.length && routes.length) {
+    const workflow = [
+      { step: "frontend_api_call", evidenceId: evidence.find((e) => e.evidenceType === "calls_api")?.evidenceId },
+      { step: "backend_route", evidenceId: evidence.find((e) => e.evidenceType === "route")?.evidenceId }
+    ].filter((w) => w.evidenceId);
+    features.push({
+      featureKey: "frontend-backend-api",
+      name: "Frontend to backend API flow",
+      workflow,
+      entrySymbolKeys: [],
+      symbolKeys: [],
+      evidenceIds: workflow.map((w) => w.evidenceId).filter(Boolean),
+      confidence: workflow.length >= 2 ? "medium" : "low"
+    });
+  }
+  const db2 = relationships.filter(
+    (r) => r.relationship === "reads_database" || r.relationship === "writes_database"
+  );
+  if (db2.length) {
+    features.push({
+      featureKey: "data-access",
+      name: "Data access layer",
+      workflow: db2.slice(0, 5).map((r) => ({
+        step: r.relationship,
+        evidenceId: evidence.find((e) => e.filePath === r.sourceFile)?.evidenceId
+      })),
+      entrySymbolKeys: [],
+      symbolKeys: [],
+      evidenceIds: evidence.filter((e) => db2.some((d) => d.sourceFile === e.filePath)).map((e) => e.evidenceId),
+      confidence: "medium"
+    });
+  }
+  return features;
+}
+function buildEvidenceChains(features) {
+  return features.map((f) => ({
+    chainKey: `chain-${f.featureKey}`,
+    name: f.name,
+    orderedEvidenceIds: f.workflow.map((w) => w.evidenceId).filter((id) => Boolean(id)),
+    featureKey: f.featureKey
+  }));
+}
+
+// _shared/v2/engine.ts
+function progressFor(status) {
+  return V2_STAGE_PROGRESS[status] ?? 0;
+}
+async function loadChunksForSubmission(submissionId) {
+  const store = new AnalysisStore();
+  const loaded = await store.loadForReview(submissionId);
+  if (!loaded) return null;
+  const pathByFileId = new Map(
+    loaded.files.map((f) => [f.id, f.path])
+  );
+  const chunks = (loaded.chunks ?? []).map((c) => ({
+    file_path: pathByFileId.get(String(c.file_id)) ?? "",
+    start_line: c.start_line,
+    content: String(c.content ?? "")
+  })).filter((c) => c.file_path);
+  return { loaded, chunks };
+}
+async function runV2Pipeline(runId, submissionId, githubUrl) {
+  try {
+    await updateRunStatus(runId, "scanning_repository", {
+      progress_percent: progressFor("scanning_repository")
+    });
+    await logStage(runId, "scanning_repository", "Repository scan");
+    const scanOutcome = await analyzeSubmission(submissionId, githubUrl);
+    if (scanOutcome.status === "failed") {
+      await updateRunStatus(runId, "failed", {
+        error_code: scanOutcome.code ?? "scan_failed",
+        error_message: scanOutcome.error ?? "Scan failed",
+        completed_at: (/* @__PURE__ */ new Date()).toISOString(),
+        progress_percent: 100
+      });
+      return;
+    }
+    const loadedBundle = await loadChunksForSubmission(submissionId);
+    if (!loadedBundle) {
+      await updateRunStatus(runId, "failed", {
+        error_message: "Could not load scanned repository.",
+        completed_at: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      return;
+    }
+    const { loaded, chunks } = loadedBundle;
+    const repository = loaded.repository;
+    const commitSha = String(repository.analyzed_commit_sha ?? repository.latest_commit_sha ?? "");
+    const owner = String(repository.owner ?? "");
+    const repoName = String(repository.repo_name ?? "");
+    await persistSnapshot(runId, {
+      normalized_url: githubUrl,
+      owner,
+      repo_name: repoName,
+      default_branch: repository.default_branch,
+      commit_sha: commitSha,
+      is_private: repository.visibility === "private",
+      primary_language: repository.language,
+      file_count: loaded.files?.length ?? 0
+    });
+    await updateRunStatus(runId, "building_code_graph", {
+      progress_percent: progressFor("building_code_graph")
+    });
+    resetEvidenceCounter();
+    const byPath = contentByPath(chunks);
+    const treeEntries = loaded.files.map((f) => ({
+      path: f.path,
+      size: f.file_size
+    }));
+    treeEntries.push(...[...byPath.keys()].filter((p) => !treeEntries.some((e) => e.path === p)).map((p) => ({
+      path: p,
+      size: byPath.get(p)?.length ?? 0
+    })));
+    let inventory = buildFileInventory(treeEntries, byPath);
+    const provisionalFiles = attachContent(inventory, byPath);
+    let symbols = indexSymbols(provisionalFiles);
+    const { relationships, inDegree, routeFiles } = buildRelationshipGraph(provisionalFiles, symbols);
+    const entryFiles = entryPointCandidates(provisionalFiles.map((f) => f.path));
+    inventory = scoreImportance(inventory, inDegree, routeFiles, entryFiles);
+    const files = attachContent(inventory, byPath);
+    symbols = indexSymbols(files);
+    for (const file of files) {
+      if (file.content) file.contentHash = await sha256Hex2(file.content.slice(0, 8e3));
+    }
+    const evidence = await compileEvidence(files, relationships);
+    const features = discoverFeatureWorkflows(relationships, evidence);
+    const chains = buildEvidenceChains(features);
+    await updateRunStatus(runId, "discovering_features", {
+      progress_percent: progressFor("discovering_features")
+    });
+    const { data: submissionRow } = await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("submissions").select("hackathon_id, project_description, problem_statement").eq("id", submissionId).single();
+    const hackathon = await loadHackathon(String(submissionRow?.hackathon_id ?? ""));
+    const requirementMap = await getRequirementMap(String(hackathon.id ?? submissionId), hackathon);
+    const requirements = mapRequirements(requirementMap, evidence, features);
+    const claims = [
+      String(submissionRow?.project_description ?? ""),
+      String(submissionRow?.problem_statement ?? "")
+    ];
+    const claimRows = mapClaims(claims, evidence, features);
+    await updateRunStatus(runId, "verifying", { progress_percent: progressFor("verifying") });
+    const filePathSet = new Set(files.map((f) => f.path));
+    const hackathonContext = JSON.stringify({
+      requirements: (requirementMap.requirements ?? []).slice(0, 12).map((r) => ({ id: r.id, text: r.text }))
+    });
+    const reqPacket = await buildEvidencePacket({
+      subjectIds: requirements.slice(0, 8).map((r) => r.requirementId),
+      evidence,
+      files,
+      relationships,
+      seedEvidenceIds: requirements.flatMap((r) => r.evidenceIds).slice(0, 20)
+    });
+    const archPacket = await buildEvidencePacket({
+      subjectIds: features.map((f) => f.featureKey),
+      evidence,
+      files,
+      relationships,
+      seedEvidenceIds: features.flatMap((f) => f.evidenceIds).slice(0, 24)
+    });
+    const techPacket = await buildEvidencePacket({
+      subjectIds: ["security", "database", "testing"],
+      evidence: evidence.filter(
+        (e) => ["reads_database", "route", "behavior"].includes(e.evidenceType) || e.filePath?.includes("test")
+      ),
+      files,
+      relationships: relationships.filter(
+        (r) => ["reads_database", "calls_api", "tests"].includes(r.relationship)
+      ),
+      seedEvidenceIds: evidence.filter((e) => e.level !== "metadata").slice(0, 16).map((e) => e.evidenceId)
+    });
+    const verificationResults = [];
+    verificationResults.push(await runVerificationGroup({
+      operation: "requirements_alignment",
+      subjectIds: reqPacket.subjectIds,
+      subjectLabel: "Requirements and functional alignment",
+      hackathonContext,
+      packet: reqPacket,
+      evidence,
+      filePaths: filePathSet,
+      submissionId,
+      runId,
+      round: 1
+    }));
+    verificationResults.push(await runVerificationGroup({
+      operation: "architecture_workflows",
+      subjectIds: archPacket.subjectIds,
+      subjectLabel: "Architecture and workflows",
+      hackathonContext,
+      packet: archPacket,
+      evidence,
+      filePaths: filePathSet,
+      submissionId,
+      runId,
+      round: 1
+    }));
+    verificationResults.push(await runVerificationGroup({
+      operation: "security_data_testing",
+      subjectIds: techPacket.subjectIds,
+      subjectLabel: "Security, database, and testing",
+      hackathonContext,
+      packet: techPacket,
+      evidence,
+      filePaths: filePathSet,
+      submissionId,
+      runId,
+      round: 1
+    }));
+    const missing = verificationResults.flatMap((v) => v.verdict?.missing_links ?? []).slice(0, 1);
+    if (missing.length) {
+      const adaptivePacket = await buildEvidencePacket({
+        subjectIds: ["adaptive"],
+        evidence,
+        files,
+        relationships,
+        seedEvidenceIds: reqPacket.evidenceIds,
+        missingLink: missing[0]
+      });
+      verificationResults.push(await runVerificationGroup({
+        operation: "adaptive_missing_link",
+        subjectIds: ["adaptive"],
+        subjectLabel: `Missing link: ${missing[0]}`,
+        hackathonContext,
+        packet: adaptivePacket,
+        evidence,
+        filePaths: filePathSet,
+        submissionId,
+        runId,
+        round: 2
+      }));
+    }
+    await updateRunStatus(runId, "validating", { progress_percent: progressFor("validating") });
+    const linesInspected = files.reduce((n, f) => n + (f.content ? f.content.split("\n").length : 0), 0);
+    const aiTokens = verificationResults.reduce((n, v) => n + v.inputTokens + v.outputTokens, 0);
+    const functionalFiles = files.filter((f) => f.importanceScore >= 0.35 && f.content).length;
+    const coverageLevel = functionalFiles > 20 ? "high" : functionalFiles > 8 ? "medium" : "low";
+    const summary = {
+      headline: `${repoName} \u2014 repository intelligence summary`,
+      implementation_summary: features.length ? `Detected ${features.length} workflow candidate(s) from code relationships and implementation evidence.` : "Structural inventory completed; no strong workflow chains detected.",
+      strong_points: features.filter((f) => f.confidence === "high").map((f) => f.name),
+      uncertainties: verificationResults.flatMap((v) => v.verdict?.missing_links ?? []).slice(0, 8).map((m) => ({ title: m, detail: "Additional evidence needed to confirm end-to-end behavior." })),
+      defense_questions: features.slice(0, 5).map((f) => `Explain how "${f.name}" works across the codebase.`)
+    };
+    await updateRunStatus(runId, "finalizing", { progress_percent: progressFor("finalizing") });
+    await persistEngineArtifacts(runId, {
+      files,
+      symbols,
+      relationships,
+      evidence,
+      features,
+      chains,
+      requirements,
+      claims: claimRows,
+      verificationResults,
+      filesSentToAi: new Set([
+        ...reqPacket.evidenceIds,
+        ...archPacket.evidenceIds,
+        ...techPacket.evidenceIds
+      ].map((id) => evidence.find((e) => e.evidenceId === id)?.filePath).filter(Boolean)).size,
+      coverage: {
+        files_discovered: files.length,
+        files_structurally_indexed: files.filter((f) => !f.ignored).length,
+        files_functionally_inspected: functionalFiles,
+        symbols_indexed: symbols.length,
+        relationships_found: relationships.length,
+        evidence_items: evidence.length,
+        evidence_chains: chains.length,
+        source_lines_inspected: linesInspected,
+        requirements_analyzed: requirements.length,
+        requirements_verified: verificationResults.filter((v) => v.verdict?.verdict === "confirmed").length,
+        ai_requests: verificationResults.length,
+        ai_input_tokens: verificationResults.reduce((n, v) => n + v.inputTokens, 0),
+        ai_output_tokens: verificationResults.reduce((n, v) => n + v.outputTokens, 0),
+        ai_cached_tokens: verificationResults.reduce((n, v) => n + v.cachedTokens, 0),
+        ai_cost_usd: 0
+      },
+      summary
+    });
+    const finalStatus = verificationResults.some((v) => v.status === "provider_error") ? "partial" : "completed";
+    await updateRunStatus(runId, finalStatus, {
+      progress_percent: 100,
+      coverage_level: coverageLevel,
+      completed_at: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("analysis_runs").update({
+      repository_id: repository.id,
+      commit_sha: commitSha
+    }).eq("id", runId);
+  } catch (error) {
+    await updateRunStatus(runId, "failed", {
+      error_message: error.message?.slice(0, 500) ?? "V2 pipeline failed",
+      completed_at: (/* @__PURE__ */ new Date()).toISOString(),
+      progress_percent: 100
+    });
+    await logStage(runId, "failed", error.message);
+  }
+}
+async function startV2Analysis(submissionId, githubUrl) {
+  const store = new AnalysisStore();
+  const loaded = await store.loadForReview(submissionId);
+  let commitSha = loaded ? String(loaded.repository.analyzed_commit_sha ?? "") : "";
+  if (!loaded || !commitSha) {
+    const pre = await analyzeSubmission(submissionId, githubUrl);
+    if (pre.status === "failed") {
+      return { run_id: "", status: "failed", message: pre.error };
+    }
+    const again = await store.loadForReview(submissionId);
+    commitSha = again ? String(again.repository.analyzed_commit_sha ?? "") : "";
+  }
+  const cachedRun = commitSha ? await findCachedRun(submissionId, commitSha, V2_SCANNER_VERSION, V2_ANALYSIS_VERSION) : null;
+  if (cachedRun) {
+    await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("submissions").update({
+      latest_analysis_run_id: cachedRun
+    }).eq("id", submissionId);
+    return { run_id: cachedRun, status: "completed", cached: true, message: "Reusing cached V2 analysis for this commit." };
+  }
+  const repo = (await store.loadForReview(submissionId))?.repository ?? {};
+  const runId = await createAnalysisRun({
+    submissionId,
+    commitSha: commitSha || "pending",
+    owner: String(repo.owner ?? ""),
+    repoName: String(repo.repo_name ?? ""),
+    defaultBranch: String(repo.default_branch ?? "main"),
+    normalizedUrl: githubUrl,
+    repositoryId: repo.id ?? null,
+    scannerVersion: V2_SCANNER_VERSION,
+    analysisVersion: V2_ANALYSIS_VERSION,
+    promptVersion: V2_PROMPT_VERSION
+  });
+  const job = runV2Pipeline(runId, submissionId, githubUrl);
+  if (EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(job);
+  else await job;
+  return { run_id: runId, status: EdgeRuntime?.waitUntil ? "queued" : "completed" };
+}
+async function getV2Status(submissionId) {
+  const { data, error } = await (await Promise.resolve().then(() => (init_http(), http_exports))).db().rpc("analysis_run_status", {
+    p_submission_id: submissionId
+  });
+  if (error) return null;
+  return data;
+}
+
 // analysis/index.ts
+init_security();
 async function requireCaller(req) {
   const caller = await getCaller(req);
   if (!caller) throw new HttpError("Invalid or expired session.", 401);
@@ -9821,6 +11383,18 @@ async function act(req) {
     }
     case "diagnostics":
       return json(await diagnosticsFor(submissionId, caller));
+    case "start-v2":
+      if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
+      return json(await startV2Analysis(submissionId, githubUrl), 202);
+    case "status-v2":
+      return json({ ...await getV2Status(submissionId), ai_available: aiConfigured() });
+    case "summary-v2": {
+      const { data, error } = await db().rpc("v2_analysis_summary", {
+        p_submission_id: submissionId
+      });
+      if (error) throw new HttpError("Could not load V2 summary.", 500);
+      return json(data ?? { ready: false });
+    }
     default:
       throw new HttpError("Unknown action.", 400);
   }

@@ -33,6 +33,7 @@ import {
 } from "../_shared/http.ts";
 import { analyzeSubmission, AnalysisStore } from "../_shared/scanner.ts";
 import { runAnalysis } from "../_shared/review.ts";
+import { getV2Status, startV2Analysis } from "../_shared/v2/engine.ts";
 import { aiConfigured } from "../_shared/ai.ts";
 import { rateLimiter } from "../_shared/security.ts";
 import { rescoreRelevance } from "../_shared/datasets.ts";
@@ -122,6 +123,21 @@ async function act(req: Request): Promise<Response> {
 
     case "diagnostics":
       return json(await diagnosticsFor(submissionId, caller));
+
+    case "start-v2":
+      if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
+      return json(await startV2Analysis(submissionId, githubUrl), 202);
+
+    case "status-v2":
+      return json({ ...(await getV2Status(submissionId)), ai_available: aiConfigured() });
+
+    case "summary-v2": {
+      const { data, error } = await db().rpc("v2_analysis_summary", {
+        p_submission_id: submissionId,
+      });
+      if (error) throw new HttpError("Could not load V2 summary.", 500);
+      return json(data ?? { ready: false });
+    }
 
     default:
       throw new HttpError("Unknown action.", 400);

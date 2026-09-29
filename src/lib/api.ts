@@ -27,6 +27,7 @@ import type {
   ReviewRunResult,
   SubmissionAnalysis,
 } from "@/types/analysis";
+import type { V2AnalysisStatus, V2AnalysisSummary } from "@/types/v2-analysis";
 
 /**
  * Whether the Phase 5/6 services can be called at all.
@@ -161,6 +162,24 @@ export async function runReview(
 /** §89 — force a fresh scan, ignoring the commit cache. */
 export async function reanalyzeRepository(submissionId: string): Promise<{ status: string }> {
   return invoke("analysis", { body: { action: "reanalyze", submission_id: submissionId } });
+}
+
+/** V2 — enqueue background repository intelligence analysis. */
+export async function startV2Analysis(submissionId: string): Promise<{
+  run_id: string;
+  status: string;
+  cached?: boolean;
+  message?: string;
+}> {
+  return invoke("analysis", { body: { action: "start-v2", submission_id: submissionId } });
+}
+
+export async function getV2AnalysisStatus(submissionId: string): Promise<V2AnalysisStatus> {
+  return invoke("analysis", { body: { action: "status-v2", submission_id: submissionId } });
+}
+
+export async function getV2AnalysisSummary(submissionId: string): Promise<V2AnalysisSummary> {
+  return invoke("analysis", { body: { action: "summary-v2", submission_id: submissionId } });
 }
 
 export async function retryModule(

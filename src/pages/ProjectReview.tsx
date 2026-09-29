@@ -18,9 +18,15 @@ import { useAsync } from "@/hooks/use-async";
 import {
   analyzeRepository,
   getSubmissionAnalysis,
+  getV2AnalysisStatus,
+  getV2AnalysisSummary,
   isApiConfigured,
   runReview,
+  startV2Analysis,
 } from "@/lib/api";
+import { V2ReviewProgress } from "@/components/analysis/v2/V2ReviewProgress";
+import { V2ReviewReport } from "@/components/analysis/v2/V2ReviewReport";
+import type { V2AnalysisStatus, V2AnalysisSummary, V2RunStatus } from "@/types/v2-analysis";
 import { friendlyError } from "@/services/errors";
 import { cn } from "@/lib/utils";
 import {
@@ -107,6 +113,54 @@ export default function ProjectReview() {
   const [attempt, setAttempt] = useState(0);
   const startedRef = useRef(false);
 
+  const [v2Status, setV2Status] = useState<V2AnalysisStatus | null>(null);
+  const [v2Summary, setV2Summary] = useState<V2AnalysisSummary | null>(null);
+  const [v2Error, setV2Error] = useState<string | null>(null);
+  const v2StartedRef = useRef(false);
+
+  // V2 asynchronous review: enqueue once, poll Supabase-backed status, load summary when ready.
+  useEffect(() => {
+    if (!id || !isApiConfigured) return;
+    const hasRepo = Boolean(String(analysis.data?.submission?.github_url ?? "").trim());
+    if (!hasRepo) return;
+
+    let cancelled = false;
+    let delay = 5000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function refresh() {
+      try {
+        const status = await getV2AnalysisStatus(id);
+        if (cancelled) return;
+        setV2Status(status);
+        const st = status?.status as V2RunStatus | undefined;
+        if (st === "completed" || st === "partial") {
+          const summary = await getV2AnalysisSummary(id);
+          if (!cancelled) setV2Summary(summary);
+          return;
+        }
+        if (st === "failed") {
+          setV2Error(status?.error_message ?? "Review could not be completed.");
+          return;
+        }
+        if (!v2StartedRef.current && (!status?.run_id || st === "queued")) {
+          v2StartedRef.current = true;
+          await startV2Analysis(id);
+        }
+        delay = Math.min(delay + 5000, 30000);
+        timer = setTimeout(refresh, delay);
+      } catch (err) {
+        if (!cancelled) setV2Error(friendlyError(err));
+      }
+    }
+
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [id, analysis.data?.submission?.github_url]);
+
   // The review builds itself. Opening this page runs the same two steps the
   // playground runs — scan the repository, then write the review — so a student
   // never has to know that an analysis has to be kicked off by hand. Both steps
@@ -115,6 +169,8 @@ export default function ProjectReview() {
   useEffect(() => {
     const data = analysis.data;
     if (!data || startedRef.current) return;
+    // V2 engine handles scan + verification asynchronously when edge functions are available.
+    if (isApiConfigured) return;
 
     const repoStatus = data.repository?.analysis_status;
     const reviewStatus = data.review?.status;
@@ -249,6 +305,41 @@ export default function ProjectReview() {
           you should be ready to explain.
         </p>
       </div>
+
+      {isApiConfigured && v2Summary?.ready && (
+        <div className="mt-8">
+          <V2ReviewReport data={v2Summary} />
+        </div>
+      )}
+
+      {isApiConfigured && !v2Summary?.ready && !v2Error && (
+        <div className="mt-8">
+          <V2ReviewProgress
+            status={v2Status?.status as V2RunStatus | undefined}
+            progressPercent={v2Status?.progress_percent}
+          />
+        </div>
+      )}
+
+      {isApiConfigured && v2Error && (
+        <Card className="mt-8 border-destructive/40 p-6">
+          <p className="text-sm font-semibold">We couldn&apos;t complete your project review</p>
+          <p className="mt-1.5 text-sm text-muted-foreground">{v2Error}</p>
+          <Button
+            size="sm"
+            variant="outline"
+            className="mt-4"
+            onClick={() => {
+              v2StartedRef.current = false;
+              setV2Error(null);
+              void startV2Analysis(id).then(() => getV2AnalysisStatus(id).then(setV2Status));
+            }}
+          >
+            <RefreshCw className="size-3.5" />
+            Retry review
+          </Button>
+        </Card>
+      )}
 
       {stage && <PipelineProgress stage={stage} />}
 

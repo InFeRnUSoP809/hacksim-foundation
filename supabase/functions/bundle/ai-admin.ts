@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 827 lines, self-contained — safe to paste into the Supabase dashboard.
+// 830 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 // _shared/http.ts
@@ -51,6 +51,7 @@ var PayloadTooLarge = class extends Error {
     this.limit = limit;
     this.name = "PayloadTooLarge";
   }
+  limit;
 };
 var COSTLY_ACTIONS = {
   repository: 10,
@@ -65,6 +66,7 @@ var RateLimiter = class {
   constructor(now = () => Date.now()) {
     this.now = now;
   }
+  now;
   buckets = /* @__PURE__ */ new Map();
   /**
    * @param action    the expensive operation, e.g. "repository"
@@ -241,6 +243,7 @@ var HttpError = class extends Error {
     this.status = status;
     this.name = "HttpError";
   }
+  status;
 };
 function withErrorHandling(handler) {
   return async (req) => {
