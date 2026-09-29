@@ -6,7 +6,7 @@
 // plus supabase/functions/_shared/*.ts
 //
 // Edit the sources, then re-run the script. Changes made here are lost.
-// 11517 lines, self-contained — safe to paste into the Supabase dashboard.
+// 12001 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
 
 var __defProp = Object.defineProperty;
@@ -10384,9 +10384,29 @@ async function createAnalysisRun(input) {
   await service().from("submissions").update({ latest_analysis_run_id: runId }).eq("id", input.submissionId);
   return runId;
 }
-async function findCachedRun(submissionId, commitSha, scannerVersion, analysisVersion) {
-  const { data } = await service().from("analysis_runs").select("id").eq("submission_id", submissionId).eq("commit_sha", commitSha).eq("scanner_version", scannerVersion).eq("analysis_version", analysisVersion).in("status", ["completed", "partial"]).limit(1);
+async function findCachedRun(submissionId, commitSha, scannerVersion, analysisVersion, promptVersion) {
+  let query = service().from("analysis_runs").select("id").eq("submission_id", submissionId).eq("commit_sha", commitSha).eq("scanner_version", scannerVersion).eq("analysis_version", analysisVersion).in("status", ["completed", "partial"]);
+  if (promptVersion) query = query.eq("prompt_version", promptVersion);
+  const { data } = await query.limit(1);
   return data?.[0]?.id ?? null;
+}
+var ACTIVE_STATUSES = [
+  "queued",
+  "discovering_repository",
+  "scanning_repository",
+  "building_code_graph",
+  "discovering_features",
+  "mapping_requirements",
+  "verifying",
+  "validating",
+  "finalizing"
+];
+async function findActiveRun(submissionId) {
+  const { data } = await service().from("analysis_runs").select("id").eq("submission_id", submissionId).in("status", ACTIVE_STATUSES).order("started_at", { ascending: false }).limit(1);
+  return data?.[0]?.id ?? null;
+}
+async function saveCheckpoint(runId, checkpoint) {
+  await service().from("analysis_runs").update({ checkpoint }).eq("id", runId);
 }
 async function updateRunStatus(runId, status, extra) {
   await service().from("analysis_runs").update({
@@ -10420,15 +10440,15 @@ async function persistSnapshot(runId, meta) {
   }, { onConflict: "analysis_run_id" });
 }
 async function persistEngineArtifacts(runId, ctx) {
-  const svc = service();
-  await svc.from("v2_repository_files").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_evidence_items").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_repository_symbols").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_code_relationships").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_feature_candidates").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_evidence_chains").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_requirement_links").delete().eq("analysis_run_id", runId);
-  await svc.from("v2_claim_verifications").delete().eq("analysis_run_id", runId);
+  const svc2 = service();
+  await svc2.from("v2_repository_files").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_evidence_items").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_repository_symbols").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_code_relationships").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_feature_candidates").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_evidence_chains").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_requirement_links").delete().eq("analysis_run_id", runId);
+  await svc2.from("v2_claim_verifications").delete().eq("analysis_run_id", runId);
   const fileRows = ctx.files.map((f) => ({
     analysis_run_id: runId,
     path: f.path,
@@ -10448,9 +10468,9 @@ async function persistEngineArtifacts(runId, ctx) {
     sent_to_ai: false
   }));
   for (let i = 0; i < fileRows.length; i += 400) {
-    await svc.from("v2_repository_files").insert(fileRows.slice(i, i + 400));
+    await svc2.from("v2_repository_files").insert(fileRows.slice(i, i + 400));
   }
-  const { data: insertedFiles } = await svc.from("v2_repository_files").select("id, path").eq("analysis_run_id", runId);
+  const { data: insertedFiles } = await svc2.from("v2_repository_files").select("id, path").eq("analysis_run_id", runId);
   const fileIdByPath = new Map((insertedFiles ?? []).map((r) => [r.path, r.id]));
   const symbolRows = ctx.symbols.map((s) => ({
     analysis_run_id: runId,
@@ -10467,7 +10487,7 @@ async function persistEngineArtifacts(runId, ctx) {
     uncertain: s.uncertain
   })).filter((r) => r.file_id);
   for (let i = 0; i < symbolRows.length; i += 400) {
-    await svc.from("v2_repository_symbols").insert(symbolRows.slice(i, i + 400));
+    await svc2.from("v2_repository_symbols").insert(symbolRows.slice(i, i + 400));
   }
   const relRows = ctx.relationships.map((r) => ({
     analysis_run_id: runId,
@@ -10480,7 +10500,7 @@ async function persistEngineArtifacts(runId, ctx) {
     detail: r.detail ?? {}
   }));
   for (let i = 0; i < relRows.length; i += 400) {
-    await svc.from("v2_code_relationships").insert(relRows.slice(i, i + 400));
+    await svc2.from("v2_code_relationships").insert(relRows.slice(i, i + 400));
   }
   const evidenceRows = ctx.evidence.map((e) => ({
     analysis_run_id: runId,
@@ -10498,10 +10518,10 @@ async function persistEngineArtifacts(runId, ctx) {
     detail: e.detail ?? {}
   }));
   for (let i = 0; i < evidenceRows.length; i += 400) {
-    await svc.from("v2_evidence_items").insert(evidenceRows.slice(i, i + 400));
+    await svc2.from("v2_evidence_items").insert(evidenceRows.slice(i, i + 400));
   }
   for (const feature of ctx.features) {
-    await svc.from("v2_feature_candidates").insert({
+    await svc2.from("v2_feature_candidates").insert({
       analysis_run_id: runId,
       feature_key: feature.featureKey,
       name: feature.name,
@@ -10514,7 +10534,7 @@ async function persistEngineArtifacts(runId, ctx) {
     });
   }
   for (const chain of ctx.chains) {
-    await svc.from("v2_evidence_chains").insert({
+    await svc2.from("v2_evidence_chains").insert({
       analysis_run_id: runId,
       chain_key: chain.chainKey,
       name: chain.name,
@@ -10522,7 +10542,7 @@ async function persistEngineArtifacts(runId, ctx) {
     });
   }
   for (const req of ctx.requirements) {
-    await svc.from("v2_requirement_links").insert({
+    await svc2.from("v2_requirement_links").insert({
       analysis_run_id: runId,
       requirement_id: req.requirementId,
       kind: req.kind,
@@ -10535,7 +10555,7 @@ async function persistEngineArtifacts(runId, ctx) {
     });
   }
   for (const claim of ctx.claims) {
-    await svc.from("v2_claim_verifications").insert({
+    await svc2.from("v2_claim_verifications").insert({
       analysis_run_id: runId,
       claim_text: claim.claimText,
       status: claim.status,
@@ -10546,7 +10566,7 @@ async function persistEngineArtifacts(runId, ctx) {
     });
   }
   for (const vr of ctx.verificationResults) {
-    const { data: reqRow } = await svc.from("v2_verification_requests").insert({
+    const { data: reqRow } = await svc2.from("v2_verification_requests").insert({
       analysis_run_id: runId,
       operation: vr.operation,
       model: "deepseek",
@@ -10564,7 +10584,7 @@ async function persistEngineArtifacts(runId, ctx) {
       status: vr.status
     }).select("id").single();
     if (reqRow && vr.verdict) {
-      await svc.from("v2_verification_results").insert({
+      await svc2.from("v2_verification_results").insert({
         request_id: reqRow.id,
         verdict: vr.verdict.verdict,
         confidence: vr.verdict.confidence,
@@ -10580,12 +10600,12 @@ async function persistEngineArtifacts(runId, ctx) {
       });
     }
   }
-  await svc.from("v2_analysis_coverage").upsert({
+  await svc2.from("v2_analysis_coverage").upsert({
     analysis_run_id: runId,
     ...ctx.coverage,
     files_sent_to_ai: ctx.filesSentToAi
   }, { onConflict: "analysis_run_id" });
-  await svc.from("v2_analysis_summaries").upsert({
+  await svc2.from("v2_analysis_summaries").upsert({
     analysis_run_id: runId,
     headline: String(ctx.summary.headline ?? ""),
     implementation_summary: String(ctx.summary.implementation_summary ?? ""),
@@ -10593,6 +10613,72 @@ async function persistEngineArtifacts(runId, ctx) {
     uncertainties: ctx.summary.uncertainties ?? [],
     defense_questions: ctx.summary.defense_questions ?? []
   }, { onConflict: "analysis_run_id" });
+}
+
+// _shared/v2/rehydrate.ts
+init_http();
+async function evidenceCountForRun(runId) {
+  const { count } = await db().from("v2_evidence_items").select("*", { count: "exact", head: true }).eq("analysis_run_id", runId);
+  return count ?? 0;
+}
+async function loadPersistedEvidence(runId) {
+  const { data } = await db().from("v2_evidence_items").select("*").eq("analysis_run_id", runId);
+  return (data ?? []).map((row) => ({
+    evidenceId: String(row.evidence_id),
+    level: row.level,
+    evidenceType: String(row.evidence_type),
+    claim: String(row.claim),
+    filePath: row.file_path,
+    symbolName: row.symbol_name,
+    startLine: row.start_line,
+    endLine: row.end_line,
+    snippetHash: row.snippet_hash,
+    snippetExcerpt: row.snippet_excerpt,
+    confidence: row.confidence,
+    detail: row.detail ?? {}
+  }));
+}
+async function loadPersistedRelationships(runId) {
+  const { data } = await db().from("v2_code_relationships").select("relationship_type, confidence, source_file, source_lines, detail").eq("analysis_run_id", runId).limit(5e3);
+  return (data ?? []).map((row) => ({
+    relationship: row.relationship_type,
+    confidence: row.confidence,
+    sourceFile: String(row.source_file ?? ""),
+    sourceLines: row.source_lines,
+    detail: row.detail ?? {}
+  }));
+}
+async function loadPersistedFeatures(runId) {
+  const { data } = await db().from("v2_feature_candidates").select("*").eq("analysis_run_id", runId);
+  return (data ?? []).map((row) => ({
+    featureKey: String(row.feature_key),
+    name: String(row.name),
+    workflow: row.workflow ?? [],
+    entrySymbolKeys: [],
+    symbolKeys: [],
+    evidenceIds: row.evidence_ids ?? [],
+    confidence: row.confidence
+  }));
+}
+async function rebuildFilesFromSubmission(submissionId) {
+  const store = new AnalysisStore();
+  const loaded = await store.loadForReview(submissionId);
+  if (!loaded) return [];
+  const pathByFileId = new Map(
+    loaded.files.map((f) => [f.id, f])
+  );
+  const chunks = (loaded.chunks ?? []).map((c) => ({
+    file_path: pathByFileId.get(String(c.file_id))?.path ?? "",
+    start_line: c.start_line,
+    content: String(c.content ?? "")
+  })).filter((c) => c.file_path);
+  const byPath = contentByPath(chunks);
+  const tree = [...byPath.keys()].map((path) => ({
+    path,
+    size: byPath.get(path)?.length ?? 0
+  }));
+  const inventory = buildFileInventory(tree, byPath);
+  return attachContent(inventory, byPath);
 }
 
 // _shared/v2/versions.ts
@@ -10736,6 +10822,37 @@ function indexSymbols(files) {
   return symbols;
 }
 
+// _shared/v2/cache.ts
+init_http();
+var svc = () => db();
+async function lookupVerificationCache(cacheKey) {
+  const { data } = await svc().from("v2_verification_cache").select("validated_result, status").eq("cache_key", cacheKey).eq("status", "success").limit(1);
+  const row = data?.[0];
+  if (!row?.validated_result) return null;
+  return row.validated_result;
+}
+async function storeVerificationCache(input) {
+  await svc().from("v2_verification_cache").upsert({
+    cache_key: input.cacheKey,
+    commit_sha: input.commitSha,
+    analysis_version: input.analysisVersion,
+    scanner_version: input.scannerVersion,
+    prompt_version: input.promptVersion,
+    model: input.model,
+    operation: input.operation,
+    subject_hash: input.subjectHash,
+    claim_hash: input.claimHash,
+    evidence_hash: input.evidenceHash,
+    packet_hash: input.packetHash,
+    validated_result: input.verdict,
+    input_tokens: input.inputTokens,
+    output_tokens: input.outputTokens,
+    cached_tokens: input.cachedTokens,
+    estimated_cost_usd: input.costUsd,
+    status: "success"
+  }, { onConflict: "cache_key" });
+}
+
 // _shared/v2/validate-ai.ts
 function validateVerifierOutput(raw, evidence, filePaths) {
   const errors = [];
@@ -10800,35 +10917,78 @@ Return strict JSON with keys: verdict, confidence, verification_level, summary, 
 async function evidenceHash(ids) {
   return sha256Hex2(ids.sort().join(","));
 }
+async function buildCacheKey(input) {
+  const subjectHash = await sha256Hex2(input.subjectIds.join(","));
+  return packetHash([
+    input.commitSha,
+    input.analysisVersion,
+    input.operation,
+    subjectHash,
+    input.evidenceHash,
+    input.packetHash,
+    input.promptVersion,
+    input.model
+  ]);
+}
 async function runVerificationGroup(input) {
   const start = Date.now();
   const evHash = await evidenceHash(input.packet.evidenceIds);
-  const cacheKey = await packetHash([
-    input.runId,
-    input.operation,
-    input.subjectIds.join(","),
-    evHash,
-    input.packet.packetHash,
-    V2_PROMPT_VERSION
-  ]);
-  if (input.cacheLookup) {
-    const cached2 = await input.cacheLookup(cacheKey);
-    if (cached2) {
-      return {
-        operation: input.operation,
-        subjectIds: input.subjectIds,
-        packet: input.packet,
-        verdict: cached2,
-        validationErrors: [],
-        cacheHit: true,
-        inputTokens: 0,
-        outputTokens: 0,
-        cachedTokens: 0,
-        durationMs: Date.now() - start,
-        status: "cache_hit",
-        evidenceHash: evHash
-      };
-    }
+  const model = settings().deepseekModel;
+  const cacheKey = await buildCacheKey({
+    commitSha: input.commitSha,
+    analysisVersion: input.analysisVersion,
+    operation: input.operation,
+    subjectIds: input.subjectIds,
+    evidenceHash: evHash,
+    packetHash: input.packet.packetHash,
+    promptVersion: V2_PROMPT_VERSION,
+    model
+  });
+  const cached2 = await lookupVerificationCache(cacheKey);
+  if (cached2) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: cached2,
+      validationErrors: [],
+      cacheHit: true,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "cache_hit",
+      evidenceHash: evHash,
+      cacheKey
+    };
+  }
+  if (input.skipAi || input.packet.evidenceIds.length === 0) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: {
+        verdict: "unable_to_determine",
+        confidence: "low",
+        verification_level: "deterministic_only",
+        summary: "Insufficient evidence in packet; AI verification skipped or not required.",
+        supporting_evidence_ids: [],
+        missing_links: input.packet.evidenceIds.length ? [] : ["implementation_evidence"],
+        contradictions: [],
+        additional_files_needed: [],
+        runtime_verified: false,
+        verification_complete: true
+      },
+      validationErrors: [],
+      cacheHit: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "skipped",
+      evidenceHash: evHash,
+      cacheKey
+    };
   }
   if (!aiConfigured()) {
     return {
@@ -10854,7 +11014,79 @@ async function runVerificationGroup(input) {
       cachedTokens: 0,
       durationMs: Date.now() - start,
       status: "ai_disabled",
-      evidenceHash: evHash
+      evidenceHash: evHash,
+      cacheKey
+    };
+  }
+  const pricing = await loadPricing();
+  if (!pricing) {
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: null,
+      validationErrors: ["pricing_unavailable"],
+      cacheHit: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "budget_blocked",
+      evidenceHash: evHash,
+      cacheKey
+    };
+  }
+  const estimatedInput = input.packet.tokenEstimate;
+  const budget = await checkBudget({
+    pricing,
+    submissionId: input.submissionId,
+    estimatedInputTokens: estimatedInput,
+    estimatedOutputTokens: 1200,
+    cacheRatio: 0.2
+  });
+  if (!budget.allowed) {
+    await recordUsage({
+      operation: `v2_${input.operation}`,
+      provider: pricing.provider,
+      model: pricing.modelName,
+      promptVersion: V2_PROMPT_VERSION,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheMissTokens: 0,
+      costUsd: 0,
+      requestId: null,
+      status: "rejected",
+      durationMs: Date.now() - start,
+      submissionId: input.submissionId,
+      errorCode: budget.reason,
+      errorMessage: budget.reason
+    });
+    return {
+      operation: input.operation,
+      subjectIds: input.subjectIds,
+      packet: input.packet,
+      verdict: {
+        verdict: "unable_to_determine",
+        confidence: "low",
+        verification_level: "budget_exceeded",
+        summary: "AI verification was not run because the budget gate rejected the request.",
+        supporting_evidence_ids: [],
+        missing_links: [budget.reason],
+        contradictions: [],
+        additional_files_needed: [],
+        runtime_verified: false,
+        verification_complete: false
+      },
+      validationErrors: [],
+      cacheHit: false,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      durationMs: Date.now() - start,
+      status: "budget_exceeded",
+      evidenceHash: evHash,
+      cacheKey
     };
   }
   const userPayload = {
@@ -10870,11 +11102,12 @@ async function runVerificationGroup(input) {
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedTokens = 0;
+  let requestId = null;
   try {
     const response = await completeJson({
       systemStable: SYSTEM_PROMPT,
       contextStable: JSON.stringify(userPayload).slice(0, 12e3),
-      task: "Return strict JSON verifying whether supplied evidence supports the subjects. Use only evidence IDs provided. Schema: verdict, confidence, verification_level, summary, supporting_evidence_ids, missing_links, contradictions, additional_files_needed, runtime_verified, verification_complete.",
+      task: "Return strict JSON verifying whether supplied evidence supports the subjects. Use only evidence IDs provided.",
       promptVersion: V2_PROMPT_VERSION,
       maxOutputTokens: 1800
     });
@@ -10882,7 +11115,25 @@ async function runVerificationGroup(input) {
     inputTokens = response.inputTokens;
     outputTokens = response.outputTokens;
     cachedTokens = response.cachedTokens ?? 0;
+    requestId = response.requestId;
   } catch (error) {
+    await recordUsage({
+      operation: `v2_${input.operation}`,
+      provider: pricing.provider,
+      model: pricing.modelName,
+      promptVersion: V2_PROMPT_VERSION,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheMissTokens: 0,
+      costUsd: 0,
+      requestId: null,
+      status: "failed",
+      durationMs: Date.now() - start,
+      submissionId: input.submissionId,
+      errorCode: "provider_error",
+      errorMessage: error.message
+    });
     return {
       operation: input.operation,
       subjectIds: input.subjectIds,
@@ -10895,11 +11146,29 @@ async function runVerificationGroup(input) {
       cachedTokens: 0,
       durationMs: Date.now() - start,
       status: "provider_error",
-      evidenceHash: evHash
+      evidenceHash: evHash,
+      cacheKey
     };
   }
   const validated = validateVerifierOutput(raw, input.evidence, input.filePaths);
   if (!validated.ok || !validated.verdict) {
+    await recordUsage({
+      operation: `v2_${input.operation}`,
+      provider: pricing.provider,
+      model: pricing.modelName,
+      promptVersion: V2_PROMPT_VERSION,
+      inputTokens,
+      outputTokens,
+      cachedTokens,
+      cacheMissTokens: Math.max(0, inputTokens - cachedTokens),
+      costUsd: budget.estimatedCostUsd,
+      requestId,
+      status: "failed",
+      durationMs: Date.now() - start,
+      submissionId: input.submissionId,
+      errorCode: "verification_failed",
+      errorMessage: validated.errors.join(",")
+    });
     return {
       operation: input.operation,
       subjectIds: input.subjectIds,
@@ -10912,10 +11181,43 @@ async function runVerificationGroup(input) {
       cachedTokens,
       durationMs: Date.now() - start,
       status: "verification_failed",
-      evidenceHash: evHash
+      evidenceHash: evHash,
+      cacheKey
     };
   }
-  if (input.cacheStore) await input.cacheStore(cacheKey, validated.verdict);
+  await storeVerificationCache({
+    cacheKey,
+    commitSha: input.commitSha,
+    analysisVersion: input.analysisVersion,
+    scannerVersion: input.scannerVersion,
+    promptVersion: V2_PROMPT_VERSION,
+    model: pricing.modelName,
+    operation: input.operation,
+    subjectHash: await sha256Hex2(input.subjectIds.join(",")),
+    claimHash: "",
+    evidenceHash: evHash,
+    packetHash: input.packet.packetHash,
+    verdict: validated.verdict,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    costUsd: budget.estimatedCostUsd
+  });
+  await recordUsage({
+    operation: `v2_${input.operation}`,
+    provider: pricing.provider,
+    model: pricing.modelName,
+    promptVersion: V2_PROMPT_VERSION,
+    inputTokens,
+    outputTokens,
+    cachedTokens,
+    cacheMissTokens: Math.max(0, inputTokens - cachedTokens),
+    costUsd: budget.estimatedCostUsd,
+    requestId,
+    status: "success",
+    durationMs: Date.now() - start,
+    submissionId: input.submissionId
+  });
   return {
     operation: input.operation,
     subjectIds: input.subjectIds,
@@ -10928,7 +11230,8 @@ async function runVerificationGroup(input) {
     cachedTokens,
     durationMs: Date.now() - start,
     status: "completed",
-    evidenceHash: evHash
+    evidenceHash: evHash,
+    cacheKey
   };
 }
 
@@ -11070,6 +11373,7 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
     const commitSha = String(repository.analyzed_commit_sha ?? repository.latest_commit_sha ?? "");
     const owner = String(repository.owner ?? "");
     const repoName = String(repository.repo_name ?? "");
+    await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("analysis_runs").update({ commit_sha: commitSha }).eq("id", runId);
     await persistSnapshot(runId, {
       normalized_url: githubUrl,
       owner,
@@ -11150,6 +11454,44 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
       seedEvidenceIds: evidence.filter((e) => e.level !== "metadata").slice(0, 16).map((e) => e.evidenceId)
     });
     const verificationResults = [];
+    await saveCheckpoint(runId, { stage: "graph_complete", commit_sha: commitSha });
+    await persistEngineArtifacts(runId, {
+      files,
+      symbols,
+      relationships,
+      evidence,
+      features,
+      chains,
+      requirements,
+      claims: claimRows,
+      verificationResults: [],
+      filesSentToAi: 0,
+      coverage: {
+        files_discovered: files.length,
+        files_structurally_indexed: files.filter((f) => !f.ignored).length,
+        files_functionally_inspected: files.filter((f) => f.importanceScore >= 0.35 && f.content).length,
+        symbols_indexed: symbols.length,
+        relationships_found: relationships.length,
+        evidence_items: evidence.length,
+        evidence_chains: chains.length,
+        source_lines_inspected: files.reduce((n, f) => n + (f.content ? f.content.split("\n").length : 0), 0),
+        requirements_analyzed: requirements.length,
+        requirements_verified: 0,
+        ai_requests: 0,
+        ai_input_tokens: 0,
+        ai_output_tokens: 0,
+        ai_cached_tokens: 0,
+        ai_cost_usd: 0
+      },
+      summary: {
+        headline: `${repoName} \u2014 analysis in progress`,
+        implementation_summary: "Graph and evidence compiled; verification running.",
+        strong_points: [],
+        uncertainties: [],
+        defense_questions: []
+      }
+    });
+    const simpleRepo = files.filter((f) => !f.ignored).length <= 3 && evidence.filter((e) => e.level === "implementation").length === 0;
     verificationResults.push(await runVerificationGroup({
       operation: "requirements_alignment",
       subjectIds: reqPacket.subjectIds,
@@ -11160,7 +11502,11 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
       filePaths: filePathSet,
       submissionId,
       runId,
-      round: 1
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
+      round: 1,
+      skipAi: simpleRepo
     }));
     verificationResults.push(await runVerificationGroup({
       operation: "architecture_workflows",
@@ -11172,7 +11518,11 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
       filePaths: filePathSet,
       submissionId,
       runId,
-      round: 1
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
+      round: 1,
+      skipAi: simpleRepo || archPacket.evidenceIds.length === 0
     }));
     verificationResults.push(await runVerificationGroup({
       operation: "security_data_testing",
@@ -11184,7 +11534,11 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
       filePaths: filePathSet,
       submissionId,
       runId,
-      round: 1
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
+      round: 1,
+      skipAi: simpleRepo || techPacket.evidenceIds.length === 0
     }));
     const missing = verificationResults.flatMap((v) => v.verdict?.missing_links ?? []).slice(0, 1);
     if (missing.length) {
@@ -11206,6 +11560,9 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
         filePaths: filePathSet,
         submissionId,
         runId,
+        commitSha,
+        scannerVersion: V2_SCANNER_VERSION,
+        analysisVersion: V2_ANALYSIS_VERSION,
         round: 2
       }));
     }
@@ -11275,26 +11632,49 @@ async function runV2Pipeline(runId, submissionId, githubUrl) {
     await logStage(runId, "failed", error.message);
   }
 }
-async function startV2Analysis(submissionId, githubUrl) {
+async function dispatchPipeline(runId, submissionId, githubUrl, mode) {
+  const job = mode === "verify_only" ? runVerifyOnlyPhase(runId, submissionId, githubUrl) : runV2Pipeline(runId, submissionId, githubUrl);
+  if (EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(job);
+  else await job;
+}
+async function startV2Analysis(submissionId, githubUrl, opts) {
+  const active = await findActiveRun(submissionId);
+  if (active) {
+    return { run_id: active, status: "queued", message: "Analysis already in progress." };
+  }
   const store = new AnalysisStore();
   const loaded = await store.loadForReview(submissionId);
-  let commitSha = loaded ? String(loaded.repository.analyzed_commit_sha ?? "") : "";
-  if (!loaded || !commitSha) {
-    const pre = await analyzeSubmission(submissionId, githubUrl);
-    if (pre.status === "failed") {
-      return { run_id: "", status: "failed", message: pre.error };
+  const commitSha = loaded ? String(loaded.repository.analyzed_commit_sha ?? "") : "";
+  if (commitSha) {
+    const cachedRun = await findCachedRun(
+      submissionId,
+      commitSha,
+      V2_SCANNER_VERSION,
+      V2_ANALYSIS_VERSION,
+      V2_PROMPT_VERSION
+    );
+    if (cachedRun && !opts?.retry) {
+      await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("submissions").update({
+        latest_analysis_run_id: cachedRun
+      }).eq("id", submissionId);
+      return {
+        run_id: cachedRun,
+        status: "completed",
+        cached: true,
+        message: "Reusing cached V2 analysis for this commit."
+      };
     }
-    const again = await store.loadForReview(submissionId);
-    commitSha = again ? String(again.repository.analyzed_commit_sha ?? "") : "";
   }
-  const cachedRun = commitSha ? await findCachedRun(submissionId, commitSha, V2_SCANNER_VERSION, V2_ANALYSIS_VERSION) : null;
-  if (cachedRun) {
-    await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("submissions").update({
-      latest_analysis_run_id: cachedRun
-    }).eq("id", submissionId);
-    return { run_id: cachedRun, status: "completed", cached: true, message: "Reusing cached V2 analysis for this commit." };
+  if (opts?.retry) {
+    const { data: lastRuns } = await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("analysis_runs").select("id, status").eq("submission_id", submissionId).in("status", ["failed", "partial"]).order("started_at", { ascending: false }).limit(1);
+    const last = lastRuns?.[0];
+    if (last && await evidenceCountForRun(last.id) > 0) {
+      await updateRunStatus(last.id, "verifying", { progress_percent: progressFor("verifying") });
+      await dispatchPipeline(last.id, submissionId, githubUrl, "verify_only");
+      return { run_id: last.id, status: "queued", message: "Retrying verification from persisted evidence." };
+    }
   }
-  const repo = (await store.loadForReview(submissionId))?.repository ?? {};
+  const repo = loaded?.repository ?? {};
   const runId = await createAnalysisRun({
     submissionId,
     commitSha: commitSha || "pending",
@@ -11307,10 +11687,111 @@ async function startV2Analysis(submissionId, githubUrl) {
     analysisVersion: V2_ANALYSIS_VERSION,
     promptVersion: V2_PROMPT_VERSION
   });
-  const job = runV2Pipeline(runId, submissionId, githubUrl);
-  if (EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(job);
-  else await job;
-  return { run_id: runId, status: EdgeRuntime?.waitUntil ? "queued" : "completed" };
+  await dispatchPipeline(runId, submissionId, githubUrl, "full");
+  return { run_id: runId, status: "queued", message: "V2 analysis queued." };
+}
+async function runVerifyOnlyPhase(runId, submissionId, githubUrl) {
+  try {
+    const evidence = await loadPersistedEvidence(runId);
+    const relationships = await loadPersistedRelationships(runId);
+    const features = await loadPersistedFeatures(runId);
+    const files = await rebuildFilesFromSubmission(submissionId);
+    if (!evidence.length || !files.length) {
+      await runV2Pipeline(runId, submissionId, githubUrl);
+      return;
+    }
+    const { data: submissionRow } = await (await Promise.resolve().then(() => (init_http(), http_exports))).db().from("submissions").select("hackathon_id, project_description, problem_statement").eq("id", submissionId).single();
+    const hackathon = await loadHackathon(String(submissionRow?.hackathon_id ?? ""));
+    const requirementMap = await getRequirementMap(String(hackathon.id ?? submissionId), hackathon);
+    const requirements = mapRequirements(requirementMap, evidence, features);
+    const claims = [
+      String(submissionRow?.project_description ?? ""),
+      String(submissionRow?.problem_statement ?? "")
+    ];
+    const claimRows = mapClaims(claims, evidence, features);
+    const store = new AnalysisStore();
+    const loaded = await store.loadForReview(submissionId);
+    const commitSha = String(loaded?.repository.analyzed_commit_sha ?? "unknown");
+    const repoName = String(loaded?.repository.repo_name ?? "project");
+    const filePathSet = new Set(files.map((f) => f.path));
+    const hackathonContext = JSON.stringify({
+      requirements: (requirementMap.requirements ?? []).slice(0, 12).map((r) => ({ id: r.id, text: r.text }))
+    });
+    await updateRunStatus(runId, "verifying", { progress_percent: progressFor("verifying") });
+    const reqPacket = await buildEvidencePacket({
+      subjectIds: requirements.slice(0, 8).map((r) => r.requirementId),
+      evidence,
+      files,
+      relationships,
+      seedEvidenceIds: requirements.flatMap((r) => r.evidenceIds).slice(0, 20)
+    });
+    const verificationResults = [
+      await runVerificationGroup({
+        operation: "requirements_alignment",
+        subjectIds: reqPacket.subjectIds,
+        subjectLabel: "Requirements and functional alignment",
+        hackathonContext,
+        packet: reqPacket,
+        evidence,
+        filePaths: filePathSet,
+        submissionId,
+        runId,
+        commitSha,
+        scannerVersion: V2_SCANNER_VERSION,
+        analysisVersion: V2_ANALYSIS_VERSION,
+        round: 1
+      })
+    ];
+    await updateRunStatus(runId, "finalizing", { progress_percent: progressFor("finalizing") });
+    const summary = {
+      headline: `${repoName} \u2014 repository intelligence summary`,
+      implementation_summary: "Verification retry completed from persisted graph evidence.",
+      strong_points: features.filter((f) => f.confidence === "high").map((f) => f.name),
+      uncertainties: verificationResults.flatMap((v) => v.verdict?.missing_links ?? []).slice(0, 8).map((m) => ({ title: m, detail: "Additional evidence needed." })),
+      defense_questions: features.slice(0, 5).map((f) => `Explain how "${f.name}" works across the codebase.`)
+    };
+    await persistEngineArtifacts(runId, {
+      files,
+      symbols: [],
+      relationships,
+      evidence,
+      features,
+      chains: buildEvidenceChains(features),
+      requirements,
+      claims: claimRows,
+      verificationResults,
+      filesSentToAi: reqPacket.evidenceIds.length,
+      coverage: {
+        files_discovered: files.length,
+        files_structurally_indexed: files.length,
+        files_functionally_inspected: files.filter((f) => f.importanceScore >= 0.35).length,
+        symbols_indexed: 0,
+        relationships_found: relationships.length,
+        evidence_items: evidence.length,
+        evidence_chains: features.length,
+        source_lines_inspected: 0,
+        requirements_analyzed: requirements.length,
+        requirements_verified: verificationResults.filter((v) => v.verdict?.verdict === "confirmed").length,
+        ai_requests: verificationResults.length,
+        ai_input_tokens: verificationResults.reduce((n, v) => n + v.inputTokens, 0),
+        ai_output_tokens: verificationResults.reduce((n, v) => n + v.outputTokens, 0),
+        ai_cached_tokens: verificationResults.reduce((n, v) => n + v.cachedTokens, 0),
+        ai_cost_usd: 0
+      },
+      summary
+    });
+    await updateRunStatus(runId, "completed", {
+      progress_percent: 100,
+      completed_at: (/* @__PURE__ */ new Date()).toISOString(),
+      coverage_level: "medium"
+    });
+  } catch (error) {
+    await updateRunStatus(runId, "failed", {
+      error_message: error.message?.slice(0, 500) ?? "Verify retry failed",
+      completed_at: (/* @__PURE__ */ new Date()).toISOString(),
+      progress_percent: 100
+    });
+  }
 }
 async function getV2Status(submissionId) {
   const { data, error } = await (await Promise.resolve().then(() => (init_http(), http_exports))).db().rpc("analysis_run_status", {
@@ -11386,6 +11867,9 @@ async function act(req) {
     case "start-v2":
       if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
       return json(await startV2Analysis(submissionId, githubUrl), 202);
+    case "retry-v2":
+      if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
+      return json(await startV2Analysis(submissionId, githubUrl, { retry: true }), 202);
     case "status-v2":
       return json({ ...await getV2Status(submissionId), ai_available: aiConfigured() });
     case "summary-v2": {

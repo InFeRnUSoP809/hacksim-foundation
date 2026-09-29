@@ -24,7 +24,9 @@ import {
   runReview,
   startV2Analysis,
 } from "@/lib/api";
+import { V2AdminEvidenceExplorer, V2AdminRelationshipExplorer } from "@/components/analysis/v2/V2AdminExplorer";
 import { V2ReviewReport } from "@/components/analysis/v2/V2ReviewReport";
+import { getV2AnalysisSummaryRpc } from "@/lib/api";
 import type { V2AnalysisSummary } from "@/types/v2-analysis";
 import { cn } from "@/lib/utils";
 import {
@@ -62,7 +64,7 @@ export default function AdminSubmissionAnalysis() {
   const v2Report = useAsync(async (): Promise<V2AnalysisSummary> => {
     const st = await getV2AnalysisStatus(id);
     if (st.status !== "completed" && st.status !== "partial") return { ready: false };
-    return getV2AnalysisSummary(id);
+    return getV2AnalysisSummaryRpc(id);
   }, [id, v2Status.data?.status]);
 
   async function run(step: "repository" | "review" | "v2") {
@@ -220,8 +222,14 @@ export default function AdminSubmissionAnalysis() {
       )}
 
       {v2Report.data?.ready && (
-        <div className="mt-8">
+        <div className="mt-8 space-y-6">
           <V2ReviewReport data={v2Report.data} admin />
+          {v2Report.data.run_id && (
+            <>
+              <V2AdminEvidenceExplorer runId={String(v2Report.data.run_id)} />
+              <V2AdminRelationshipExplorer runId={String(v2Report.data.run_id)} />
+            </>
+          )}
         </div>
       )}
 

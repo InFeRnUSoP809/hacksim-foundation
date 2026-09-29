@@ -56,17 +56,39 @@ export async function findCachedRun(
   commitSha: string,
   scannerVersion: string,
   analysisVersion: string,
+  promptVersion?: string,
 ): Promise<string | null> {
-  const { data } = await service()
+  let query = service()
     .from("analysis_runs")
     .select("id")
     .eq("submission_id", submissionId)
     .eq("commit_sha", commitSha)
     .eq("scanner_version", scannerVersion)
     .eq("analysis_version", analysisVersion)
-    .in("status", ["completed", "partial"])
+    .in("status", ["completed", "partial"]);
+  if (promptVersion) query = query.eq("prompt_version", promptVersion);
+  const { data } = await query.limit(1);
+  return (data as { id: string }[] | null)?.[0]?.id ?? null;
+}
+
+const ACTIVE_STATUSES = [
+  "queued", "discovering_repository", "scanning_repository", "building_code_graph",
+  "discovering_features", "mapping_requirements", "verifying", "validating", "finalizing",
+];
+
+export async function findActiveRun(submissionId: string): Promise<string | null> {
+  const { data } = await service()
+    .from("analysis_runs")
+    .select("id")
+    .eq("submission_id", submissionId)
+    .in("status", ACTIVE_STATUSES)
+    .order("started_at", { ascending: false })
     .limit(1);
   return (data as { id: string }[] | null)?.[0]?.id ?? null;
+}
+
+export async function saveCheckpoint(runId: string, checkpoint: Record<string, unknown>): Promise<void> {
+  await service().from("analysis_runs").update({ checkpoint }).eq("id", runId);
 }
 
 export async function updateRunStatus(

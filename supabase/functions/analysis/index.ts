@@ -128,6 +128,10 @@ async function act(req: Request): Promise<Response> {
       if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
       return json(await startV2Analysis(submissionId, githubUrl), 202);
 
+    case "retry-v2":
+      if (!githubUrl) throw new HttpError("Add a GitHub repository URL first.", 400);
+      return json(await startV2Analysis(submissionId, githubUrl, { retry: true }), 202);
+
     case "status-v2":
       return json({ ...(await getV2Status(submissionId)), ai_available: aiConfigured() });
 

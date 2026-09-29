@@ -5,7 +5,8 @@ import type { V2RunStatus } from "@/types/v2-analysis";
 const STAGES: { key: V2RunStatus; label: string }[] = [
   { key: "scanning_repository", label: "Repository connected" },
   { key: "building_code_graph", label: "Code structure analyzed" },
-  { key: "discovering_features", label: "Project workflows discovered" },
+  { key: "discovering_features", label: "Understanding project workflows" },
+  { key: "mapping_requirements", label: "Checking requirements" },
   { key: "verifying", label: "Verifying implementation" },
   { key: "finalizing", label: "Preparing your review" },
 ];

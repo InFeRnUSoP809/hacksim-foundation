@@ -8,12 +8,21 @@ import { buildRelationshipGraph } from "./graph.ts";
 import { mapClaims, mapRequirements } from "./requirement-map.ts";
 import {
   createAnalysisRun,
+  findActiveRun,
   findCachedRun,
   logStage,
   persistEngineArtifacts,
   persistSnapshot,
+  saveCheckpoint,
   updateRunStatus,
 } from "./persist.ts";
+import {
+  evidenceCountForRun,
+  loadPersistedEvidence,
+  loadPersistedFeatures,
+  loadPersistedRelationships,
+  rebuildFilesFromSubmission,
+} from "./rehydrate.ts";
 import { buildEvidencePacket } from "./retrieval.ts";
 import { indexSymbols } from "./symbols.ts";
 import { runVerificationGroup } from "./verifier.ts";
@@ -80,6 +89,8 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
     const commitSha = String(repository.analyzed_commit_sha ?? repository.latest_commit_sha ?? "");
     const owner = String(repository.owner ?? "");
     const repoName = String(repository.repo_name ?? "");
+
+    await (await import("../http.ts")).db().from("analysis_runs").update({ commit_sha: commitSha }).eq("id", runId);
 
     await persistSnapshot(runId, {
       normalized_url: githubUrl,
@@ -179,6 +190,47 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
     });
 
     const verificationResults = [];
+    await saveCheckpoint(runId, { stage: "graph_complete", commit_sha: commitSha });
+    await persistEngineArtifacts(runId, {
+      files,
+      symbols,
+      relationships,
+      evidence,
+      features,
+      chains,
+      requirements,
+      claims: claimRows,
+      verificationResults: [],
+      filesSentToAi: 0,
+      coverage: {
+        files_discovered: files.length,
+        files_structurally_indexed: files.filter((f) => !f.ignored).length,
+        files_functionally_inspected: files.filter((f) => f.importanceScore >= 0.35 && f.content).length,
+        symbols_indexed: symbols.length,
+        relationships_found: relationships.length,
+        evidence_items: evidence.length,
+        evidence_chains: chains.length,
+        source_lines_inspected: files.reduce((n, f) => n + (f.content ? f.content.split("\n").length : 0), 0),
+        requirements_analyzed: requirements.length,
+        requirements_verified: 0,
+        ai_requests: 0,
+        ai_input_tokens: 0,
+        ai_output_tokens: 0,
+        ai_cached_tokens: 0,
+        ai_cost_usd: 0,
+      },
+      summary: {
+        headline: `${repoName} — analysis in progress`,
+        implementation_summary: "Graph and evidence compiled; verification running.",
+        strong_points: [],
+        uncertainties: [],
+        defense_questions: [],
+      },
+    });
+
+    const simpleRepo = files.filter((f) => !f.ignored).length <= 3 &&
+      evidence.filter((e) => e.level === "implementation").length === 0;
+
     verificationResults.push(await runVerificationGroup({
       operation: "requirements_alignment",
       subjectIds: reqPacket.subjectIds,
@@ -189,7 +241,11 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
       filePaths: filePathSet,
       submissionId,
       runId,
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
       round: 1,
+      skipAi: simpleRepo,
     }));
     verificationResults.push(await runVerificationGroup({
       operation: "architecture_workflows",
@@ -201,7 +257,11 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
       filePaths: filePathSet,
       submissionId,
       runId,
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
       round: 1,
+      skipAi: simpleRepo || archPacket.evidenceIds.length === 0,
     }));
     verificationResults.push(await runVerificationGroup({
       operation: "security_data_testing",
@@ -213,7 +273,11 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
       filePaths: filePathSet,
       submissionId,
       runId,
+      commitSha,
+      scannerVersion: V2_SCANNER_VERSION,
+      analysisVersion: V2_ANALYSIS_VERSION,
       round: 1,
+      skipAi: simpleRepo || techPacket.evidenceIds.length === 0,
     }));
 
     // Adaptive second round for first missing link
@@ -237,6 +301,9 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
         filePaths: filePathSet,
         submissionId,
         runId,
+        commitSha,
+        scannerVersion: V2_SCANNER_VERSION,
+        analysisVersion: V2_ANALYSIS_VERSION,
         round: 2,
       }));
     }
@@ -318,31 +385,66 @@ export async function runV2Pipeline(runId: string, submissionId: string, githubU
   }
 }
 
-export async function startV2Analysis(submissionId: string, githubUrl: string): Promise<StartV2Outcome> {
+async function dispatchPipeline(runId: string, submissionId: string, githubUrl: string, mode: "full" | "verify_only") {
+  const job = mode === "verify_only"
+    ? runVerifyOnlyPhase(runId, submissionId, githubUrl)
+    : runV2Pipeline(runId, submissionId, githubUrl);
+  if (EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(job);
+  else await job;
+}
+
+export async function startV2Analysis(
+  submissionId: string,
+  githubUrl: string,
+  opts?: { retry?: boolean },
+): Promise<StartV2Outcome> {
+  const active = await findActiveRun(submissionId);
+  if (active) {
+    return { run_id: active, status: "queued", message: "Analysis already in progress." };
+  }
+
   const store = new AnalysisStore();
   const loaded = await store.loadForReview(submissionId);
-  let commitSha = loaded ? String(loaded.repository.analyzed_commit_sha ?? "") : "";
+  const commitSha = loaded ? String(loaded.repository.analyzed_commit_sha ?? "") : "";
 
-  if (!loaded || !commitSha) {
-    const pre = await analyzeSubmission(submissionId, githubUrl);
-    if (pre.status === "failed") {
-      return { run_id: "", status: "failed", message: pre.error };
+  if (commitSha) {
+    const cachedRun = await findCachedRun(
+      submissionId,
+      commitSha,
+      V2_SCANNER_VERSION,
+      V2_ANALYSIS_VERSION,
+      V2_PROMPT_VERSION,
+    );
+    if (cachedRun && !opts?.retry) {
+      await (await import("../http.ts")).db().from("submissions").update({
+        latest_analysis_run_id: cachedRun,
+      }).eq("id", submissionId);
+      return {
+        run_id: cachedRun,
+        status: "completed",
+        cached: true,
+        message: "Reusing cached V2 analysis for this commit.",
+      };
     }
-    const again = await store.loadForReview(submissionId);
-    commitSha = again ? String(again.repository.analyzed_commit_sha ?? "") : "";
   }
 
-  const cachedRun = commitSha
-    ? await findCachedRun(submissionId, commitSha, V2_SCANNER_VERSION, V2_ANALYSIS_VERSION)
-    : null;
-  if (cachedRun) {
-    await (await import("../http.ts")).db().from("submissions").update({
-      latest_analysis_run_id: cachedRun,
-    }).eq("id", submissionId);
-    return { run_id: cachedRun, status: "completed", cached: true, message: "Reusing cached V2 analysis for this commit." };
+  if (opts?.retry) {
+    const { data: lastRuns } = await (await import("../http.ts")).db()
+      .from("analysis_runs")
+      .select("id, status")
+      .eq("submission_id", submissionId)
+      .in("status", ["failed", "partial"])
+      .order("started_at", { ascending: false })
+      .limit(1);
+    const last = (lastRuns as { id: string }[] | null)?.[0];
+    if (last && (await evidenceCountForRun(last.id)) > 0) {
+      await updateRunStatus(last.id, "verifying", { progress_percent: progressFor("verifying") });
+      await dispatchPipeline(last.id, submissionId, githubUrl, "verify_only");
+      return { run_id: last.id, status: "queued", message: "Retrying verification from persisted evidence." };
+    }
   }
 
-  const repo = (await store.loadForReview(submissionId))?.repository ?? {};
+  const repo = loaded?.repository ?? {};
   const runId = await createAnalysisRun({
     submissionId,
     commitSha: commitSha || "pending",
@@ -356,11 +458,125 @@ export async function startV2Analysis(submissionId: string, githubUrl: string): 
     promptVersion: V2_PROMPT_VERSION,
   });
 
-  const job = runV2Pipeline(runId, submissionId, githubUrl);
-  if (EdgeRuntime?.waitUntil) EdgeRuntime.waitUntil(job);
-  else await job;
+  await dispatchPipeline(runId, submissionId, githubUrl, "full");
+  return { run_id: runId, status: "queued", message: "V2 analysis queued." };
+}
 
-  return { run_id: runId, status: EdgeRuntime?.waitUntil ? "queued" : "completed" };
+/** Resume verification without rescanning GitHub or rebuilding graph. */
+async function runVerifyOnlyPhase(runId: string, submissionId: string, githubUrl: string): Promise<void> {
+  try {
+    const evidence = await loadPersistedEvidence(runId);
+    const relationships = await loadPersistedRelationships(runId);
+    const features = await loadPersistedFeatures(runId);
+    const files = await rebuildFilesFromSubmission(submissionId);
+    if (!evidence.length || !files.length) {
+      await runV2Pipeline(runId, submissionId, githubUrl);
+      return;
+    }
+
+    const { data: submissionRow } = await (await import("../http.ts")).db()
+      .from("submissions")
+      .select("hackathon_id, project_description, problem_statement")
+      .eq("id", submissionId)
+      .single();
+    const hackathon = await loadHackathon(String((submissionRow as Record<string, unknown> | null)?.hackathon_id ?? ""));
+    const requirementMap = await getRequirementMap(String(hackathon.id ?? submissionId), hackathon);
+    const requirements = mapRequirements(requirementMap, evidence, features);
+    const claims = [
+      String((submissionRow as Record<string, unknown> | null)?.project_description ?? ""),
+      String((submissionRow as Record<string, unknown> | null)?.problem_statement ?? ""),
+    ];
+    const claimRows = mapClaims(claims, evidence, features);
+
+    const store = new AnalysisStore();
+    const loaded = await store.loadForReview(submissionId);
+    const commitSha = String(loaded?.repository.analyzed_commit_sha ?? "unknown");
+    const repoName = String(loaded?.repository.repo_name ?? "project");
+    const filePathSet = new Set(files.map((f) => f.path));
+    const hackathonContext = JSON.stringify({
+      requirements: (requirementMap.requirements ?? []).slice(0, 12).map((r) => ({ id: r.id, text: r.text })),
+    });
+
+    await updateRunStatus(runId, "verifying", { progress_percent: progressFor("verifying") });
+
+    const reqPacket = await buildEvidencePacket({
+      subjectIds: requirements.slice(0, 8).map((r) => r.requirementId),
+      evidence,
+      files,
+      relationships,
+      seedEvidenceIds: requirements.flatMap((r) => r.evidenceIds).slice(0, 20),
+    });
+    const verificationResults = [
+      await runVerificationGroup({
+        operation: "requirements_alignment",
+        subjectIds: reqPacket.subjectIds,
+        subjectLabel: "Requirements and functional alignment",
+        hackathonContext,
+        packet: reqPacket,
+        evidence,
+        filePaths: filePathSet,
+        submissionId,
+        runId,
+        commitSha,
+        scannerVersion: V2_SCANNER_VERSION,
+        analysisVersion: V2_ANALYSIS_VERSION,
+        round: 1,
+      }),
+    ];
+
+    await updateRunStatus(runId, "finalizing", { progress_percent: progressFor("finalizing") });
+    const summary = {
+      headline: `${repoName} — repository intelligence summary`,
+      implementation_summary: "Verification retry completed from persisted graph evidence.",
+      strong_points: features.filter((f) => f.confidence === "high").map((f) => f.name),
+      uncertainties: verificationResults.flatMap((v) => v.verdict?.missing_links ?? []).slice(0, 8)
+        .map((m) => ({ title: m, detail: "Additional evidence needed." })),
+      defense_questions: features.slice(0, 5).map((f) => `Explain how "${f.name}" works across the codebase.`),
+    };
+
+    await persistEngineArtifacts(runId, {
+      files,
+      symbols: [],
+      relationships,
+      evidence,
+      features,
+      chains: buildEvidenceChains(features),
+      requirements,
+      claims: claimRows,
+      verificationResults,
+      filesSentToAi: reqPacket.evidenceIds.length,
+      coverage: {
+        files_discovered: files.length,
+        files_structurally_indexed: files.length,
+        files_functionally_inspected: files.filter((f) => f.importanceScore >= 0.35).length,
+        symbols_indexed: 0,
+        relationships_found: relationships.length,
+        evidence_items: evidence.length,
+        evidence_chains: features.length,
+        source_lines_inspected: 0,
+        requirements_analyzed: requirements.length,
+        requirements_verified: verificationResults.filter((v) => v.verdict?.verdict === "confirmed").length,
+        ai_requests: verificationResults.length,
+        ai_input_tokens: verificationResults.reduce((n, v) => n + v.inputTokens, 0),
+        ai_output_tokens: verificationResults.reduce((n, v) => n + v.outputTokens, 0),
+        ai_cached_tokens: verificationResults.reduce((n, v) => n + v.cachedTokens, 0),
+        ai_cost_usd: 0,
+      },
+      summary,
+    });
+
+    await updateRunStatus(runId, "completed", {
+      progress_percent: 100,
+      completed_at: new Date().toISOString(),
+      coverage_level: "medium",
+    });
+  } catch (error) {
+    await updateRunStatus(runId, "failed", {
+      error_message: (error as Error).message?.slice(0, 500) ?? "Verify retry failed",
+      completed_at: new Date().toISOString(),
+      progress_percent: 100,
+    });
+  }
 }
 
 export async function getV2Status(submissionId: string): Promise<Record<string, unknown> | null> {
