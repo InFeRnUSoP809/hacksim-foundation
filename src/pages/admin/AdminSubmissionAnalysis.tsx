@@ -18,9 +18,16 @@ import { useAsync } from "@/hooks/use-async";
 import {
   analyzeRepository,
   getSubmissionAnalysis,
+  getV2AnalysisSummary,
+  getV2AnalysisStatus,
   isApiConfigured,
   runReview,
+  startV2Analysis,
 } from "@/lib/api";
+import { V2AdminEvidenceExplorer, V2AdminRelationshipExplorer } from "@/components/analysis/v2/V2AdminExplorer";
+import { V2ReviewReport } from "@/components/analysis/v2/V2ReviewReport";
+import { getV2AnalysisSummaryRpc } from "@/lib/api";
+import type { V2AnalysisSummary } from "@/types/v2-analysis";
 import { cn } from "@/lib/utils";
 import {
   Brain,
@@ -52,15 +59,24 @@ export default function AdminSubmissionAnalysis() {
   const confirm = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-
   const analysis = useAsync(() => getSubmissionAnalysis(id), [id]);
+  const v2Status = useAsync(() => getV2AnalysisStatus(id), [id, busy]);
+  const v2Report = useAsync(async (): Promise<V2AnalysisSummary> => {
+    const st = await getV2AnalysisStatus(id);
+    if (st.status !== "completed" && st.status !== "partial") return { ready: false };
+    return getV2AnalysisSummaryRpc(id);
+  }, [id, v2Status.data?.status]);
 
-  async function run(step: "repository" | "review") {
+  async function run(step: "repository" | "review" | "v2") {
     setBusy(step);
     setActionError(null);
     try {
       if (step === "repository") {
         await analyzeRepository(id);
+      } else if (step === "v2") {
+        await startV2Analysis(id);
+        v2Status.reload();
+        v2Report.reload();
       } else {
         await runReview(id);
       }
@@ -171,6 +187,19 @@ export default function AdminSubmissionAnalysis() {
                 )}
                 Run AI review
               </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void run("v2")}
+                disabled={busy !== null || !submission.github_url}
+              >
+                {busy === "v2" ? (
+                  <RefreshCw className="size-3.5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="size-3.5" />
+                )}
+                V2 intelligence run
+              </Button>
             </>
           )}
         </div>
@@ -189,6 +218,18 @@ export default function AdminSubmissionAnalysis() {
       {actionError && (
         <div className="mt-6">
           <ErrorState title="Action failed" message={actionError} />
+        </div>
+      )}
+
+      {v2Report.data?.ready && (
+        <div className="mt-8 space-y-6">
+          <V2ReviewReport data={v2Report.data} admin />
+          {v2Report.data.run_id && (
+            <>
+              <V2AdminEvidenceExplorer runId={String(v2Report.data.run_id)} />
+              <V2AdminRelationshipExplorer runId={String(v2Report.data.run_id)} />
+            </>
+          )}
         </div>
       )}
 

@@ -27,6 +27,7 @@ import type {
   ReviewRunResult,
   SubmissionAnalysis,
 } from "@/types/analysis";
+import type { V2AnalysisStatus, V2AnalysisSummary } from "@/types/v2-analysis";
 
 /**
  * Whether the Phase 5/6 services can be called at all.
@@ -161,6 +162,101 @@ export async function runReview(
 /** §89 — force a fresh scan, ignoring the commit cache. */
 export async function reanalyzeRepository(submissionId: string): Promise<{ status: string }> {
   return invoke("analysis", { body: { action: "reanalyze", submission_id: submissionId } });
+}
+
+/** V2 — enqueue background repository intelligence analysis. */
+export async function startV2Analysis(submissionId: string): Promise<{
+  run_id: string;
+  status: string;
+  cached?: boolean;
+  message?: string;
+}> {
+  return invoke("analysis", { body: { action: "start-v2", submission_id: submissionId } });
+}
+
+export async function retryV2Analysis(submissionId: string): Promise<{
+  run_id: string;
+  status: string;
+  message?: string;
+}> {
+  return invoke("analysis", { body: { action: "retry-v2", submission_id: submissionId } });
+}
+
+/** Read-only status from PostgreSQL (no edge side effects). */
+export async function getV2AnalysisStatusRpc(submissionId: string): Promise<V2AnalysisStatus | null> {
+  const { data, error } = await supabase.rpc("analysis_run_status", {
+    p_submission_id: submissionId,
+  });
+  if (error) return null;
+  return (data ?? null) as V2AnalysisStatus | null;
+}
+
+/** Read-only summary from PostgreSQL (reopen without GitHub/DeepSeek). */
+export async function getV2AnalysisSummaryRpc(submissionId: string): Promise<V2AnalysisSummary> {
+  const { data, error } = await supabase.rpc("v2_analysis_summary", {
+    p_submission_id: submissionId,
+  });
+  if (error) throw new Error(error.message);
+  return (data ?? { ready: false }) as V2AnalysisSummary;
+}
+
+export async function getV2EvidencePage(
+  runId: string,
+  params: {
+    limit?: number;
+    offset?: number;
+    level?: string;
+    type?: string;
+    file?: string;
+    search?: string;
+    confidence?: string;
+  } = {},
+): Promise<{ items: unknown[]; total: number }> {
+  const { data, error } = await supabase.rpc("v2_analysis_evidence_page", {
+    p_run_id: runId,
+    p_limit: params.limit ?? 25,
+    p_offset: params.offset ?? 0,
+    p_level: params.level ?? null,
+    p_type: params.type ?? null,
+    p_file: params.file ?? null,
+    p_search: params.search ?? null,
+    p_confidence: params.confidence ?? null,
+  });
+  if (error) throw new Error(error.message);
+  return data as { items: unknown[]; total: number };
+}
+
+export async function getV2RelationshipsPage(
+  runId: string,
+  params: { limit?: number; offset?: number; type?: string } = {},
+): Promise<{ items: unknown[]; total: number }> {
+  const { data, error } = await supabase.rpc("v2_analysis_relationships_page", {
+    p_run_id: runId,
+    p_limit: params.limit ?? 50,
+    p_offset: params.offset ?? 0,
+    p_type: params.type ?? null,
+  });
+  if (error) throw new Error(error.message);
+  return data as { items: unknown[]; total: number };
+}
+
+export async function getV2EvidenceDetail(runId: string, evidenceId: string): Promise<Record<string, unknown> | null> {
+  const { data, error } = await supabase.rpc("v2_evidence_detail", {
+    p_run_id: runId,
+    p_evidence_id: evidenceId,
+  });
+  if (error) throw new Error(error.message);
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+/** @deprecated Prefer getV2AnalysisStatusRpc for polling. */
+export async function getV2AnalysisStatus(submissionId: string): Promise<V2AnalysisStatus> {
+  return invoke("analysis", { body: { action: "status-v2", submission_id: submissionId } });
+}
+
+/** @deprecated Prefer getV2AnalysisSummaryRpc for completed reports. */
+export async function getV2AnalysisSummary(submissionId: string): Promise<V2AnalysisSummary> {
+  return invoke("analysis", { body: { action: "summary-v2", submission_id: submissionId } });
 }
 
 export async function retryModule(

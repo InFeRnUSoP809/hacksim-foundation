@@ -21,6 +21,7 @@ import {
   isApiConfigured,
   runReview,
 } from "@/lib/api";
+import { V2StudentReview } from "@/components/analysis/v2/V2StudentReview";
 import { friendlyError } from "@/services/errors";
 import { cn } from "@/lib/utils";
 import {
@@ -115,6 +116,8 @@ export default function ProjectReview() {
   useEffect(() => {
     const data = analysis.data;
     if (!data || startedRef.current) return;
+    // V2 engine handles scan + verification asynchronously when edge functions are available.
+    if (isApiConfigured) return;
 
     const repoStatus = data.repository?.analysis_status;
     const reviewStatus = data.review?.status;
@@ -204,6 +207,27 @@ export default function ProjectReview() {
   }
 
   const data = analysis.data;
+
+  if (isApiConfigured) {
+    const submission = data.submission as { project_name?: string; github_url?: string };
+    return (
+      <StudentLayout>
+        <div className="flex flex-col gap-2">
+          <p className="label-mono text-brand">Review</p>
+          <h1 className="text-3xl font-semibold tracking-[-0.03em]">Your project review</h1>
+          <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            What HackSim found in your repository, how your implementation works, and what to prepare for defense.
+          </p>
+        </div>
+        <V2StudentReview
+          submissionId={id}
+          projectName={submission.project_name ?? "Your project"}
+          githubUrl={submission.github_url}
+        />
+      </StudentLayout>
+    );
+  }
+
   const review = data.review;
   // Derived rather than stored: a review left "running" past the cutoff is a
   // run that was killed, not one still going. Retrying rewrites the row, so

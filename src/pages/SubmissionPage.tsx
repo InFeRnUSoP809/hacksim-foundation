@@ -19,6 +19,7 @@ import {
   validateGithubUrl,
   validateHttpUrl,
 } from "@/services/submissions";
+import { isApiConfigured, startV2Analysis } from "@/lib/api";
 import { getSession } from "@/services/sessions";
 import { ArrowRight, FileText, Loader2, Lock, Send } from "lucide-react";
 import { useState } from "react";
@@ -413,6 +414,11 @@ function SubmissionWindowSection({
       // with its own clock, so a click at 00:00:01 still fails server-side.
       const result = await lockSubmission(submission.id);
       if (result.ok) {
+        if (isApiConfigured && submission.github_url?.trim()) {
+          void startV2Analysis(submission.id).catch(() => {
+            /* Analysis can be retried from Project Review; submission is already saved. */
+          });
+        }
         onSubmitted();
         window.location.reload();
       } else {
