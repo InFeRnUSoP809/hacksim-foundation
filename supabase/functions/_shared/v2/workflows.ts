@@ -71,6 +71,22 @@ export function discoverFeatureWorkflows(
     });
   }
 
+  // UI-heavy apps (forms, survey flows) — from implementation/ui semantics, not README
+  const uiEvidence = evidence.filter((e) =>
+    e.level === "implementation" && (e.detail?.kind === "ui" || e.claim.includes("displays") || e.claim.includes("form")),
+  );
+  if (uiEvidence.length >= 2 && !features.some((f) => f.featureKey === "ui-interaction-flow")) {
+    features.push({
+      featureKey: "ui-interaction-flow",
+      name: "UI interaction flow",
+      workflow: uiEvidence.slice(0, 6).map((e) => ({ step: "ui_behavior", evidenceId: e.evidenceId })),
+      entrySymbolKeys: [],
+      symbolKeys: [],
+      evidenceIds: uiEvidence.map((e) => e.evidenceId),
+      confidence: uiEvidence.length >= 4 ? "medium" : "low",
+    });
+  }
+
   // Database access feature
   const db = relationships.filter((r) =>
     r.relationship === "reads_database" || r.relationship === "writes_database"
