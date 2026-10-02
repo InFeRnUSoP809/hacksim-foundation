@@ -68,6 +68,8 @@ export interface ProjectMapIdentity {
 export interface ProjectMap {
   /** §88 — "limited" means only relevant files were read. */
   analysis_mode: "full" | "limited";
+  /** Identifier of the analysis engine that produced this map. */
+  engine_id?: string | null;
   identity: ProjectMapIdentity;
   stack: {
     primary_language?: string | null;
@@ -505,7 +507,15 @@ export interface ProjectReview {
   prompt_version: string | null;
   estimated_cost_usd?: number;
   total_tokens?: number;
-  summary: ReviewSummary | null;
+  summary:
+    | (ReviewSummary & {
+        verification_tasks?: VerificationTaskRecord[] | null;
+        engineering_observations?: unknown[] | null;
+        last_verification_run?: Record<string, unknown> | null;
+        cumulative_cost_usd?: number;
+        cumulative_tokens?: number;
+      })
+    | null;
   problem_alignment: ProblemAlignment | null;
   requirements: unknown;
   constraints: unknown;
@@ -532,10 +542,6 @@ export interface ProjectReview {
   assessment?: ProjectAssessment | null;
   engineering?: EngineeringObservation[] | null;
   diff?: AnalysisDiff | null;
-  summary?: {
-    verification_tasks?: VerificationTaskRecord[] | null;
-    engineering_observations?: unknown[] | null;
-  } | null;
   contributions?: ValidatedClaimsVerification | null;
 }
 
