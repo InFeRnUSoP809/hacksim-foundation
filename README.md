@@ -234,17 +234,20 @@ supabase/functions/
     review.ts        the Phase 6 orchestrator
 ```
 
-Deploy — the CLI, after `supabase link` and after the secrets exist:
+**Production deploy (authoritative):** build the bundle, then deploy **`supabase/functions/bundle/analysis.ts`**
+to the Supabase Edge Function **`analysis`**. See [docs/PRODUCTION-DEPLOY.md](docs/PRODUCTION-DEPLOY.md).
 
 ```bash
-npx supabase functions deploy analysis ai-admin --use-api
+npm install
+npm run bundle:functions
+npm run test:bundle
 ```
 
-`--use-api` bundles server-side instead of locally, so it needs no Docker.
+Then paste **`supabase/functions/bundle/analysis.ts`** into **Edge Functions → `analysis` → Deploy**
+with **Verify JWT = ON**. Never edit the bundle by hand.
 
-Or paste into the dashboard: `bash scripts/bundle-functions.sh` inlines
-`_shared/` into one file per function, and the result is pasted into
-**Edge Functions → `analysis` → Deploy** with **Verify JWT = ON**.
+Optional CLI (must match the same source): `npx supabase functions deploy analysis --use-api`
+after `supabase link` and secrets are set.
 
 Secrets go in the dashboard, not in a `.env` file and never in
 `config.toml` — **Project Settings → Edge Functions → Secrets → Add new secret**:
@@ -300,7 +303,8 @@ visible instead of vanishing. The review page stops polling after 15 minutes of
 `running` and offers a retry rather than looping, because a second run is billed
 against the same AI budget.
 
-The bundles are generated and gitignored. Edit the sources, re-run the script.
+Regenerate the production bundle after every source change (`npm run bundle:functions`).
+Commit `supabase/functions/bundle/analysis.ts` when releasing so production matches the repo.
 `scripts/verify-bundles.ts` boots each bundle and asserts it serves CORS
 preflights, refuses unauthenticated calls with 401, and rejects a missing
 submission id with 400 — 25 assertions, because a bundle that deploys and then

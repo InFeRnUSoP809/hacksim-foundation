@@ -66,6 +66,19 @@ for (const name of ["analysis", "ai-admin"]) {
   // The secret must still be read at runtime, never baked in at build time.
   // esbuild keeps `Deno.env.get(name)` with the name held in a variable, so
   // the assertion looks for the call and the key name separately.
+  if (name === "analysis") {
+    check(`${name}: contains engine v1 identity`, src.includes("hacksim-analysis-v1"));
+    check(`${name}: contains scan version new-engine-v1`, src.includes("new-engine-v1"));
+    check(
+      `${name}: no legacy inlined scanner module`,
+      !/\/\/ _shared\/scanner\.ts/.test(src) && !/SCANNER_VERSION = "p5-/.test(src),
+    );
+    check(
+      `${name}: v1 verification ops present`,
+      src.includes("engine_brief_verification") || src.includes("engine_implementation_verification"),
+    );
+  }
+
   check(`${name}: reads secrets at runtime`, src.includes("Deno.env.get"));
   check(
     `${name}: still names the secret it reads`,

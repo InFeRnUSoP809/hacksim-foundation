@@ -8,7 +8,11 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bundle:functions": "node scripts/bundle-functions.mjs",
+    "test:bundle": "tsx scripts/bundle-consistency.test.ts",
+    "predeploy:analysis": "npm run bundle:functions && npm run test:bundle",
+    "test:engine": "tsx scripts/engine-acceptance.test.ts && tsx scripts/engine-hardening.test.ts && tsx scripts/graph-trace.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
@@ -70,6 +74,8 @@
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "esbuild": "^0.25.0",
+    "tsx": "^4.19.0",
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",

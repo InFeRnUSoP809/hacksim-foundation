@@ -35,7 +35,12 @@ export type EvidenceType =
   | "dataset"
   | "dataset_profile"
   | "integration"
-  | "test";
+  | "test"
+  | "data_flow"
+  | "transformation"
+  | "parsing"
+  | "api_call"
+  | "prompt";
 
 export interface Evidence {
   id: string;
@@ -109,6 +114,64 @@ export interface ProjectMap {
   models: Record<string, unknown>[];
   data_access: Record<string, unknown>[];
   ui_flows: Record<string, unknown>[];
+  flows?: {
+    id: string;
+    files: string[];
+    closed: boolean;
+    hops: { file: string; symbol: string | null; relation: string; line: number }[];
+    behaviors?: {
+      id: string;
+      kind: string;
+      claim: string;
+      file: string;
+      symbol: string | null;
+      lines: string;
+      level: string;
+    }[];
+  }[];
+  evidence_chains?: {
+    id: string;
+    flow_id: string | null;
+    label: string;
+    closed: boolean;
+    links: {
+      evidence_id: string;
+      claim: string;
+      file: string | null;
+      symbol: string | null;
+      level: string;
+    }[];
+  }[];
+  analysis_coverage?: Record<string, number>;
+  implementation_behaviors?: {
+    id: string;
+    kind: string;
+    claim: string;
+    file: string;
+    symbol: string | null;
+    start_line: number;
+    end_line: number;
+    level: string;
+  }[];
+  implementation_workflows?: {
+    id: string;
+    label: string;
+    closed: boolean;
+    missing_links: string[];
+    flow_id: string | null;
+    files: string[];
+    steps: {
+      kind: string;
+      label: string;
+      file: string;
+      symbol: string | null;
+      start_line: number;
+      end_line: number;
+      behavior_id: string | null;
+      evidence_level: string;
+      confidence: string;
+    }[];
+  }[];
   testing: {
     test_file_count: number;
     frameworks: string[];
@@ -243,6 +306,10 @@ export interface AdminRepositoryRow {
 // ── Requirements (§30, §33) ────────────────────────────────────────────────
 
 export type RequirementStatus =
+  | "confirmed"
+  | "partially_confirmed"
+  | "weakly_evidenced"
+  | "contradicted"
   | "evidence_found"
   | "partial_evidence"
   | "not_evidenced"
@@ -450,7 +517,7 @@ export interface ProjectReview {
   database_review: Record<string, unknown> | null;
   testing: Record<string, unknown> | null;
   scalability: Record<string, unknown> | null;
-  technical_decisions: unknown;
+  technical_decisions?: Record<string, unknown> | null;
   updated_at: string;
   // ── The rebuilt pipeline ────────────────────────────────────────────
   analysis_version?: string | null;
@@ -465,6 +532,40 @@ export interface ProjectReview {
   assessment?: ProjectAssessment | null;
   engineering?: EngineeringObservation[] | null;
   diff?: AnalysisDiff | null;
+  summary?: {
+    verification_tasks?: VerificationTaskRecord[] | null;
+    engineering_observations?: unknown[] | null;
+  } | null;
+  contributions?: ValidatedClaimsVerification | null;
+}
+
+export interface VerificationTaskRecord {
+  kind: "brief" | "implementation" | "engineering" | "claims";
+  status: "executed" | "cached" | "skipped" | "failed";
+  prompt_version: string;
+  input_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  cost_usd: number;
+  verdict: string | null;
+  confidence: string | null;
+  verification_level: string | null;
+  evidence_count: number;
+  missing_links: string[];
+  validation_errors: string[];
+  rounds: number;
+}
+
+export interface ValidatedClaimsVerification {
+  verification_type?: string;
+  members?: {
+    member_id: string;
+    status: string;
+    evidence_ids: string[];
+    explanation: string;
+    relevant_files: string[];
+    missing_links: string[];
+  }[];
 }
 
 // ── Defence targets (§50) ──────────────────────────────────────────────────

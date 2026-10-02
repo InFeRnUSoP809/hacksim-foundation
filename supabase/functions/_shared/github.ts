@@ -723,6 +723,7 @@ export interface Symbol {
   name: string;
   symbol_type: string;
   line: number;
+  end_line?: number;
   signature: string;
 }
 
@@ -1510,6 +1511,44 @@ export interface ProjectMap {
   important_files: unknown[];
   warnings: string[];
   truncated: Record<string, number>;
+  /** Structural flows. A closed flow has an entry, a call, and a data read or write. */
+  flows?: {
+    id: string;
+    files: string[];
+    closed: boolean;
+    hops: { file: string; symbol: string | null; relation: string; line: number }[];
+    behaviors?: {
+      id: string;
+      kind: string;
+      claim: string;
+      file: string;
+      symbol: string | null;
+      lines: string;
+      level: string;
+    }[];
+  }[];
+  evidence_chains?: {
+    id: string;
+    flow_id: string | null;
+    label: string;
+    closed: boolean;
+    links: { evidence_id: string; claim: string; file: string | null; symbol: string | null; level: string }[];
+  }[];
+  analysis_coverage?: Record<string, number>;
+  implementation_behaviors?: {
+    id: string;
+    kind: string;
+    claim: string;
+    file: string;
+    symbol: string | null;
+    start_line: number;
+    end_line: number;
+    level: string;
+  }[];
+  graph?: {
+    symbols: unknown[];
+    relationships: unknown[];
+  };
 }
 
 const STATE_PACKAGES: Record<string, string> = {

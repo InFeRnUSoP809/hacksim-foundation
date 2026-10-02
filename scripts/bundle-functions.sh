@@ -73,7 +73,7 @@ bundle() {
     "//" \
     "// Built by scripts/bundle-functions.sh from" \
     "//   supabase/functions/$name/index.ts" \
-    "// plus supabase/functions/_shared/*.ts" \
+    "// plus supabase/functions/_shared/** (including engine/)" \
     "//" \
     "// Edit the sources, then re-run the script. Changes made here are lost." \
     "// $lines lines, self-contained — safe to paste into the Supabase dashboard." \
@@ -83,6 +83,17 @@ bundle() {
   cat "$OUT/$name.header" "$OUT/$name.ts" > "$OUT/$name.tmp"
   mv "$OUT/$name.tmp" "$OUT/$name.ts"
   rm -f "$OUT/$name.header"
+
+  if [ "$name" = "analysis" ]; then
+    if ! grep -q 'hacksim-analysis-v1' "$OUT/$name.ts" || ! grep -q 'new-engine-v1' "$OUT/$name.ts"; then
+      echo "ERROR: $name production bundle missing v1 engine identity — rebuild from analysis/index.ts" >&2
+      exit 1
+    fi
+    if grep -q '// _shared/scanner.ts' "$OUT/$name.ts" || grep -qE 'SCANNER_VERSION = "p5-' "$OUT/$name.ts"; then
+      echo "ERROR: $name bundle still contains legacy inlined scanner — rebuild" >&2
+      exit 1
+    fi
+  fi
 
   printf '%-12s %s lines  %s\n' "$name" "$(wc -l < "$OUT/$name.ts")" "$OUT/$name.ts"
 }

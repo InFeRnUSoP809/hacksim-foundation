@@ -31,15 +31,26 @@ import {
   withErrorHandling,
   type Caller,
 } from "../_shared/http.ts";
-import { analyzeSubmission, AnalysisStore } from "../_shared/scanner.ts";
-import { runAnalysis } from "../_shared/review.ts";
+import {
+  analyzeSubmission,
+  EnginePersistence,
+  ENGINE_SCAN_VERSION,
+  HACKSIM_ENGINE_ID,
+  normalizeVerifyTaskName,
+  runVerification,
+  type EngineVerifyTaskKind,
+} from "../_shared/engine/index.ts";
 import { aiConfigured } from "../_shared/ai.ts";
 import { rateLimiter } from "../_shared/security.ts";
-import { rescoreRelevance } from "../_shared/datasets.ts";
-import { briefVocabulary, analyseRequirement } from "../_shared/concepts.ts";
-import { getRequirementMap } from "../_shared/requirements.ts";
-import type { Evidence } from "../_shared/github.ts";
-import type { ConceptSet } from "../_shared/concepts.ts";
+
+/** Proves which engine build handled this HTTP response (server-generated only). */
+function runtimeMeta() {
+  return {
+    handler: "analysis-v1",
+    engine_id: HACKSIM_ENGINE_ID,
+    analysis_version: ENGINE_SCAN_VERSION,
+  };
+}
 
 async function requireCaller(req: Request): Promise<Caller> {
   const caller = await getCaller(req);
@@ -62,10 +73,15 @@ async function readAnalysis(req: Request, url: URL): Promise<Response> {
   });
   if (error) throw new HttpError("Could not load the analysis.", 500);
 
+  const payload = (data ?? {}) as Record<string, unknown>;
+  const repo = payload.repository as Record<string, unknown> | null | undefined;
+  const projectMap = payload.project_map as Record<string, unknown> | null | undefined;
   return json({
-    ...(data ?? {}),
-    // The browser needs to know whether the analysis can run at all.
+    ...payload,
     ai_available: aiConfigured(),
+    runtime: runtimeMeta(),
+    runtime_scan_matches: repo?.analysis_version === ENGINE_SCAN_VERSION,
+    project_map_engine_id: projectMap?.engine_id ?? null,
   });
 }
 
@@ -94,7 +110,7 @@ async function act(req: Request): Promise<Response> {
 
     case "reanalyze":
       // Mark the cached row stale so the commit cache does not short-circuit.
-      await new AnalysisStore().markStale(submissionId);
+      await new EnginePersistence().markStale(submissionId);
       return json(await runScan(submissionId, githubUrl, true));
 
     case "analyze": {
@@ -149,6 +165,7 @@ async function runScan(submissionId: string, githubUrl: string, reanalyze: boole
   return {
     ...outcome,
     state: outcome.status,
+    runtime: runtimeMeta(),
   };
 }
 
@@ -163,11 +180,19 @@ async function runAnalysisFor(
   onlyTasks: string[] | null,
   caller: Caller,
 ) {
-  const store = new AnalysisStore();
+  const store = new EnginePersistence();
   const loaded = await store.loadForReview(submission.id);
 
   if (!loaded || !["completed", "limited"].includes(loaded.repository.analysis_status as string)) {
     throw new HttpError("Analyse the repository before running the analysis.", 409);
+  }
+
+  const scanVersion = String(loaded.repository.analysis_version ?? "");
+  if (scanVersion && scanVersion !== ENGINE_SCAN_VERSION) {
+    throw new HttpError(
+      `Repository scan is ${scanVersion}; re-analyse the repository to run ${ENGINE_SCAN_VERSION} verification.`,
+      409,
+    );
   }
 
   if (!aiConfigured()) {
@@ -179,87 +204,48 @@ async function runAnalysisFor(
   }
 
   const hackathon = await loadHackathon(submission.hackathon_id);
-  const requirementMap = await getRequirementMap(submission.hackathon_id, hackathon);
 
-  // Dataset relevance is a question about *this* challenge, so it is answered
-  // here rather than during the repository scan.
-  const vocabulary = briefVocabulary(requirementMap);
-  const concepts: ConceptSet[] = [
-    ...(requirementMap.requirements ?? []).map((entry) =>
-      analyseRequirement(entry.text, vocabulary, requirementMap),
-    ),
-    {
-      text: String(submission.project_description ?? ""),
-      intent: String(submission.project_description ?? "").slice(0, 300),
-      focus: "general",
-      phrases: [],
-      actions: [],
-      subjects: [],
-      qualifiers: [],
-      terms: [],
-      domainTerms: [],
-      facets: [],
-      artifacts: [],
-    } as ConceptSet,
-  ];
-  const datasetProfiles = (loaded.datasetProfiles ?? []).map((profile) =>
-    rescoreRelevance(profile, concepts),
-  );
+  let verifyOnly: EngineVerifyTaskKind[] | null = null;
+  if (onlyTasks?.length) {
+    verifyOnly = [];
+    for (const raw of onlyTasks) {
+      const normalized = normalizeVerifyTaskName(raw);
+      if (!normalized) {
+        throw new HttpError(
+          `Unknown verification task "${raw}". Use brief, implementation, engineering, or claims.`,
+          400,
+        );
+      }
+      verifyOnly.push(normalized);
+    }
+  }
 
-  const outcome = await runAnalysis({
+  const outcome = await runVerification({
     submission: submission as unknown as Record<string, unknown>,
     hackathon,
     repository: loaded.repository,
     files: loaded.files,
     chunks: loaded.chunks,
-    evidence: (loaded.evidence ?? []) as unknown as Evidence[],
+    evidence: loaded.evidence ?? [],
     projectMap: loaded.projectMap,
-    datasetProfiles,
-    semantics: loaded.semantics,
-    routes: loaded.routes,
-    inspection: loaded.inspection,
     actorId: caller.id,
     sessionId: submission.session_id,
-    onlyTasks,
+    onlyTasks: verifyOnly,
   });
 
   return {
     status: outcome.status,
     review_id: outcome.reviewId,
-    plan: outcome.plan.summary,
-    requirements_enabled: outcome.plan.requirementsEnabled,
-    dimensions: outcome.plan.dimensions
-      .filter((dimension) => dimension.relevance !== "not_applicable")
-      .map((dimension) => ({
-        key: dimension.key,
-        label: dimension.label,
-        relevance: dimension.relevance,
-        reason: dimension.reason,
-      })),
-    tasks: outcome.tasks.map((task) => ({
-      key: task.key,
-      kind: task.kind,
-      scope: task.scope,
-      status: task.status,
-      reason: task.reason,
-      input_tokens: task.inputTokens,
-      output_tokens: task.outputTokens,
-      cost_usd: Number(task.costUsd.toFixed(6)),
-      validation_errors: task.validationErrors,
-      rejected_evidence_ids: task.rejectedEvidenceIds,
-      repairs: task.repairs,
-    })),
-    conclusions: outcome.conclusions.map((row) => ({
-      id: row.subject_id,
-      kind: row.kind,
-      status: row.status,
-      confidence: row.confidence,
-      evidence_ids: row.evidence_ids,
-      method: row.method,
-    })),
-    diagnostics: outcome.diagnostics,
-    diff: outcome.diff,
-    error: outcome.error ?? null,
+    engine_id: outcome.engineId,
+    analysis_version: ENGINE_SCAN_VERSION,
+    run_cost_usd: outcome.runCostUsd,
+    run_tokens: outcome.runTokens,
+    cumulative_cost_usd: outcome.cumulativeCostUsd,
+    cumulative_tokens: outcome.cumulativeTokens,
+    total_cost_usd: outcome.runCostUsd,
+    total_tokens: outcome.runTokens,
+    verification_tasks: outcome.verificationTasks,
+    runtime: runtimeMeta(),
   };
 }
 
@@ -296,6 +282,7 @@ async function diagnosticsFor(
     submission_id: submissionId,
     runs: data ?? [],
     ai_usage: usage ?? [],
+    runtime: runtimeMeta(),
   };
 }
 

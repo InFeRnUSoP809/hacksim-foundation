@@ -125,7 +125,9 @@ interface Bucket {
 const COSTLY_ACTIONS: Record<string, number> = {
   repository: 10,     // GitHub: a real repository is dozens of API calls
   reanalyze: 10,
-  review: 30,         // DeepSeek: several model calls per run
+  analyze: 30,        // DeepSeek: a few grouped model calls per run
+  review: 30,
+  "retry-task": 10,
   "retry-module": 10,
 };
 

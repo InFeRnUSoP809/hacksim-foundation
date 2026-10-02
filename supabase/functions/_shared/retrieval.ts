@@ -139,6 +139,7 @@ export interface RepoIndex {
   routesByPath: Map<string, IndexRoute[]>;
   semanticsByPath: Map<string, IndexSemantics>;
   manifestPaths: Set<string>;
+  relationships: { from_file: string; to_file: string; relation: string }[];
 }
 
 const IMPORTANCE_SCORE: Record<string, number> = {
@@ -177,6 +178,7 @@ export function buildRepoIndex(input: {
   routes?: IndexRoute[];
   datasetProfiles?: DatasetProfile[];
   semantics?: IndexSemantics[];
+  relationships?: { from_file: string; to_file: string; relation: string }[];
 }): RepoIndex {
   const files = new Map<string, IndexFile>();
   const termsByPath = new Map<string, Set<string>>();
@@ -275,6 +277,7 @@ export function buildRepoIndex(input: {
     routesByPath,
     semanticsByPath,
     manifestPaths,
+    relationships: input.relationships ?? [],
   };
 }
 
@@ -341,6 +344,8 @@ export interface RetrieveInput {
   maxFiles?: number;
   maxSnippetLines?: number;
   maxEvidenceIds?: number;
+  /** Paths the verifier asked to see. They occupy retrieval slots first. */
+  forcePaths?: string[];
 }
 
 export function retrieve(input: RetrieveInput): RetrievalResult {
@@ -541,7 +546,34 @@ export function retrieve(input: RetrieveInput): RetrievalResult {
     seenNames.add(name);
     return true;
   });
-  const selected = deduped.slice(0, maxFiles);
+  const forced: FileHit[] = [];
+  for (const path of input.forcePaths ?? []) {
+    if (forced.length >= maxFiles) break;
+    const hit = deduped.find((item) => item.path === path) ??
+      hitFromPath(index, path, plan, maxLines);
+    if (hit) forced.push(hit);
+  }
+  const lexical = deduped
+    .filter((hit) => !forced.some((item) => item.path === hit.path))
+    .slice(0, Math.max(1, maxFiles - 2 - forced.length));
+  const selectedPathsDraft = new Set(lexical.map((hit) => hit.path));
+  const neighbors: FileHit[] = [];
+  for (const hit of lexical) {
+    for (const edge of index.relationships) {
+      if (edge.from_file !== hit.path) continue;
+      if (edge.relation !== "calls" && edge.relation !== "imports") continue;
+      if (selectedPathsDraft.has(edge.to_file)) continue;
+      if (neighbors.some((item) => item.path === edge.to_file)) continue;
+      const neighbor = deduped.find((item) => item.path === edge.to_file) ??
+        hitFromPath(index, edge.to_file, plan, maxLines);
+      if (!neighbor) continue;
+      neighbors.push(neighbor);
+      selectedPathsDraft.add(neighbor.path);
+      if (lexical.length + neighbors.length >= maxFiles) break;
+    }
+    if (lexical.length + neighbors.length >= maxFiles) break;
+  }
+  const selected = [...forced, ...lexical, ...neighbors].slice(0, maxFiles);
 
   const selectedPaths = new Set(selected.map((hit) => hit.path));
 
@@ -636,6 +668,38 @@ function artifactAffinity(artifacts: string[], file: IndexFile): number {
   if (wants("file_read") && category === "dataset") score += 6;
 
   return Math.min(20, score);
+}
+
+function hitFromPath(
+  index: RepoIndex,
+  path: string,
+  plan: RetrievalPlan,
+  maxLines: number,
+): FileHit | null {
+  const file = index.files.get(path);
+  if (!file || file.is_ignored || file.is_binary) return null;
+  const chunk = pickChunk(index, path, plan, maxLines);
+  if (!chunk) return null;
+  return {
+    path,
+    score: 5,
+    components: {
+      semantic: 0,
+      keyword: 0,
+      importance: 0,
+      symbol: 0,
+      route: 0,
+      dataset: 0,
+      dependency: 0,
+      logic: 5,
+      artifact: 0,
+    },
+    matchedTerms: ["call"],
+    symbol: chunk.symbol_name ?? null,
+    startLine: Number(chunk.start_line ?? 1),
+    endLine: Number(chunk.end_line ?? 1),
+    excerpt: renderChunk(chunk, maxLines),
+  };
 }
 
 function pickChunk(

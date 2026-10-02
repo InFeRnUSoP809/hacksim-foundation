@@ -1,14 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────
 // GENERATED FILE — do not edit.
 //
-// Built by scripts/bundle-functions.sh from
+// Built by scripts/bundle-functions.mjs (or bundle-functions.sh) from
 //   supabase/functions/ai-admin/index.ts
-// plus supabase/functions/_shared/*.ts
+// plus supabase/functions/_shared/** (including engine/)
 //
-// Edit the sources, then re-run the script. Changes made here are lost.
-// 827 lines, self-contained — safe to paste into the Supabase dashboard.
+// Edit the sources, then re-run: npm run bundle:functions
+// 842 lines, self-contained — safe to paste into the Supabase dashboard.
 // ─────────────────────────────────────────────────────────────────────
-
 // _shared/http.ts
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -56,8 +55,10 @@ var COSTLY_ACTIONS = {
   repository: 10,
   // GitHub: a real repository is dozens of API calls
   reanalyze: 10,
+  analyze: 30,
+  // DeepSeek: a few grouped model calls per run
   review: 30,
-  // DeepSeek: several model calls per run
+  "retry-task": 10,
   "retry-module": 10
 };
 var DEFAULT_WINDOW_MS = 6e4;

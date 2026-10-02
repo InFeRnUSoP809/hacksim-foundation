@@ -1,4 +1,7 @@
 /**
+ * LEGACY / REFERENCE ONLY — not used by production analysis.
+ * Production path: supabase/functions/_shared/engine/
+ *
  * The analysis orchestrator.
  *
  * This is the pipeline the product spec describes, in the order it describes it:
@@ -63,6 +66,7 @@ import { getRequirementMap, type RequirementMap } from "./requirements.ts";
 import type { DatasetProfile } from "./datasets.ts";
 import type { SemanticsResult } from "./semantics.ts";
 import type { Evidence } from "./github.ts";
+import { closedFlowFor, type Flow } from "./graph.ts";
 
 // ── Input / output ─────────────────────────────────────────────────────────
 
@@ -436,6 +440,7 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
     routes: input.routes ?? [],
     datasetProfiles,
     semantics: semantics as unknown as RET.IndexSemantics[],
+    relationships: ((projectMap.graph as { relationships?: { from_file: string; to_file: string; relation: string }[] } | undefined)?.relationships) ?? [],
   });
 
   // ── Concepts and grouping ───────────────────────────────────────────────
@@ -533,8 +538,7 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
     const retrieval = RET.retrieve({ plan: planForRequirement, index });
 
     const counted = DET.deterministicCount(entry.text, facts.countables);
-    const literal = DET.deterministicLiteral(entry.text, index, evidenceSet);
-    const verdict = counted.status ? counted : literal;
+    const verdict = counted.status ? counted : DET.NO_VERDICT;
 
     if (verdict.status) {
       deterministicRows.set(entry.id, {
@@ -555,14 +559,259 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
           "A count or a named artefact settled this; the deterministic pass is " +
           "authoritative and no model call was made.",
       });
+      continue;
     }
+
+    // Closed flows never auto-confirm requirements (§25). They only guide retrieval.
   }
 
   // ── Task loop ──────────────────────────────────────────────────────────
   for (const planned of plan.tasks) {
     if (!wants(planned.key)) continue;
 
-    // 1. Alignment
+    // Grouped brief verification (alignment + requirements + brief subjects)
+    if (planned.kind === "brief_verification") {
+      const reqEntries = (requirementMap.requirements ?? []).filter(
+        (entry) => !deterministicRows.has(entry.id),
+      );
+      const retrievals = new Map<string, RET.RetrievalResult>();
+      for (const entry of reqEntries) {
+        const concept = requirementConcepts.get(entry.id);
+        if (!concept) continue;
+        const flowHint = closedFlowFor(concept.terms, (projectMap.flows ?? []) as Flow[]);
+        retrievals.set(
+          entry.id,
+          RET.retrieve({
+            plan: RET.buildRetrievalPlan(entry.id, concept),
+            index,
+            forcePaths: flowHint?.files?.slice(0, 6),
+          }),
+        );
+      }
+      const merged = mergeRetrievals([
+        ...retrievals.values(),
+        retrieveForBrief(constraintConcepts, index),
+        retrieveForBrief(outcomeConcepts, index),
+        retrieveForBrief(criteriaConcepts, index),
+      ]);
+
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildBriefVerificationTask(
+          promptContext(
+            context,
+            input,
+            index,
+            evidenceSet,
+            merged,
+            projectMap,
+            datasetProfiles,
+            semantics,
+            inspectionNote,
+            [...requirementConcepts.values()].slice(0, 12),
+          ),
+          {
+            requirements: reqEntries.map((entry) => ({
+              id: entry.id,
+              text: entry.text,
+              importance: entry.importance,
+            })),
+            constraints: (requirementMap.constraints ?? []).map((entry) => ({
+              id: entry.id,
+              text: entry.text,
+              importance: entry.importance,
+            })),
+            outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => ({
+              id: entry.id,
+              text: entry.text,
+            })),
+            criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => ({
+              id: entry.id,
+              text: entry.text,
+            })),
+          },
+        ),
+        promptVersion: M.PROMPT_VERSIONS.brief_verification,
+        scopeKey: "brief_verification",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: (payload) => {
+          const bundle = V.validateBriefVerification(payload, evidenceSet, {
+            requirements: reqEntries.map((entry) => entry.id),
+            constraints: (requirementMap.constraints ?? []).map((entry) => entry.id),
+            outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+            criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+          });
+          return {
+            items: [
+              ...bundle.requirements,
+              ...bundle.constraints,
+              ...bundle.outcomes,
+              ...bundle.criteria,
+            ],
+            rejectedSubjects: [],
+            rejectedEvidenceIds: bundle.rejectedEvidenceIds,
+            errors: bundle.errors,
+          };
+        },
+        evidenceIdsFrom: () => [],
+      });
+
+      const bundle = V.validateBriefVerification(outcome.payload, evidenceSet, {
+        requirements: reqEntries.map((entry) => entry.id),
+        constraints: (requirementMap.constraints ?? []).map((entry) => entry.id),
+        outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+        criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+      });
+      if (bundle.alignment) alignment = bundle.alignment;
+      pushConclusions(conclusions, bundle.requirements, "requirement", "ai_evidence", outcome.reason, []);
+      pushConclusions(conclusions, bundle.constraints, "constraint", "ai_evidence", outcome.reason, []);
+      pushConclusions(conclusions, bundle.outcomes, "outcome", "ai_evidence", outcome.reason, []);
+      pushConclusions(conclusions, bundle.criteria, "criterion", "ai_evidence", outcome.reason, []);
+
+      const requested = bundle.additional_files_needed.filter((path) => index.files.has(path));
+      if (requested.length) {
+        const follow = RET.retrieve({ plan: merged.plan, index, forcePaths: requested });
+        const second = await runAi({
+          planned: { ...planned, key: `${planned.key}:followup` },
+          prompt: M.buildBriefVerificationTask(
+            promptContext(
+              context,
+              input,
+              index,
+              evidenceSet,
+              follow,
+              projectMap,
+              datasetProfiles,
+              semantics,
+              inspectionNote,
+              [...requirementConcepts.values()].slice(0, 12),
+            ),
+            {
+              requirements: reqEntries.map((entry) => ({
+                id: entry.id,
+                text: entry.text,
+                importance: entry.importance,
+              })),
+              constraints: (requirementMap.constraints ?? []).map((entry) => ({
+                id: entry.id,
+                text: entry.text,
+                importance: entry.importance,
+              })),
+              outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => ({
+                id: entry.id,
+                text: entry.text,
+              })),
+              criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => ({
+                id: entry.id,
+                text: entry.text,
+              })),
+            },
+          ),
+          promptVersion: `${M.PROMPT_VERSIONS.brief_verification}-r2`,
+          scopeKey: "brief_verification:followup",
+          promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+          repositoryId,
+          commitSha,
+          submissionId,
+          pricing,
+          input,
+          spend,
+          tasks,
+          validate: (payload) => {
+            const b = V.validateBriefVerification(payload, evidenceSet, {
+              requirements: reqEntries.map((entry) => entry.id),
+              constraints: (requirementMap.constraints ?? []).map((entry) => entry.id),
+              outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+              criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+            });
+            return {
+              items: [...b.requirements, ...b.constraints, ...b.outcomes, ...b.criteria],
+              rejectedSubjects: [],
+              rejectedEvidenceIds: b.rejectedEvidenceIds,
+              errors: b.errors,
+            };
+          },
+          evidenceIdsFrom: () => [],
+        });
+        const b2 = V.validateBriefVerification(second.payload, evidenceSet, {
+          requirements: reqEntries.map((entry) => entry.id),
+          constraints: (requirementMap.constraints ?? []).map((entry) => entry.id),
+          outcomes: (requirementMap.expected_outcomes ?? []).map((entry) => entry.id),
+          criteria: (requirementMap.evaluation_criteria ?? []).map((entry) => entry.id),
+        });
+        if (b2.alignment) alignment = b2.alignment;
+        pushConclusions(conclusions, b2.requirements, "requirement", "ai_evidence", second.reason, []);
+      }
+
+      findings.push(
+        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
+      );
+      continue;
+    }
+
+    if (planned.kind === "implementation_verification") {
+      const claimList = claimsFrom(input.submission);
+      const retrieval = retrieveForText(planned.question, index);
+      const outcome = await runAi({
+        planned,
+        prompt: M.buildImplementationVerificationTask(
+          promptContext(
+            context,
+            input,
+            index,
+            evidenceSet,
+            retrieval,
+            projectMap,
+            datasetProfiles,
+            semantics,
+            inspectionNote,
+            [],
+          ),
+          claimList,
+        ),
+        promptVersion: M.PROMPT_VERSIONS.implementation_verification,
+        scopeKey: "implementation_verification",
+        promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+        repositoryId,
+        commitSha,
+        submissionId,
+        pricing,
+        input,
+        spend,
+        tasks,
+        validate: () => ({
+          items: [],
+          rejectedSubjects: [],
+          rejectedEvidenceIds: [],
+          errors: [],
+        }),
+        evidenceIdsFrom: () => [],
+      });
+      const payload = outcome.payload ?? {};
+      architecture = (payload.architecture as Record<string, unknown>) ?? null;
+      implementation = (payload.implementation as Record<string, unknown>) ?? null;
+      if (claimList.length) {
+        const claimResult = V.validateClaims(
+          { claims: payload.claim_conclusions },
+          evidenceSet,
+          claimList,
+        );
+        claims = claimResult.items;
+      }
+      findings.push(
+        ...E.validateFindings(payload.findings ?? null, evidenceSet, "general"),
+      );
+      continue;
+    }
+
+    // 1. Alignment (legacy single-task plans)
     if (planned.kind === "alignment") {
       const retrieval = retrieveFor(conceptFromTask(planned, requirementConcepts, context, index), index);
       const outcome = await runAi({
@@ -594,10 +843,18 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
       continue;
     }
 
-    // 2. Requirements, one group at a time
+    // 2. Requirements. One call covers every group unless a legacy per-focus
+    // task is still in the plan.
     if (planned.kind === "requirements") {
-      const group = groups.find((item) => item.focus === planned.focus);
-      if (!group) continue;
+      const matched = planned.focus
+        ? groups.filter((item) => item.focus === planned.focus)
+        : groups;
+      if (!matched.length) continue;
+      const group = {
+        label: matched.map((item) => item.label).join(", "),
+        entries: matched.flatMap((item) => item.entries),
+        concepts: matched.flatMap((item) => item.concepts),
+      };
       const pending: typeof group.entries = [];
       for (const entry of group.entries) {
         if (deterministicRows.has(entry.id)) continue;
@@ -626,7 +883,15 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
       for (const entry of pending) {
         const concept = requirementConcepts.get(entry.id);
         if (!concept) continue;
-        retrievals.set(entry.id, RET.retrieve({ plan: RET.buildRetrievalPlan(entry.id, concept), index }));
+        const flowHint = closedFlowFor(concept.terms, (projectMap.flows ?? []) as Flow[]);
+        retrievals.set(
+          entry.id,
+          RET.retrieve({
+            plan: RET.buildRetrievalPlan(entry.id, concept),
+            index,
+            forcePaths: flowHint?.files?.slice(0, 6),
+          }),
+        );
       }
       const merged = mergeRetrievals([...retrievals.values()]);
 
@@ -660,7 +925,52 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
         evidenceIdsFrom: () => [],
       });
 
-      for (const item of outcome.items) {
+      const requested = Array.isArray(outcome.payload?.additional_files_needed)
+        ? (outcome.payload.additional_files_needed as unknown[])
+          .map((value) => String(value ?? "").trim())
+          .filter((path) => index.files.has(path))
+          .slice(0, 4)
+        : [];
+      let settled = outcome;
+      if (requested.length) {
+        const follow = RET.retrieve({
+          plan: merged.plan,
+          index,
+          forcePaths: requested,
+        });
+        const second = await runAi({
+          planned: { ...planned, key: `${planned.key}:followup` },
+          prompt: M.buildRequirementsTask(
+            promptContext(context, input, index, evidenceSet, follow, projectMap, datasetProfiles, semantics, inspectionNote, group.concepts),
+            pending.map((entry) => ({
+              id: entry.id,
+              text: entry.text,
+              importance: entry.importance,
+            })),
+            group.label,
+          ),
+          promptVersion: `${M.PROMPT_VERSIONS.requirements}-r2`,
+          scopeKey: "requirements:followup",
+          promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
+          repositoryId,
+          commitSha,
+          submissionId,
+          pricing,
+          input,
+          spend,
+          tasks,
+          validate: (payload) =>
+            V.validateConclusions(payload, {
+              kind: "requirement",
+              allowedSubjects: pending.map((entry) => entry.id),
+              evidence: evidenceSet,
+            }),
+          evidenceIdsFrom: () => [],
+        });
+        if (second.items.length) settled = second;
+      }
+
+      for (const item of settled.items) {
         const retrieval = retrievals.get(item.subject_id);
         const coverageNote = coverage.covered
           ? ""
@@ -682,11 +992,11 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
           relevant_files: (retrieval?.files ?? []).map((hit) => hit.path).slice(0, 6),
           evidence_count: item.evidence_ids.length,
           ai_used: true,
-          ai_reason: outcome.reason,
+          ai_reason: settled.reason,
         });
       }
       findings.push(
-        ...E.validateFindings(outcome.payload?.findings ?? null, evidenceSet, "hackathon"),
+        ...E.validateFindings(settled.payload?.findings ?? null, evidenceSet, "hackathon"),
       );
       continue;
     }
@@ -889,7 +1199,7 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
     }
 
     // 8. Engineering observations
-    if (planned.kind === "engineering") {
+    if (planned.kind === "engineering" || planned.kind === "engineering_verification") {
       const retrieval = retrieveForText(planned.question, index);
       const topics = plan.dimensions
         .filter((item) => item.relevance !== "not_applicable" && item.method === "ai" && item.key !== "problem_alignment")
@@ -900,8 +1210,12 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
           promptContext(context, input, index, evidenceSet, retrieval, projectMap, datasetProfiles, semantics, inspectionNote, []),
           topics.slice(0, 6),
         ),
-        promptVersion: M.PROMPT_VERSIONS.engineering,
-        scopeKey: "engineering",
+        promptVersion: planned.kind === "engineering_verification"
+          ? M.PROMPT_VERSIONS.engineering_verification
+          : M.PROMPT_VERSIONS.engineering,
+        scopeKey: planned.kind === "engineering_verification"
+          ? "engineering_verification"
+          : "engineering",
         promptContextItems: [contextSnapshot(context), slimMap(projectMap)],
         repositoryId,
         commitSha,
@@ -985,6 +1299,15 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisOutcome
       }
       continue;
     }
+  }
+
+  if (!assessment) {
+    assessment = buildAssessmentFromConclusions({
+      alignment,
+      conclusions,
+      claims,
+      projectMap,
+    });
   }
 
   // Deterministic rows join the conclusion set, before the AI rows so the order
@@ -1268,6 +1591,54 @@ function claimsFrom(submission: Record<string, unknown>): string[] {
 
 function claimListOf(claims: V.ValidatedClaim[]): string[] {
   return claims.map((claim) => claim.claim);
+}
+
+function buildAssessmentFromConclusions(input: {
+  alignment: V.ValidatedAlignment | null;
+  conclusions: ConclusionRow[];
+  claims: V.ValidatedClaim[];
+  projectMap: Record<string, unknown>;
+}): V.ValidatedAssessment {
+  const reqRows = input.conclusions.filter((row) => row.kind === "requirement");
+  const confirmed = reqRows.filter((row) =>
+    ["confirmed", "evidence_found", "partially_confirmed"].includes(row.status),
+  ).length;
+  const gaps = reqRows
+    .filter((row) => ["not_evidenced", "unable_to_determine"].includes(row.status))
+    .map((row) => `${row.subject_id}: ${row.explanation.slice(0, 180)}`)
+    .slice(0, 6);
+  const strengths = reqRows
+    .filter((row) => row.status === "confirmed" || row.status === "evidence_found")
+    .map((row) => row.explanation.slice(0, 160))
+    .slice(0, 5);
+  const flows = (input.projectMap.flows as unknown[] | undefined)?.length ?? 0;
+  return {
+    headline: input.alignment?.approach?.slice(0, 200) ||
+      "Repository analysis synthesized from traced evidence.",
+    understanding: input.alignment?.explanation?.slice(0, 500) ||
+      "See requirement evaluations and functional flows for what was verified.",
+    problem_relevance: input.alignment?.explanation?.slice(0, 500) || "",
+    solution_coherence:
+      flows > 0
+        ? `${flows} functional flow(s) were traced; see flows and implementation behaviors for connected steps.`
+        : "No multi-hop flow was closed in the deterministic graph.",
+    implementation_evidence:
+      `${confirmed} requirement evaluation(s) cite implementation evidence; L3 behaviors are listed on the project map.`,
+    functional_completeness: gaps.length
+      ? `Unresolved or not evidenced: ${gaps.join(" | ")}`
+      : "No major requirement gaps were recorded in the verified set.",
+    technical_quality: "See engineering observations and findings.",
+    claim_accuracy: input.claims.length
+      ? `${input.claims.filter((c) => c.status === "supported").length}/${input.claims.length} claims supported by evidence.`
+      : "No team claims were provided to verify.",
+    hackathon_alignment: input.alignment?.status ?? "unclear",
+    engineering_concerns: [],
+    uncertainties: gaps,
+    gaps,
+    strengths,
+    evidence_ids: input.alignment?.evidence_ids ?? [],
+    downgraded: false,
+  };
 }
 
 /** What the repository actually shows, for a conflict statement. */

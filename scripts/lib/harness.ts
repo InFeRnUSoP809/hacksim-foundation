@@ -28,7 +28,8 @@ if (!globals.Deno) {
 }
 
 import { fetchRepo, LocalRepoClient, type LocalRepo } from "./local-source.ts";
-import { scanRepository } from "../../supabase/functions/_shared/scanner.ts";
+import { runRepositoryScan } from "../../supabase/functions/_shared/engine/scan/run.ts";
+import { GitHubClient } from "../../supabase/functions/_shared/github-api.ts";
 import { buildRequirementMap, requirementMapHash } from "../../supabase/functions/_shared/requirements.ts";
 import { rescoreRelevance } from "../../supabase/functions/_shared/datasets.ts";
 import {
@@ -58,7 +59,7 @@ export function loadFixture(path: string): Fixture {
 
 export interface HarnessResult {
   repo: LocalRepo;
-  scan: Awaited<ReturnType<typeof scanRepository>>;
+  scan: Awaited<ReturnType<typeof runRepositoryScan>>;
   requirementMap: RequirementMapShape;
   index: ReturnType<typeof buildRepoIndex>;
   evidence: EvidenceSet;
@@ -73,10 +74,8 @@ export async function runHarness(options: {
   fixture: Fixture;
 }): Promise<HarnessResult> {
   const repo = fetchRepo(options.url);
-  const client = new LocalRepoClient(repo) as unknown as Parameters<
-    typeof scanRepository
-  >[0];
-  const scan = await scanRepository(client, repo.owner, repo.repo);
+  const client = new LocalRepoClient(repo) as unknown as GitHubClient;
+  const scan = await runRepositoryScan(client, repo.owner, repo.repo);
 
   const hackathon = options.fixture.hackathon;
   // The DB-cached variant of this map is the same deterministic build plus a

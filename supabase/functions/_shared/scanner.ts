@@ -1,4 +1,7 @@
 /**
+ * LEGACY / REFERENCE ONLY — not used by production analysis.
+ * Production path: supabase/functions/_shared/engine/
+ *
  * Phase 5 scanner and persistence.
  *
  * The orchestrator. It walks the tree once, decides what is worth reading,
@@ -22,6 +25,12 @@ import { db, HttpError } from "./http.ts";
 import { settings } from "./ai.ts";
 import { GitHubClient, GitHubError } from "./github-api.ts";
 import { profileDataset, type DatasetProfile } from "./datasets.ts";
+import { buildEvidenceChains } from "./chains.ts";
+import {
+  behaviorsForFlow,
+  extractImplementationBehaviors,
+} from "./implementation.ts";
+import { buildRepositoryGraph, endLineFor, type RepoGraph } from "./graph.ts";
 import { analyseSemantics, type SemanticsResult } from "./semantics.ts";
 import {
   basenameOf,
@@ -60,7 +69,7 @@ import {
   type Symbol,
 } from "./github.ts";
 
-export const SCANNER_VERSION = "p5-3";
+export const SCANNER_VERSION = "p8-crosslayer";
 
 // §87 read priority. Anything not in these categories is never fetched.
 const READ_CATEGORIES = new Set([
@@ -291,7 +300,7 @@ export async function scanRepository(
   const files: FileRecord[] = [];
   const chunks: Record<string, unknown>[] = [];
   const dependencies: Dependency[] = [];
-  const allSymbols: Symbol[] = [];
+  const allSymbols: (Symbol & { file?: string })[] = [];
   const routes: Route[] = [];
   const integrations: { url: string; file: string; line: number; method: string | null }[] = [];
   const secrets: SecretFinding[] = [];
@@ -369,7 +378,6 @@ export async function scanRepository(
     if (isDataFile) {
       if (datasetsRead >= MAX_DATASETS_READ) {
         datasetsSkipped += 1;
-        files.push(record);
         continue;
       }
       datasetsRead += 1;
@@ -386,7 +394,6 @@ export async function scanRepository(
           record.importance = "high";
         }
       }
-      files.push(record);
       continue;
     }
 
@@ -438,8 +445,13 @@ export async function scanRepository(
     if (isSourceLike(category)) {
       const { symbols, parserStatus } = extractSymbols(path, content);
       if (parserStatus === "ok") {
-        allSymbols.push(...symbols);
-        chunks.push(...chunksFor(path, record, symbols, content, importance));
+        const spanned = symbols.map((symbol) => ({
+          ...symbol,
+          file: path,
+          end_line: endLineFor(content, symbol.line, record.language),
+        }));
+        allSymbols.push(...spanned);
+        chunks.push(...chunksFor(path, record, spanned, content, importance));
       } else {
         // A language the symbol extractor does not parse — HTML, CSS, SQL — is
         // still source. Without a chunk it has no body text, so requirement
@@ -513,6 +525,35 @@ export async function scanRepository(
     semantics,
   });
 
+  const declaredRoutes = routes.filter((route) => route.framework !== "File-based routing");
+  const seenPaths = new Set(files.map((file) => file.path));
+  for (const item of inventory) {
+    if (!seenPaths.has(item.record.path)) files.push(item.record);
+  }
+
+  const graph: RepoGraph = buildRepositoryGraph({
+    files: sourcesForCodeScan.map((source) => ({
+      path: source.path,
+      content: source.content,
+      language: languageOf(source.path),
+    })),
+    symbols: allSymbols
+      .filter((symbol) => symbol.file)
+      .map((symbol) => ({
+        name: symbol.name,
+        symbol_type: symbol.symbol_type,
+        line: symbol.line,
+        file: symbol.file,
+      })),
+    routes,
+  });
+
+  for (const record of files) {
+    const score = graph.importance[record.path] ?? 0;
+    if (score >= 6) record.importance = "high";
+    else if (score >= 2 && record.importance === "low") record.importance = "medium";
+  }
+
   const projectMap = buildProjectMap({
     repository: {
       owner,
@@ -530,7 +571,7 @@ export async function scanRepository(
     frameworks,
     databases,
     auth,
-    routes,
+    routes: declaredRoutes,
     symbols: allSymbols,
     integrations,
     tests,
@@ -541,6 +582,105 @@ export async function scanRepository(
     datasetProfiles,
     semantics,
   });
+
+  const implementationBehaviors = extractImplementationBehaviors({
+    files: sourcesForCodeScan
+      .filter((source) => (graph.importance[source.path] ?? 0) >= 1 || source.importance !== "low")
+      .slice(0, 48)
+      .map((source) => ({
+        path: source.path,
+        content: source.content,
+        language: languageOf(source.path),
+      })),
+    symbols: graph.symbols,
+  });
+
+  const evidenceTypeFor = (kind: string): string => {
+    if (kind === "parse_json" || kind === "serialize_json") return "parsing";
+    if (kind === "ai_api_call" || kind === "http_request") return "api_call";
+    if (kind === "prompt_construction") return "prompt";
+    if (kind === "database_read" || kind === "database_write") return "data_access";
+    return "transformation";
+  };
+
+  for (const behavior of implementationBehaviors.slice(0, 120)) {
+    registry.add({
+      type: evidenceTypeFor(behavior.kind),
+      claim: behavior.claim,
+      file: behavior.file,
+      symbol: behavior.symbol,
+      lines: `${behavior.start_line}-${behavior.end_line}`,
+      confidence: behavior.level === "L3" ? "high" : "medium",
+      detail: {
+        behavior_id: behavior.id,
+        kind: behavior.kind,
+        level: behavior.level,
+        excerpt: behavior.excerpt,
+        ...behavior.detail,
+      },
+    });
+  }
+
+  projectMap.flows = graph.flows.map((flow) => ({
+    ...flow,
+    behaviors: behaviorsForFlow(flow.files, implementationBehaviors).map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      claim: item.claim,
+      file: item.file,
+      symbol: item.symbol,
+      lines: `${item.start_line}-${item.end_line}`,
+      level: item.level,
+    })),
+  }));
+  projectMap.implementation_behaviors = implementationBehaviors.slice(0, 80).map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    claim: item.claim,
+    file: item.file,
+    symbol: item.symbol,
+    start_line: item.start_line,
+    end_line: item.end_line,
+    level: item.level,
+  }));
+  projectMap.graph = {
+    symbols: graph.symbols.slice(0, 200),
+    relationships: graph.relationships.slice(0, 300),
+  };
+  for (const flow of graph.flows.filter((item) => item.closed).slice(0, 12)) {
+    registry.add({
+      type: "data_flow",
+      claim:
+        `Closed implementation flow ${flow.id}: ` +
+        flow.hops.map((hop) => hop.symbol ?? hop.file).join(" → "),
+      file: flow.files[0] ?? null,
+      confidence: "medium",
+      detail: { flow_id: flow.id, files: flow.files, level: "L2" },
+    });
+  }
+
+  const evidenceList = registry.toList();
+  projectMap.evidence_chains = buildEvidenceChains({
+    evidence: evidenceList,
+    flows: graph.flows,
+    behaviors: implementationBehaviors,
+  });
+  projectMap.analysis_coverage = {
+    files_discovered: entries.length,
+    files_structurally_scanned: files.length,
+    files_deeply_read: sourcesForCodeScan.length,
+    files_sent_to_ai: 0,
+    important_files_inspected: files.filter((file) => file.importance === "high").length,
+    source_lines_inspected: sourcesForCodeScan.reduce(
+      (sum, source) => sum + source.content.split("\n").length,
+      0,
+    ),
+    evidence_count: evidenceList.length,
+    flow_count: graph.flows.length,
+    relationship_count: graph.relationships.length,
+    implementation_behavior_count: implementationBehaviors.length,
+    cross_layer_edges: graph.relationships.filter((edge) => edge.relation === "client_request").length,
+  };
 
   if (blobBudgetExhausted && !projectMap.apis.length) {
     throw new GitHubError(
@@ -562,7 +702,7 @@ export async function scanRepository(
     analysisMode,
     files,
     chunks,
-    evidence: registry.toList(),
+    evidence: evidenceList,
     projectMap,
     datasetProfiles,
     semantics,
@@ -602,7 +742,10 @@ function chunksFor(
 
   symbols.slice(0, 20).forEach((symbol, index) => {
     const start = Math.max(1, symbol.line);
-    const end = Math.min(lines.length, start + 160);
+    const naturalEnd = symbol.end_line && symbol.end_line >= start
+      ? symbol.end_line
+      : start + 80;
+    const end = Math.min(lines.length, naturalEnd, start + 119);
     const body = lines.slice(start - 1, end).join("\n");
     if (!body.trim()) return;
     chunks.push({
@@ -734,14 +877,17 @@ function recordStructuralEvidence(
   }
 
   for (const route of input.routes.slice(0, 120)) {
+    const convention = route.framework === "File-based routing";
     registry.add({
       type: "route",
-      claim: `${route.method} ${route.path} exists`,
+      claim: convention
+        ? `${route.method} ${route.path} matches a file-routing convention in ${route.file}; no handler declaration was found`
+        : `${route.method} ${route.path} is declared`,
       file: route.file,
       symbol: route.symbol,
       lines: `${route.line}-${route.line}`,
-      confidence: "high",
-      detail: { method: route.method, framework: route.framework },
+      confidence: convention ? "low" : "high",
+      detail: { method: route.method, framework: route.framework, declared: !convention },
     });
   }
 
@@ -1056,6 +1202,7 @@ export class AnalysisStore {
 
     await this.writeFiles(repositoryId, result.files);
     await this.writeChunks(repositoryId, result.chunks);
+    await this.writeGraph(repositoryId, result.projectMap);
     return repositoryId;
   }
 
@@ -1136,6 +1283,67 @@ export class AnalysisStore {
       if (error) {
         console.warn("[hacksim.analysis] could not write chunk rows:", error.message);
         return;
+      }
+    }
+  }
+
+  /** Symbols and edges. The project map already carries them if this write fails. */
+  private async writeGraph(
+    repositoryId: string,
+    projectMap: ProjectMap,
+  ): Promise<void> {
+    const graph = projectMap.graph as {
+      symbols?: {
+        file: string;
+        name: string;
+        symbol_type: string;
+        language: string | null;
+        start_line: number;
+        end_line: number;
+      }[];
+      relationships?: {
+        from_file: string;
+        to_file: string;
+        from_symbol: string | null;
+        to_symbol: string | null;
+        relation: string;
+        line: number;
+        confidence: string;
+      }[];
+    } | undefined;
+    if (!graph) return;
+    const service = this.service;
+    await service.from("repository_symbols").delete().eq("repository_id", repositoryId);
+    await service.from("repository_relationships").delete().eq("repository_id", repositoryId);
+    const symbols = (graph.symbols ?? []).slice(0, 400).map((symbol) => ({
+      repository_id: repositoryId,
+      file_path: symbol.file,
+      symbol: symbol.name,
+      symbol_type: symbol.symbol_type,
+      language: symbol.language,
+      start_line: symbol.start_line,
+      end_line: symbol.end_line,
+    }));
+    const edges = (graph.relationships ?? []).slice(0, 500).map((edge) => ({
+      repository_id: repositoryId,
+      from_file: edge.from_file,
+      to_file: edge.to_file,
+      from_symbol: edge.from_symbol,
+      to_symbol: edge.to_symbol,
+      relation: edge.relation,
+      line: edge.line,
+      confidence: edge.confidence,
+    }));
+    if (symbols.length) {
+      const { error } = await service.from("repository_symbols").insert(symbols);
+      if (error) {
+        console.warn("[hacksim.analysis] could not store symbols:", error.message);
+      }
+    }
+    if (edges.length) {
+      const { error } = await service.from("repository_relationships").insert(edges);
+      if (error) {
+        console.warn("[hacksim.analysis] could not store relationships:", error.message);
       }
     }
   }

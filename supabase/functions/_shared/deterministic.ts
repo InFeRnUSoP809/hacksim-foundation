@@ -168,27 +168,9 @@ export function deterministicCount(
   return NO_VERDICT;
 }
 
-/** `path/file.ext`, `/route/path`, `some_symbol`, or anything in quotes. */
-function literalsIn(text: string): string[] {
-  const out = new Set<string>();
-  for (const match of text.matchAll(/`([^`]{3,80})`/g)) out.add(match[1].trim());
-  for (const match of text.matchAll(/"([^"]{3,80})"/g)) out.add(match[1].trim());
-  for (const match of text.matchAll(/'([^']{3,80})'/g)) out.add(match[1].trim());
-  for (const match of text.matchAll(/\b[\w.-]+\/[\w./-]*\.[A-Za-z0-9]{1,6}\b/g)) {
-    out.add(match[0]);
-  }
-  for (const match of text.matchAll(/\/(?:[A-Za-z0-9_{}<>-]+)(?:\/[A-Za-z0-9_{}<>-]+)+\b/g)) {
-    out.add(match[0]);
-  }
-  return [...out].map((value) => value.trim()).filter((value) => value.length > 2);
-}
-
 /**
- * A requirement that names a specific artefact, found by looking for it.
- *
- * Only the positive direction is decided. "Must not use library X" is not
- * answered here: proving a negative by searching is exactly the kind of
- * absence-based reasoning this product removed.
+ * A named file, symbol, or route is a place to look, not proof that a
+ * requirement is implemented. This always returns no verdict.
  */
 export function deterministicLiteral(
   text: string,
@@ -199,60 +181,9 @@ export function deterministicLiteral(
   },
   evidence: EvidenceSet,
 ): DeterministicVerdict {
-  if (/\b(?:must not|should not|do not|never|no|without|avoid|exclude)\b/i.test(text)) {
-    return NO_VERDICT;
-  }
-  const literals = literalsIn(text);
-  if (!literals.length) return NO_VERDICT;
-
-  for (const literal of literals) {
-    const needle = literal.toLowerCase();
-
-    for (const [path] of index.files) {
-      if (!path.toLowerCase().includes(needle)) continue;
-      const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
-      return {
-        status: "evidence_found",
-        explanation:
-          `The requirement names \`${literal}\`, and the repository contains that file. ` +
-          "The file is present; whether it implements the requirement is judged separately.",
-        evidenceIds,
-        method: "deterministic_literal",
-      };
-    }
-
-    for (const [path, symbols] of index.symbolsByPath) {
-      for (const symbol of symbols) {
-        if (!symbol.toLowerCase().includes(needle)) continue;
-        const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
-        return {
-          status: "evidence_found",
-          explanation:
-            `The requirement names \`${literal}\`, and \`${symbol}\` is defined in ` +
-            `\`${path}\`. The symbol exists; what it does is judged separately.`,
-          evidenceIds,
-          method: "deterministic_literal",
-        };
-      }
-    }
-
-    for (const [path, routes] of index.routesByPath) {
-      for (const route of routes) {
-        if (!String(route.path ?? "").toLowerCase().includes(needle)) continue;
-        const evidenceIds = (evidence.byFile.get(path) ?? []).map((item) => item.id).slice(0, 4);
-        return {
-          status: "partial_evidence",
-          explanation:
-            `The requirement names \`${literal}\`, and \`${route.path}\` exists in ` +
-            `\`${path}\`. The route is present; what its implementation does is judged ` +
-            "separately, because a route alone does not prove the behaviour.",
-          evidenceIds,
-          method: "deterministic_literal",
-        };
-      }
-    }
-  }
-
+  void text;
+  void index;
+  void evidence;
   return NO_VERDICT;
 }
 

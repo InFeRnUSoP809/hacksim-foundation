@@ -89,6 +89,9 @@ export interface Dimension {
 }
 
 export type TaskKind =
+  | "brief_verification"
+  | "implementation_verification"
+  | "engineering_verification"
   | "alignment"
   | "requirements"
   | "constraints"
@@ -191,16 +194,6 @@ export function planAnalysis(
         "hackathon",
       ),
     );
-    tasks.push({
-      key: "alignment",
-      kind: "alignment",
-      scope: "problem alignment",
-      question: conceptQuestions[0] ?? context.problem.slice(0, 400),
-      reason: "Judging whether a solution addresses a problem is interpretation, not counting.",
-      subjectIds: [],
-      focus: null,
-      order: next(),
-    });
   } else {
     dimensions.push(
       dimension(
@@ -241,18 +234,6 @@ export function planAnalysis(
           "hackathon",
         ),
       );
-      tasks.push({
-        key: `requirements:${group.focus}`,
-        kind: "requirements",
-        scope: group.label,
-        question: group.questions.join(" ") || group.label,
-        reason:
-          "Each requirement needs the relevant implementation compared with the " +
-          "requirement text; no deterministic rule can decide that.",
-        subjectIds: group.ids,
-        focus: group.focus,
-        order: next(),
-      });
     }
   } else {
     for (const key of [
@@ -289,17 +270,6 @@ export function planAnalysis(
         "hackathon",
       ),
     );
-    tasks.push({
-      key: "constraints",
-      kind: "constraints",
-      scope: "constraints",
-      question: buildConstraintQuestion(context),
-      reason: "Whether a constraint is respected is a judgement over dependencies, " +
-        "configuration and external calls.",
-      subjectIds: constraintIds,
-      focus: null,
-      order: next(),
-    });
   } else {
     dimensions.push(
       dimension(
@@ -321,17 +291,6 @@ export function planAnalysis(
         "hackathon",
       ),
     );
-    tasks.push({
-      key: "outcomes",
-      kind: "outcomes",
-      scope: "expected outcome",
-      question: outcomeIds.map((id) => outcomeText(context, id)).join(" ").slice(0, 800),
-      reason: "Whether the delivered result matches the expected outcome requires " +
-        "reading the implementation against the stated outcome.",
-      subjectIds: outcomeIds,
-      focus: null,
-      order: next(),
-    });
   } else {
     dimensions.push(
       dimension(
@@ -353,21 +312,6 @@ export function planAnalysis(
         "hackathon",
       ),
     );
-    tasks.push({
-      key: "criteria",
-      kind: "criteria",
-      scope: "evaluation criteria",
-      question: context.evaluationCriteria
-        .slice(0, 8)
-        .map((criterion) => criterion.text)
-        .join(" ")
-        .slice(0, 800),
-      reason: "Each criterion is described descriptively against evidence; no score " +
-        "is computed and no team is compared to another.",
-      subjectIds: criteriaIds,
-      focus: null,
-      order: next(),
-    });
   } else {
     dimensions.push(
       dimension(
@@ -376,6 +320,42 @@ export function planAnalysis(
         "The hackathon defines no evaluation criteria, so none are applied.",
       ),
     );
+  }
+
+  // ── Brief verification (grouped AI call) ───────────────────────────────
+  const briefNeeded =
+    context.hasProblem ||
+    Boolean(context.theme) ||
+    requirementsEnabled ||
+    context.hasConstraints ||
+    context.hasOutcomes ||
+    context.hasCriteria;
+
+  if (briefNeeded) {
+    tasks.push({
+      key: "brief_verification",
+      kind: "brief_verification",
+      scope: "alignment, requirements, constraints, outcomes, criteria",
+      question: [
+        conceptQuestions[0] ?? context.problem.slice(0, 400),
+        groups.flatMap((group) => group.questions).join(" "),
+        buildConstraintQuestion(context),
+        context.evaluationCriteria.slice(0, 6).map((item) => item.text).join(" "),
+      ]
+        .join(" ")
+        .slice(0, 1200),
+      reason:
+        "The hackathon brief is verified in one evidence-backed call instead of " +
+        "many separate passes over the same snippets.",
+      subjectIds: [
+        ...groups.flatMap((group) => group.ids),
+        ...constraintIds,
+        ...outcomeIds,
+        ...criteriaIds,
+      ],
+      focus: null,
+      order: next(),
+    });
   }
 
   // ── Claims ─────────────────────────────────────────────────────────────
@@ -392,23 +372,6 @@ export function planAnalysis(
         "claim",
       ),
     );
-    tasks.push({
-      key: "claims",
-      kind: "claims",
-      scope: "claimed features",
-      question: [
-        context.claims.description,
-        context.claims.features,
-        context.claims.techStack,
-      ]
-        .join(" ")
-        .slice(0, 900),
-      reason: "A claim is only supported when the implementation behind it is visible; " +
-        "that is a comparison, not a lookup.",
-      subjectIds: [],
-      focus: null,
-      order: next(),
-    });
   } else {
     dimensions.push(
       dimension(
@@ -432,17 +395,6 @@ export function planAnalysis(
         "general",
       ),
     );
-    tasks.push({
-      key: "implementation",
-      kind: "implementation",
-      scope: "implementation and solution coherence",
-      question: buildImplementationQuestion(context, facts),
-      reason: "Coherence between problem, implementation and output is interpretation " +
-        "over the whole call graph the scanner found.",
-      subjectIds: [],
-      focus: null,
-      order: next(),
-    });
     dimensions.push(
       dimension(
         "technical_implementation",
@@ -475,48 +427,55 @@ export function planAnalysis(
     }
   }
 
-  // ── Engineering characteristics: relevant when the repo shows them ─────
-  const engineering = planEngineering(facts, context);
-  dimensions.push(...engineering.dimensions);
-
-  if (engineering.dimensions.some((item) => item.relevance !== "not_applicable")) {
+  // ── Implementation verification (architecture + claims) ─────────────────
+  if (hasSource || hasClaims) {
     tasks.push({
-      key: "engineering",
-      kind: "engineering",
-      scope: "engineering observations",
-      question: engineering.question,
-      reason: "Observations about security, tests, data handling and deployment are " +
-        "only useful when the repository actually contains those things.",
+      key: "implementation_verification",
+      kind: "implementation_verification",
+      scope: "flows, architecture, implementation, claims",
+      question: [
+        buildImplementationQuestion(context, facts),
+        context.claims.description,
+        context.claims.features,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .slice(0, 1000),
+      reason:
+        "Functional flows, architecture, and team claims share the same traced " +
+        "implementation evidence.",
       subjectIds: [],
       focus: null,
       order: next(),
     });
   }
 
-  // ── Properness ─────────────────────────────────────────────────────────
+  // ── Engineering characteristics: relevant when the repo shows them ─────
+  const engineering = planEngineering(facts, context);
+  dimensions.push(...engineering.dimensions);
+
+  if (engineering.dimensions.some((item) => item.relevance !== "not_applicable")) {
+    tasks.push({
+      key: "engineering_verification",
+      kind: "engineering_verification",
+      scope: "security, database, testing, engineering",
+      question: engineering.question,
+      reason: "Engineering observations share one compact verification call.",
+      subjectIds: [],
+      focus: null,
+      order: next(),
+    });
+  }
+
   dimensions.push(
     dimension(
       "project_properness",
       "required",
-      "The product's purpose is a contextual judgement on whether this is a " +
-        "legitimate, coherent implementation for this problem.",
-      "ai",
+      "A factual summary is derived from verified conclusions without an extra model pass.",
+      "deterministic",
       "general",
     ),
   );
-  tasks.push({
-    key: "properness",
-    kind: "properness",
-    scope: "project properness",
-    // Deliberately the cheapest question in the plan: this call reads the
-    // conclusions the other calls already produced, not the code again.
-    question: "is the project coherent, implemented and consistent with its own claims",
-    reason: "The final assessment is a judgement over everything the earlier calls " +
-      "established, and is made once.",
-    subjectIds: [],
-    focus: null,
-    order: next(),
-  });
 
   return {
     dimensions,

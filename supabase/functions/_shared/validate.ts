@@ -60,6 +60,10 @@ const STATUSES: Record<SubjectKind, readonly string[]> = {
 
 /** Statuses that assert something positive, and therefore need a citation. */
 const POSITIVE = new Set([
+  "confirmed",
+  "partially_confirmed",
+  "weakly_evidenced",
+  "contradicted",
   "evidence_found",
   "supported",
   "partially_supported",
@@ -222,6 +226,82 @@ export const ALIGNMENT_STATUSES = [
   "weakly_evidenced",
   "unclear",
 ] as const;
+
+export interface BriefVerificationPayload {
+  alignment: ValidatedAlignment | null;
+  requirements: ValidatedConclusion[];
+  constraints: ValidatedConclusion[];
+  outcomes: ValidatedConclusion[];
+  criteria: ValidatedConclusion[];
+  additional_files_needed: string[];
+  rejectedEvidenceIds: string[];
+  errors: string[];
+}
+
+export function validateBriefVerification(
+  payload: unknown,
+  evidence: EvidenceSet,
+  allowed: {
+    requirements: string[];
+    constraints: string[];
+    outcomes: string[];
+    criteria: string[];
+  },
+): BriefVerificationPayload {
+  const record = (payload ?? {}) as Record<string, unknown>;
+  const alignResult = validateAlignment(payload, evidence);
+  const alignment = alignResult.items[0] ?? null;
+
+  const mapConclusions = (
+    raw: unknown,
+    kind: SubjectKind,
+    subjects: string[],
+  ): ValidatedConclusion[] => {
+    const result = validateConclusions(raw, {
+      kind,
+      allowedSubjects: subjects,
+      evidence,
+    });
+    return result.items;
+  };
+
+  const requirements = mapConclusions(
+    record.requirement_conclusions,
+    "requirement",
+    allowed.requirements,
+  );
+  const constraints = mapConclusions(
+    record.constraint_conclusions,
+    "constraint",
+    allowed.constraints,
+  );
+  const outcomes = mapConclusions(
+    record.outcome_conclusions,
+    "outcome",
+    allowed.outcomes,
+  );
+  const criteria = mapConclusions(
+    record.criterion_conclusions,
+    "criterion",
+    allowed.criteria,
+  );
+
+  const additional = stringList(record.additional_files_needed, 4, 200);
+  const rejectedEvidenceIds = [
+    ...alignResult.rejectedEvidenceIds,
+  ];
+
+  return {
+    alignment,
+    requirements,
+    constraints,
+    outcomes,
+    criteria,
+    additional_files_needed: additional,
+    rejectedEvidenceIds,
+    errors: alignResult.errors,
+  };
+}
 
 export function validateAlignment(
   payload: unknown,

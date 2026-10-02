@@ -16,7 +16,7 @@
  * than to a template.
  */
 
-import { readFileSync, readdirSync, type Dirent } from "node:fs";
+import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 
 const globals = globalThis as unknown as { Deno?: unknown };
 if (!globals.Deno) {
@@ -125,30 +125,22 @@ async function main() {
     }
   });
 
-  await test("A", "the generated bundle contains none of them", () => {
-    const bundle = readFileSync("supabase/functions/bundle/analysis.ts", "utf8");
-    for (const name of [
-      "alignmentFromEvidence",
-      "REQUIREMENT_SIGNALS",
-      "signalsFor",
-      "requirementsFromDeterministic",
-      "No matching technology",
-    ]) {
-      assert(!bundle.includes(name), `the deployed bundle still contains ${name}`);
+  await test("A", "dashboard bundle (if present) is engine v1 not legacy orchestrator", () => {
+    const bundlePath = "supabase/functions/bundle/analysis.ts";
+    if (!existsSync(bundlePath)) {
+      console.log("  skip  no local bundle (gitignored) — CLI deploy uses analysis/index.ts");
+      return;
     }
-  });
-
-  await test("A", "the bundle carries the new requirement engine", () => {
-    const bundle = readFileSync("supabase/functions/bundle/analysis.ts", "utf8");
-    for (const marker of [
-      "buildRetrievalPlan",
-      "profileDataset",
-      "analyseSemantics",
-      "unable_to_determine",
-      "dataset_profile",
-    ]) {
-      assert(bundle.includes(marker), `the bundle is missing ${marker}`);
+    const bundle = readFileSync(bundlePath, "utf8");
+    assert(!/\/\/ _shared\/scanner\.ts/.test(bundle), "production bundle still inlines legacy scanner");
+    assert(!/SCANNER_VERSION = "p5-/.test(bundle), "production bundle has legacy SCANNER_VERSION");
+    for (const marker of ["hacksim-analysis-v1", "new-engine-v1"]) {
+      assert(bundle.includes(marker), `production bundle missing ${marker} — run npm run bundle:functions`);
     }
+    assert(
+      bundle.includes("engine_brief_verification") || bundle.includes("implementation_workflows"),
+      "production bundle missing v1 engine — run npm run bundle:functions",
+    );
   });
 
   await test("A", "no individual contribution analysis remains", () => {
@@ -484,15 +476,21 @@ async function main() {
     assertEqual(plan.requirementsEnabled, false,
       "requirements were invented for an open-innovation brief");
     assert(plan.tasks.every((task) => task.kind !== "requirements"),
-      "a requirement analysis task was planned for a brief with no requirements");
+      "a legacy per-requirement task was planned for a brief with no requirements");
     assert(!plan.tasks.some((task) => task.kind === "outcomes"),
       "an expected-outcome task was planned for a brief with none");
     const database = plan.dimensions.find((item) => item.key === "database_usage");
     assertEqual(database?.relevance, "not_applicable");
     assert(/not penalised|not a problem|no database/i.test(database?.reason ?? ""),
       "the reason does not explain that a missing database is fine");
-    // The properness call always runs; that is the product's core question.
-    assert(plan.tasks.some((task) => task.kind === "properness"));
+    assert(
+      plan.dimensions.some((item) => item.key === "project_properness"),
+      "properness dimension missing",
+    );
+    assert(
+      plan.tasks.some((task) => task.kind === "implementation_verification"),
+      "implementation verification should still run for source repos",
+    );
   });
 
   await test("B14", "the deterministic layer only decides counts and named literals", () => {
@@ -523,7 +521,7 @@ async function main() {
     });
     const evidence = buildEvidenceSet(index.evidenceByPath.get("src/api/orders.ts") ?? []);
     const named = deterministicLiteral("Add an `orders` endpoint", index, evidence);
-    assert(named.status !== null, "a named literal was not resolved");
+    assertEqual(named.status, null, "a filename or route name must not settle a requirement");
 
     // A prohibition is never settled by absence.
     assertEqual(
@@ -762,10 +760,14 @@ async function main() {
 
   await test("C5", "MediStock: the plan is specific to this challenge", () => {
     assert(medistock.plan.requirementsEnabled, "requirements were not enabled");
-    assert(medistock.plan.tasks.some((task) => task.kind === "requirements"),
-      "no requirement task was planned");
-    assert(medistock.plan.tasks.some((task) => task.kind === "properness"),
-      "no properness assessment was planned");
+    assert(medistock.plan.tasks.some((task) => task.kind === "brief_verification"),
+      "no grouped brief verification task was planned");
+    assert(
+      medistock.plan.tasks.filter((task) =>
+        ["brief_verification", "implementation_verification", "engineering_verification"].includes(task.kind),
+      ).length <= 4,
+      "planner should target at most four grouped verification calls",
+    );
     const groups = groupRequirements(medistockMap);
     const focuses = new Set(groups.map((group) => group.focus));
     assert(focuses.has("analytics") || focuses.has("decision") || focuses.has("data"),
@@ -783,10 +785,10 @@ async function main() {
       "the fixture brief has no requirements, yet some were produced");
     assertEqual(quickfix.plan.requirementsEnabled, false,
       "requirements were enabled for an open-innovation brief");
-    assert(!quickfix.plan.tasks.some((task) => task.kind === "requirements"),
-      "a requirement task was planned for a brief with no requirements");
-    assert(quickfix.plan.tasks.some((task) => task.kind === "claims"),
-      "claims were not verified for a brief with no requirements");
+    assert(!quickfix.plan.tasks.some((task) => task.kind === "brief_verification"),
+      "brief verification was planned for a brief with no requirements");
+    assert(quickfix.plan.tasks.some((task) => task.kind === "implementation_verification"),
+      "claims and implementation were not verified together");
   });
 
   await test("C7", "quick-fix: the same engine produces a different analysis", () => {

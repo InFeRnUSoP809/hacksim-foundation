@@ -2,14 +2,22 @@ import { AdminLayout } from "@/layouts/AdminLayout";
 import { ErrorState, LoadingState } from "@/components/States";
 import {
   AiUsagePanel,
+  AnalysisOverviewCards,
   AssessmentCard,
   CoverageMatrix,
   DefenseTargetList,
+  EvidenceChainList,
+  EvidenceExplorer,
   EvidenceList,
   FindingsList,
+  ImplementationBehaviorList,
+  ImplementationWorkflowList,
+  VerificationTasksPanel,
   NoticeState,
+  FlowList,
   ProjectMapSummary,
 } from "@/components/analysis";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -129,6 +137,19 @@ export default function AdminSubmissionAnalysis() {
       null,
   }));
 
+  const flows = projectMap?.flows ?? [];
+  const closedFlows = flows.filter((flow) => flow.closed).length;
+  const verifiedReqs = coverage.filter(
+    (row) =>
+      row.evaluation &&
+      !["not_evidenced", "unable_to_determine"].includes(row.evaluation.status),
+  ).length;
+  const aiRuns = data.analysis_runs ?? [];
+  const aiCost = aiRuns.reduce(
+    (sum, run) => sum + Number(run.estimated_cost_usd ?? 0),
+    0,
+  );
+
   return (
     <AdminLayout>
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -192,7 +213,45 @@ export default function AdminSubmissionAnalysis() {
         </div>
       )}
 
-      <div className="mt-8 flex flex-col gap-8">
+      <div className="mt-6">
+        <AnalysisOverviewCards
+          evidenceCount={evidence.length}
+          flowCount={flows.length}
+          closedFlowCount={closedFlows}
+          requirementCount={coverage.length}
+          verifiedRequirementCount={verifiedReqs}
+          aiRequests={aiRuns.length}
+          aiCostUsd={aiCost}
+          coverage={
+            (projectMap?.analysis_coverage as Record<string, number> | undefined) ?? undefined
+          }
+        />
+        {repository && (
+          <p className="mt-3 font-mono text-xs text-muted-foreground">
+            Engine {(projectMap?.engine_id as string) ?? "hacksim-analysis-v1"} · scan{" "}
+            {repository.analysis_version ?? "—"} · stage{" "}
+            {(repository as { analysis_stage?: string }).analysis_stage ?? repository.analysis_status}
+            {repository.last_analyzed_at
+              ? ` · last ${new Date(repository.last_analyzed_at).toLocaleString()}`
+              : ""}
+          </p>
+        )}
+      </div>
+
+      <Tabs defaultValue="overview" className="mt-8">
+        <TabsList className="flex h-auto flex-wrap justify-start gap-1">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="requirements">Requirements</TabsTrigger>
+          <TabsTrigger value="flows">Flows</TabsTrigger>
+          <TabsTrigger value="implementation">Implementation</TabsTrigger>
+          <TabsTrigger value="evidence">Evidence</TabsTrigger>
+          <TabsTrigger value="verification">Verification</TabsTrigger>
+          <TabsTrigger value="coverage">Coverage</TabsTrigger>
+          <TabsTrigger value="ai">AI usage</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="mt-6 flex flex-col gap-8">
+      <div className="flex flex-col gap-8">
         {/* ── 1. Project ──────────────────────────────────────── */}
         <Section step={1} title="Project">
           <dl className="grid gap-4 sm:grid-cols-2">
@@ -298,9 +357,17 @@ export default function AdminSubmissionAnalysis() {
           )}
         </Section>
 
-        {/* ── 5. Repository evidence ──────────────────────────── */}
         <Section
           step={5}
+          title="Functional flows"
+          note="Entry, call, and data access traced across files. A closed flow is not a filename match."
+        >
+          <FlowList flows={projectMap?.flows} />
+        </Section>
+
+        {/* ── 6. Repository evidence ──────────────────────────── */}
+        <Section
+          step={6}
           title="Repository evidence"
           note="The source of truth. Every AI conclusion below cites these."
         >
@@ -506,6 +573,85 @@ export default function AdminSubmissionAnalysis() {
           />
         </Section>
       </div>
+        </TabsContent>
+
+        <TabsContent value="requirements" className="mt-6">
+          <CoverageMatrix rows={coverage} evidence={evidence} />
+        </TabsContent>
+
+        <TabsContent value="flows" className="mt-6 flex flex-col gap-6">
+          <FlowList flows={projectMap?.flows} />
+          <div>
+            <p className="label-mono mb-3 text-muted-foreground">Evidence chains</p>
+            <EvidenceChainList chains={projectMap?.evidence_chains} />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="implementation" className="mt-6 flex flex-col gap-8">
+          <div>
+            <p className="label-mono mb-3 text-muted-foreground">Implementation workflows</p>
+            <ImplementationWorkflowList workflows={projectMap?.implementation_workflows} />
+          </div>
+          <div>
+            <p className="label-mono mb-3 text-muted-foreground">L3 behaviors</p>
+            <ImplementationBehaviorList behaviors={projectMap?.implementation_behaviors} />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="evidence" className="mt-6">
+          <EvidenceExplorer evidence={evidence} filterType="transformation" />
+          <div className="mt-6">
+            <p className="label-mono mb-3 text-muted-foreground">All evidence</p>
+            <EvidenceList ids={evidence.map((e) => e.id)} evidence={evidence} />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="verification" className="mt-6 flex flex-col gap-6">
+          <VerificationTasksPanel
+            tasks={
+              (review?.summary as { verification_tasks?: import("../../types/analysis").VerificationTaskRecord[] })
+                ?.verification_tasks ??
+              (review?.technical_decisions as { engine_verification?: import("../../types/analysis").VerificationTaskRecord[] })
+                ?.engine_verification
+            }
+            implementation={review?.implementation ?? null}
+            lastRun={
+              (review?.summary as { last_verification_run?: Record<string, unknown> })?.last_verification_run ??
+              null
+            }
+            cumulative={
+              (review?.summary as {
+                cumulative_cost_usd?: number;
+                cumulative_tokens?: number;
+              }) ?? null
+            }
+          />
+          {review?.problem_alignment && (
+            <Card className="p-5">
+              <p className="label-mono text-muted-foreground">Problem alignment</p>
+              <p className="mt-2 text-sm leading-relaxed">
+                {review.problem_alignment.explanation}
+              </p>
+            </Card>
+          )}
+          <AssessmentCard
+            assessment={review?.assessment ?? null}
+            evidence={evidence}
+            strengths={review?.assessment?.strengths ?? []}
+            gaps={review?.assessment?.gaps ?? []}
+            uncertainties={review?.assessment?.uncertainties ?? []}
+          />
+          <FindingsList findings={data.findings} evidence={evidence} />
+        </TabsContent>
+
+        <TabsContent value="coverage" className="mt-6">
+          <DiagnosticsPanel analysis={data} evidence={evidence} />
+        </TabsContent>
+
+        <TabsContent value="ai" className="mt-6">
+          <AiUsagePanel usage={data.ai_usage} runs={data.analysis_runs ?? []} />
+        </TabsContent>
+      </Tabs>
     </AdminLayout>
   );
 }

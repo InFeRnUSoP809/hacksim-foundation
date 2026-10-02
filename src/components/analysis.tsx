@@ -43,6 +43,26 @@ const REQUIREMENT_TONE: Record<
   RequirementStatus,
   { label: string; className: string; help: string }
 > = {
+  confirmed: {
+    label: "Confirmed",
+    className: "border-stage-report/35 bg-stage-report/10 text-stage-report",
+    help: "A traced implementation chain supports this requirement.",
+  },
+  partially_confirmed: {
+    label: "Partially confirmed",
+    className: "border-stage-build/35 bg-stage-build/10 text-stage-build",
+    help: "Part of the implementation chain is visible.",
+  },
+  weakly_evidenced: {
+    label: "Weakly evidenced",
+    className: "border-stage-submit/35 bg-stage-submit/10 text-stage-submit",
+    help: "Only a thin trace was found. This is not proof the feature is complete.",
+  },
+  contradicted: {
+    label: "Contradicted",
+    className: "border-destructive/40 bg-destructive/10 text-destructive",
+    help: "Repository evidence conflicts with the claim.",
+  },
   evidence_found: {
     label: "Evidence found",
     className: "border-stage-report/35 bg-stage-report/10 text-stage-report",
@@ -1021,10 +1041,10 @@ export function AiUsagePanel({
   return (
     <div className="flex flex-col gap-5">
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <MiniStat label="Requests" value={usage.requests} />
-        <MiniStat label="Input tokens" value={usage.input_tokens.toLocaleString()} />
-        <MiniStat label="Output tokens" value={usage.output_tokens.toLocaleString()} />
-        <MiniStat label="Cost" value={`$${cost.toFixed(4)}`} />
+        <MiniStat label="Requests (historical)" value={usage.requests} />
+        <MiniStat label="Input tokens (historical)" value={usage.input_tokens.toLocaleString()} />
+        <MiniStat label="Output tokens (historical)" value={usage.output_tokens.toLocaleString()} />
+        <MiniStat label="Cost (historical total)" value={`$${cost.toFixed(4)}`} />
       </div>
 
       {operations.length > 0 && (
@@ -1096,5 +1116,350 @@ export function AiUsagePanel({
         </div>
       )}
     </div>
+  );
+}
+
+/** Traced flows from the evidence graph. Closed means entry + call + data. */
+export function FlowList({
+  flows,
+}: {
+  flows?: ProjectMap["flows"];
+}) {
+  const rows = flows ?? [];
+  if (!rows.length) {
+    return (
+      <NoticeState
+        title="No implementation flows yet"
+        message="Flows appear after a repository scan that can connect an entry point, a call, and a data read or write."
+      />
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-3">
+      {rows.slice(0, 12).map((flow) => (
+        <li key={flow.id} className="rounded-lg border border-border px-3 py-2.5">
+          <p className="label-mono text-muted-foreground">
+            {flow.id} · {flow.closed ? "closed" : "open"}
+            {flow.closed ? "" : " · missing link(s)"}
+          </p>
+          <p className="mt-1 text-sm leading-relaxed">
+            {flow.hops
+              .map((hop) => hop.symbol ?? hop.file)
+              .join(" → ")}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {flow.files.join(", ")}
+          </p>
+          {flow.behaviors && flow.behaviors.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1 border-t border-border pt-2">
+              {flow.behaviors.slice(0, 6).map((behavior) => (
+                <li key={behavior.id} className="text-xs leading-relaxed">
+                  <span className="label-mono text-brand">{behavior.level}</span>{" "}
+                  {behavior.claim}
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {behavior.file}
+                    {behavior.symbol ? `#${behavior.symbol}` : ""} ({behavior.lines})
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function AnalysisOverviewCards({
+  evidenceCount,
+  flowCount,
+  closedFlowCount,
+  requirementCount,
+  verifiedRequirementCount,
+  aiRequests,
+  aiCostUsd,
+  coverage,
+}: {
+  evidenceCount: number;
+  flowCount: number;
+  closedFlowCount: number;
+  requirementCount: number;
+  verifiedRequirementCount: number;
+  aiRequests: number;
+  aiCostUsd: number;
+  coverage?: Record<string, number | undefined>;
+}) {
+  const cards = [
+    { label: "Evidence items", value: String(evidenceCount) },
+    { label: "Functional flows", value: `${closedFlowCount}/${flowCount} closed` },
+    {
+      label: "Requirements",
+      value: `${verifiedRequirementCount}/${requirementCount} evaluated`,
+    },
+    { label: "AI requests", value: String(aiRequests) },
+    { label: "AI cost", value: `$${aiCostUsd.toFixed(4)}` },
+  ];
+  if (coverage?.files_deeply_read != null) {
+    cards.unshift({
+      label: "Files deeply read",
+      value: String(coverage.files_deeply_read),
+    });
+  }
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      {cards.map((card) => (
+        <Card key={card.label} className="p-4">
+          <p className="label-mono text-[10px] text-muted-foreground">{card.label}</p>
+          <p className="mt-1 text-lg font-semibold tabular-nums">{card.value}</p>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+export function VerificationTasksPanel({
+  tasks,
+  implementation,
+  lastRun,
+  cumulative,
+}: {
+  tasks?: import("../types/analysis").VerificationTaskRecord[];
+  implementation?: Record<string, unknown> | null;
+  lastRun?: {
+    at?: string;
+    run_cost_usd?: number;
+    run_tokens?: number;
+    tasks?: string[];
+  } | null;
+  cumulative?: { cumulative_cost_usd?: number; cumulative_tokens?: number } | null;
+}) {
+  const rows = tasks ?? [];
+  if (!rows.length && !implementation) {
+    return (
+      <NoticeState
+        title="No verification tasks recorded"
+        message="Run analysis after a repository scan to execute brief, implementation, engineering, and claims verification."
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      {(lastRun?.run_cost_usd != null || cumulative?.cumulative_cost_usd != null) && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {lastRun?.run_cost_usd != null ? (
+            <Card className="p-3 text-sm">
+              <p className="label-mono text-[10px] text-muted-foreground">Current verification run</p>
+              <p className="mt-1 tabular-nums">
+                ${Number(lastRun.run_cost_usd).toFixed(4)} · {Number(lastRun.run_tokens ?? 0)} tokens
+              </p>
+              {lastRun.tasks?.length ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">{lastRun.tasks.join(", ")}</p>
+              ) : null}
+            </Card>
+          ) : null}
+          {cumulative?.cumulative_cost_usd != null ? (
+            <Card className="p-3 text-sm">
+              <p className="label-mono text-[10px] text-muted-foreground">Review cumulative total</p>
+              <p className="mt-1 tabular-nums">
+                ${Number(cumulative.cumulative_cost_usd).toFixed(4)} ·{" "}
+                {Number(cumulative.cumulative_tokens ?? 0)} tokens
+              </p>
+            </Card>
+          ) : null}
+        </div>
+      )}
+      {implementation?.implementation_summary ? (
+        <Card className="p-4">
+          <p className="label-mono text-[10px] text-muted-foreground">Implementation verification</p>
+          <p className="mt-2 text-sm leading-relaxed">
+            {String(implementation.implementation_summary)}
+          </p>
+          {implementation.verdict ? (
+            <p className="label-mono mt-2 text-[10px] text-brand">
+              {String(implementation.verdict)} · {String(implementation.confidence ?? "")} ·{" "}
+              {String(implementation.verification_level ?? "")}
+            </p>
+          ) : null}
+        </Card>
+      ) : null}
+      {rows.length ? (
+        <ul className="grid gap-2 sm:grid-cols-2">
+          {rows.map((task) => (
+            <li key={task.kind} className="rounded-md border border-border px-3 py-2 text-sm">
+              <p className="font-medium capitalize">{task.kind}</p>
+              <p className="label-mono text-[10px] text-muted-foreground">
+                {task.status} · {task.prompt_version}
+              </p>
+              <p className="mt-1 tabular-nums text-xs text-muted-foreground">
+                {task.input_tokens + task.output_tokens} tokens · ${task.cost_usd.toFixed(4)}
+                {task.cached_tokens ? ` · cache ${task.cached_tokens}` : ""}
+              </p>
+              {task.verdict ? (
+                <p className="mt-1 text-xs">
+                  Verdict: {task.verdict}
+                  {task.confidence ? ` (${task.confidence})` : ""}
+                </p>
+              ) : null}
+              {task.missing_links?.length ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Gaps: {task.missing_links.join("; ")}
+                </p>
+              ) : null}
+              {task.validation_errors?.length ? (
+                <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                  Validation: {task.validation_errors.slice(0, 2).join("; ")}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+export function ImplementationWorkflowList({
+  workflows,
+}: {
+  workflows?: ProjectMap["implementation_workflows"];
+}) {
+  const rows = workflows ?? [];
+  if (!rows.length) {
+    return (
+      <NoticeState
+        title="No implementation workflows reconstructed"
+        message="Workflows appear when L3 behaviors chain (e.g. AI request, parse, limits, persistence) in a symbol or cross-layer flow."
+      />
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-4">
+      {rows.slice(0, 8).map((wf) => (
+        <li key={wf.id} className="rounded-lg border border-border px-3 py-3">
+          <p className="text-sm font-medium">{wf.label}</p>
+          <p className="label-mono mt-1 text-[10px] text-muted-foreground">
+            {wf.id} · {wf.closed ? "closed" : "partial"}
+            {wf.missing_links.length ? ` · gaps: ${wf.missing_links.join("; ")}` : ""}
+          </p>
+          <ol className="mt-3 flex flex-col gap-2 border-l border-border pl-3">
+            {wf.steps.map((step, i) => (
+              <li key={`${wf.id}-${i}`} className="text-sm">
+                <span className="label-mono text-[10px] text-brand">{step.kind}</span>
+                <p>{step.label}</p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {step.file}
+                  {step.symbol ? `#${step.symbol}` : ""} · L{step.start_line}–{step.end_line}
+                  {step.confidence === "low" ? " · low confidence" : ""}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function ImplementationBehaviorList({
+  behaviors,
+}: {
+  behaviors?: ProjectMap["implementation_behaviors"];
+}) {
+  const rows = behaviors ?? [];
+  if (!rows.length) {
+    return (
+      <NoticeState
+        title="No implementation behaviors extracted"
+        message="Re-analyse the repository to run the L3 behavior pass (limits, parsing, AI calls, persistence)."
+      />
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-2">
+      {rows.slice(0, 40).map((row) => (
+        <li
+          key={row.id}
+          className="rounded-md border border-border px-3 py-2 text-sm leading-relaxed"
+        >
+          <span className="label-mono text-[10px] text-brand">{row.level}</span>{" "}
+          <span className="label-mono text-[10px] text-muted-foreground">{row.kind}</span>
+          <p className="mt-1">{row.claim}</p>
+          <p className="mt-0.5 font-mono text-xs text-muted-foreground">
+            {row.file}
+            {row.symbol ? `#${row.symbol}` : ""} · L{row.start_line}–{row.end_line}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function EvidenceChainList({
+  chains,
+}: {
+  chains?: {
+    id: string;
+    flow_id: string | null;
+    label: string;
+    closed: boolean;
+    links: { evidence_id: string; claim: string; level: string; file: string | null }[];
+  }[];
+}) {
+  const rows = chains ?? [];
+  if (!rows.length) {
+    return (
+      <NoticeState
+        title="No evidence chains"
+        message="Chains appear when a functional flow links multiple evidence items."
+      />
+    );
+  }
+  return (
+    <ul className="flex flex-col gap-3">
+      {rows.slice(0, 10).map((chain) => (
+        <li key={chain.id} className="rounded-lg border border-border px-3 py-2.5">
+          <p className="label-mono text-muted-foreground">
+            {chain.id}
+            {chain.flow_id ? ` · ${chain.flow_id}` : ""} · {chain.closed ? "closed" : "open"}
+          </p>
+          <p className="mt-1 text-sm">{chain.label}</p>
+          <ol className="mt-2 flex flex-col gap-1 border-l border-border pl-3">
+            {chain.links.map((link) => (
+              <li key={`${chain.id}-${link.evidence_id}`} className="text-xs leading-relaxed">
+                <span className="label-mono text-brand">{link.level}</span>{" "}
+                <span className="font-mono text-[10px]">{link.evidence_id}</span> — {link.claim}
+              </li>
+            ))}
+          </ol>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function EvidenceExplorer({
+  evidence,
+  filterType,
+}: {
+  evidence: Evidence[];
+  filterType?: string;
+}) {
+  const rows = filterType
+    ? evidence.filter((item) => item.type === filterType)
+    : evidence;
+  if (!rows.length) {
+    return (
+      <NoticeState
+        title="No matching evidence"
+        message="Try another filter or run repository analysis."
+      />
+    );
+  }
+  return (
+    <EvidenceList
+      ids={rows.slice(0, 80).map((item) => item.id)}
+      evidence={evidence}
+    />
   );
 }

@@ -41,6 +41,11 @@ export const EVIDENCE_TYPES = [
   "repository",
   "analysis_mode",
   "integration",
+  "data_flow",
+  "transformation",
+  "parsing",
+  "api_call",
+  "prompt",
 ] as const;
 
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
@@ -95,10 +100,14 @@ export type Method = (typeof METHODS)[number];
  * read — never because a technology was absent.
  */
 export const REQUIREMENT_STATUSES = [
+  "confirmed",
+  "partially_confirmed",
+  "weakly_evidenced",
   "evidence_found",
   "partial_evidence",
   "not_evidenced",
   "unable_to_determine",
+  "contradicted",
 ] as const;
 
 export const CONSTRAINT_STATUSES = [
